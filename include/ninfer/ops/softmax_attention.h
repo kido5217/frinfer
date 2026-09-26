@@ -13,7 +13,10 @@
 
 namespace ninfer::ops {
 
-inline constexpr std::uint32_t kCausalAttentionMaximumVisibleKeys = 262144;
+// The largest visible-key envelope a registered causal attention route accepts. The 2x YaRN
+// context extension raises the supported envelope to 524288; the small-T split staging arrays
+// cover the resulting at-most-97-page spans.
+inline constexpr std::uint32_t kCausalAttentionMaximumVisibleKeys = 524288;
 
 struct CausalAttentionExecutionEnvelope {
     std::uint32_t min_visible_keys = 0;
