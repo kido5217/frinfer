@@ -105,6 +105,9 @@ python3 -m tools.smoke.serve_contract \
 The client exercises OpenAI, Anthropic, streaming, usage, multimodal, and tool-call response
 surfaces against the resident process.
 
+Any free port works; keep the server's `--port` and the client's `--base-url` in agreement. The
+server default is `8080`, and `18080` above is chosen so a resident service can keep the default.
+
 For typed rewrite-checkpoint and thinking-history behavior, the managed smoke script launches a
 real server and consumes the repository fixture:
 
@@ -112,3 +115,5 @@ real server and consumes the repository fixture:
 python3 tools/smoke/serve_thinking_preservation.py \
   --artifact out/qwen3_6_27b.ninfer --backend mtp
 ```
+
+The managed script chooses a free port automatically; pass `--port N` to pin a fixed one.
