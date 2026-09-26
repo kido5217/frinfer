@@ -3,9 +3,7 @@
 // The corpus is the acceptance contract for the ported Qwen3.5/froggeric parsing core
 // (models/qwen3_5/frontend/chat_parse_core.h): every vector drives the core round by round and
 // the driver asserts the cumulative channels, the held bytes, the terminal tool calls and the
-// terminal diagnostics. Expectations are never re-derived from the core. The one recorded corpus
-// defect lives in the fixture's `corrections` list and is applied here only with an explicit
-// notice, so the vector itself stays verbatim.
+// terminal diagnostics. Expectations are never re-derived from the core.
 
 #include "models/qwen3_5/frontend/chat_parse_core.h"
 #include "models/qwen3_5/frontend/tool_call_parser.h"
@@ -17,10 +15,8 @@
 #include <fstream>
 #include <map>
 #include <memory>
-#include <set>
 #include <string>
 #include <string_view>
-#include <tuple>
 #include <vector>
 
 namespace {
@@ -123,34 +119,8 @@ void check_diagnostics(const ToolCallParseDiagnostics& actual, const ordered_jso
     }
 }
 
-struct Correction {
-    std::string vector;
-    std::size_t tool_call = 0;
-    std::string argument;
-    std::string corrected_value;
-};
-
-// Applies the fixture's recorded corrections to the expected tool calls of one vector. The
-// notice is printed once per corrected expectation, not once per comparison site.
-void apply_corrections(ordered_json& arguments, const std::string& vector_id,
-                       std::size_t call_index, const std::vector<Correction>& corrections) {
-    static std::set<std::tuple<std::string, std::size_t, std::string>> reported;
-    for (const Correction& correction : corrections) {
-        if (correction.vector != vector_id || correction.tool_call != call_index) { continue; }
-        if (!arguments.contains(correction.argument)) { continue; }
-        const auto key = std::make_tuple(vector_id, call_index, correction.argument);
-        if (reported.insert(key).second) {
-            std::fprintf(stderr,
-                         "note: corpus correction applied: %s tool-call %zu argument %s "
-                         "(see the fixture's corrections; oracle value differs)\n",
-                         vector_id.c_str(), call_index, correction.argument.c_str());
-        }
-        arguments[correction.argument] = correction.corrected_value;
-    }
-}
-
 bool check_tool_calls(const std::vector<GeneratedToolCall>& actual, const ordered_json& expected,
-                      const std::string& vector_id, const std::vector<Correction>& corrections) {
+                      const std::string& vector_id) {
     if (actual.size() != expected.size()) {
         check(false, vector_id + ": tool call count",
               "expected " + std::to_string(expected.size()) + ", got " +
@@ -167,8 +137,7 @@ bool check_tool_calls(const std::vector<GeneratedToolCall>& actual, const ordere
                       quote(actual[index].name));
             ok = false;
         }
-        ordered_json want_arguments = want.at("arguments");
-        apply_corrections(want_arguments, vector_id, index, corrections);
+        const ordered_json& want_arguments = want.at("arguments");
         const ordered_json actual_arguments =
             ordered_json::parse(actual[index].arguments_json, nullptr, false);
         if (actual_arguments.is_discarded() || actual_arguments.dump() != want_arguments.dump()) {
@@ -195,8 +164,7 @@ contract_for(const ordered_json& vector, const std::map<std::string, ordered_jso
     return build_tool_call_output_contract(definitions, true);
 }
 
-void run_vector(const ordered_json& vector, const std::map<std::string, ordered_json>& tools,
-                const std::vector<Correction>& corrections) {
+void run_vector(const ordered_json& vector, const std::map<std::string, ordered_json>& tools) {
     const std::string vector_id = vector.at("id").get<std::string>();
     auto contract               = contract_for(vector, tools, vector_id);
     if (contract == nullptr) { return; }
@@ -258,7 +226,7 @@ void run_vector(const ordered_json& vector, const std::map<std::string, ordered_
             reasoning += terminal.reasoning_delta;
             content += terminal.content_delta;
             if (round.contains("tool_calls")) {
-                check_tool_calls(core.tool_calls(), round.at("tool_calls"), vector_id, corrections);
+                check_tool_calls(core.tool_calls(), round.at("tool_calls"), vector_id);
             }
         } else if (round.contains("held")) {
             check_channel(core.held(), round.at("held"), vector_id, "held", vector_id);
@@ -275,7 +243,7 @@ void run_vector(const ordered_json& vector, const std::map<std::string, ordered_
     const ordered_json& final = vector.at("final");
     check_channel(reasoning, final.at("reasoning"), vector_id, "final reasoning", vector_id);
     check_channel(content, final.at("content"), vector_id, "final content", vector_id);
-    check_tool_calls(core.tool_calls(), final.at("tool_calls"), vector_id, corrections);
+    check_tool_calls(core.tool_calls(), final.at("tool_calls"), vector_id);
     if (final.contains("diagnostics")) {
         check_diagnostics(core.diagnostics(), final.at("diagnostics"), vector_id);
     }
@@ -299,29 +267,12 @@ int main() {
         tools.emplace(tool.at("function").at("name").get<std::string>(), tool);
     }
 
-    std::vector<Correction> corrections;
-    for (const auto& correction : corpus.at("corrections")) {
-        corrections.push_back(Correction{
-            .vector          = correction.at("vector").get<std::string>(),
-            .tool_call       = correction.at("tool_call").get<std::size_t>(),
-            .argument        = correction.at("argument").get<std::string>(),
-            .corrected_value = correction.at("corrected_value").get<std::string>(),
-        });
-    }
-
     const ordered_json& vectors = corpus.at("vectors");
     check(vectors.size() == kExpectedVectorCount, "fixture vector count",
           "expected " + std::to_string(kExpectedVectorCount) + ", got " +
               std::to_string(vectors.size()));
-    for (const Correction& correction : corrections) {
-        bool known = false;
-        for (const auto& vector : vectors) {
-            if (vector.at("id").get<std::string>() == correction.vector) { known = true; }
-        }
-        check(known, "fixture correction references an unknown vector", correction.vector);
-    }
 
-    for (const auto& vector : vectors) { run_vector(vector, tools, corrections); }
+    for (const auto& vector : vectors) { run_vector(vector, tools); }
 
     if (g_failures == 0) {
         std::printf("chat parsing corpus: %zu vectors OK\n", vectors.size());

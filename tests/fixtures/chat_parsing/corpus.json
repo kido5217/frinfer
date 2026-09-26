@@ -1,5 +1,5 @@
 {
-  "source": "docs/research/chat-parsing-oracle.md §6 (36 vectors, transcribed verbatim) + PR Neroued/ninfer#309 tests (head 713045812a5bb861b089d4c430c4a03bdbd526df, tests-only extraction) + the wrapper-less vector from issue #35.",
+  "source": "docs/research/chat-parsing-oracle.md §6 (36 vectors; one expectation corrected, see the vector's note) + PR Neroued/ninfer#309 tests (head 713045812a5bb861b089d4c430c4a03bdbd526df, tests-only extraction) + the wrapper-less vector from issue #35.",
   "family": "qwen3_5_froggeric_xml",
   "tools": [
     {
@@ -376,7 +376,8 @@
         {
           "feed": "<think>\nold template repeats start</think>",
           "reasoning": "\nold template repeats start",
-          "content": ""
+          "content": "",
+          "held": "</think>"
         }
       ],
       "final": {
@@ -991,7 +992,7 @@
             {
               "name": "bash",
               "arguments": {
-                "command": "printf '<parameter=x>\ny\n</parameter>'"
+                "command": "printf '<parameter=x>\ny\n</parameter>\n'"
               }
             }
           ]
@@ -1004,7 +1005,7 @@
           {
             "name": "bash",
             "arguments": {
-              "command": "printf '<parameter=x>\ny\n</parameter>'"
+              "command": "printf '<parameter=x>\ny\n</parameter>\n'"
             }
           }
         ]
@@ -1016,7 +1017,7 @@
         "llamacpp(row 21): the newline-framed nested close ends the value and the turn fails",
         "vllm(row 21): re-split"
       ],
-      "note": "The nested close is written with the wire framing (newline on both sides); balance tracking is what keeps it inside the value."
+      "note": "The nested close is written with the wire framing (newline on both sides); balance tracking is what keeps it inside the value. Expectation corrected from the oracle doc: B4 removes exactly one leading and one trailing newline from the raw value (\\nprintf '<parameter=x>\\ny\\n</parameter>\\n'\\n -> printf '<parameter=x>\\ny\\n</parameter>\\n'), which is also what the bespoke parser at the port baseline (tool_call_parser.cpp at c6a3b1e1) produces for the same feed (direct probe); the oracle value additionally dropped the newline after the nested close. The feed is unchanged."
     },
     {
       "id": "tool-call-unmatched-nested-parameter",
@@ -1671,16 +1672,6 @@
       "diverges": [
         "vllm(row 7 in the oracle's §7): accepts <function=...> without <tool_call>"
       ]
-    }
-  ],
-  "corrections": [
-    {
-      "vector": "tool-call-nested-parameter-newline-framed",
-      "tool_call": 0,
-      "argument": "command",
-      "oracle_value": "printf '<parameter=x>\ny\n</parameter>'",
-      "corrected_value": "printf '<parameter=x>\ny\n</parameter>\n'",
-      "reason": "B4 removes exactly one leading and one trailing newline from the balanced value region (the template wraps every value). The oracle value additionally drops the newline that immediately follows the nested </parameter>, which no faithful reading of B4 or of the cited basis produces: the bespoke parser at the port baseline, run on the same feed, yields {\"command\":\"printf '<parameter=x>\\ny\\n</parameter>\\n'\"}. Recorded as a corpus defect; the vector itself is left verbatim."
     }
   ]
 }
