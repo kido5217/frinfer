@@ -1,0 +1,1686 @@
+{
+  "source": "docs/research/chat-parsing-oracle.md §6 (36 vectors, transcribed verbatim) + PR Neroued/ninfer#309 tests (head 713045812a5bb861b089d4c430c4a03bdbd526df, tests-only extraction) + the wrapper-less vector from issue #35.",
+  "family": "qwen3_5_froggeric_xml",
+  "tools": [
+    {
+      "type": "function",
+      "function": {
+        "name": "bash",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "command": {
+              "type": "string"
+            },
+            "description": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "command"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "read",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "filePath": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "filePath"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "get_time",
+        "parameters": {
+          "type": "object",
+          "properties": {}
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "set_count",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "count": {
+              "type": "integer"
+            },
+            "label": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "count"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "toggle",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "enabled"
+          ]
+        }
+      }
+    }
+  ],
+  "vectors": [
+    {
+      "id": "reasoning-plain-close-then-content",
+      "thinking": true,
+      "tools": [
+        "bash"
+      ],
+      "rounds": [
+        {
+          "feed": "I need to think.\n",
+          "reasoning": "I need to think.\n",
+          "content": ""
+        },
+        {
+          "feed": "</think>",
+          "reasoning": "I need to think.\n",
+          "content": "",
+          "held": "</think>"
+        },
+        {
+          "feed": "\n\nThe answer is 42.",
+          "reasoning": "I need to think.\n",
+          "content": "The answer is 42."
+        }
+      ],
+      "final": {
+        "reasoning": "I need to think.\n",
+        "content": "The answer is 42.",
+        "tool_calls": []
+      },
+      "basis": [
+        "vllm",
+        "llamacpp",
+        "ninfer_master",
+        "pr309"
+      ],
+      "note": "Whitespace immediately after the close is stripped, not published. llama.cpp also eats the byte after the marker via its PEG space(); NInfer publishes content after stripping leading format whitespace."
+    },
+    {
+      "id": "reasoning-close-implicit-at-tool-call",
+      "thinking": true,
+      "tools": [
+        "bash"
+      ],
+      "rounds": [
+        {
+          "feed": "I need to check.\n\n",
+          "reasoning": "I need to check.\n\n",
+          "content": ""
+        },
+        {
+          "feed": "<tool_call>\n<function=bash>\n<parameter=command>\necho ok\n</parameter>\n</function>\n</tool_call>",
+          "tool_calls": [
+            {
+              "name": "bash",
+              "arguments": {
+                "command": "echo ok"
+              }
+            }
+          ]
+        }
+      ],
+      "final": {
+        "reasoning": "I need to check.\n\n",
+        "content": "",
+        "tool_calls": [
+          {
+            "name": "bash",
+            "arguments": {
+              "command": "echo ok"
+            }
+          }
+        ]
+      },
+      "basis": [
+        "vllm",
+        "llamacpp"
+      ],
+      "diverges": [
+        "ninfer_master(row 2): no implicit close at the tool marker while reasoning is open — the marker and the call stay in reasoning and no call is published; the port takes llama.cpp's `peek(<tool_call>)` rule"
+      ],
+      "note": "Thinking on and the model jumps straight to the call. The port must close reasoning at the marker and route the marker into the tool region (B1)."
+    },
+    {
+      "id": "reasoning-close-implicit-at-turn-end",
+      "thinking": true,
+      "tools": [
+        "bash"
+      ],
+      "rounds": [
+        {
+          "feed": "done thinking</think>",
+          "reasoning": "done thinking",
+          "content": "",
+          "held": "</think>",
+          "terminal": true
+        }
+      ],
+      "final": {
+        "reasoning": "done thinking",
+        "content": "",
+        "tool_calls": []
+      },
+      "basis": [
+        "vllm",
+        "llamacpp",
+        "ninfer_master",
+        "pr309"
+      ],
+      "note": "The marker itself is consumed as the implicit close and is not published."
+    },
+    {
+      "id": "reasoning-unclosed-at-turn-end",
+      "thinking": true,
+      "tools": [
+        "bash"
+      ],
+      "rounds": [
+        {
+          "feed": "thinking without any close",
+          "reasoning": "thinking without any close",
+          "content": "",
+          "terminal": true
+        }
+      ],
+      "final": {
+        "reasoning": "thinking without any close",
+        "content": "",
+        "tool_calls": []
+      },
+      "basis": [
+        "vllm",
+        "llamacpp",
+        "ninfer_master"
+      ]
+    },
+    {
+      "id": "reasoning-quoted-close-followed-by-quote",
+      "thinking": true,
+      "tools": [
+        "bash"
+      ],
+      "rounds": [
+        {
+          "feed": "I compared strings like ",
+          "reasoning": "I compared strings like ",
+          "content": ""
+        },
+        {
+          "feed": "</think>",
+          "reasoning": "I compared strings like ",
+          "content": "",
+          "held": "</think>"
+        },
+        {
+          "feed": "'; then hidden\n",
+          "reasoning": "I compared strings like </think>'; then hidden\n",
+          "content": ""
+        },
+        {
+          "feed": "</think>\n\nreal answer",
+          "reasoning": "I compared strings like </think>'; then hidden\n",
+          "content": "real answer"
+        }
+      ],
+      "final": {
+        "reasoning": "I compared strings like </think>'; then hidden\n",
+        "content": "real answer",
+        "tool_calls": []
+      },
+      "basis": [
+        "pr309"
+      ],
+      "diverges": [
+        "vllm(row 5): closes at the first marker, tail becomes content, second marker dropped",
+        "llamacpp(row 5): closes at the first marker, tail becomes content with the second marker kept"
+      ],
+      "note": "PR #309 test_reasoning_close_requires_boundary, compressed to four rounds."
+    },
+    {
+      "id": "reasoning-close-marker-split-across-rounds",
+      "thinking": true,
+      "tools": [
+        "bash"
+      ],
+      "rounds": [
+        {
+          "feed": "done </thi",
+          "reasoning": "done ",
+          "content": "",
+          "held": "</thi"
+        },
+        {
+          "feed": "nk>\n\nAnswer.",
+          "reasoning": "done ",
+          "content": "Answer."
+        }
+      ],
+      "final": {
+        "reasoning": "done ",
+        "content": "Answer.",
+        "tool_calls": []
+      },
+      "basis": [
+        "vllm",
+        "llamacpp",
+        "ninfer_master",
+        "pr309"
+      ],
+      "note": "The canonical close split across rounds: nothing is published until the marker is unambiguous, then the marker closes and the newline after it is stripped."
+    },
+    {
+      "id": "reasoning-quoted-close-split-across-rounds",
+      "thinking": true,
+      "tools": [
+        "bash"
+      ],
+      "rounds": [
+        {
+          "feed": "check </thi",
+          "reasoning": "check ",
+          "content": "",
+          "held": "</thi"
+        },
+        {
+          "feed": "nk>'",
+          "reasoning": "check </think>'",
+          "content": ""
+        },
+        {
+          "feed": " then the close\n</think>\n\nanswer",
+          "reasoning": "check </think>' then the close\n",
+          "content": "answer"
+        }
+      ],
+      "final": {
+        "reasoning": "check </think>' then the close\n",
+        "content": "answer",
+        "tool_calls": []
+      },
+      "basis": [
+        "pr309"
+      ],
+      "diverges": [
+        "vllm(row 5): closes at the first marker",
+        "llamacpp(row 5): closes at the first marker"
+      ],
+      "note": "After the held marker is completed, the following byte (a quote) decides: it is not a close, so the marker and the byte are published into reasoning. The third round carries the real close."
+    },
+    {
+      "id": "reasoning-quoted-close-followed-by-space",
+      "thinking": true,
+      "tools": [
+        "bash"
+      ],
+      "rounds": [
+        {
+          "feed": "see the tag </think> in the docs\n",
+          "reasoning": "see the tag ",
+          "content": "in the docs\n"
+        },
+        {
+          "feed": "still reasoning?\n",
+          "content": "in the docs\nstill reasoning?\n"
+        }
+      ],
+      "final": {
+        "reasoning": "see the tag ",
+        "content": "in the docs\nstill reasoning?\n",
+        "tool_calls": []
+      },
+      "basis": [
+        "vllm",
+        "llamacpp",
+        "ninfer_master",
+        "pr309"
+      ],
+      "note": "Inherent limit documented by PR #309: a quoted marker followed by real whitespace is locally indistinguishable from a close."
+    },
+    {
+      "id": "reasoning-repeated-think-open-in-output",
+      "thinking": true,
+      "tools": [
+        "bash"
+      ],
+      "rounds": [
+        {
+          "feed": "<think>\nold template repeats start</think>",
+          "reasoning": "\nold template repeats start",
+          "content": ""
+        }
+      ],
+      "final": {
+        "reasoning": "\nold template repeats start",
+        "content": "",
+        "tool_calls": []
+      },
+      "basis": [
+        "vllm",
+        "llamacpp",
+        "ninfer_master"
+      ],
+      "note": "The start marker is consumed; nothing is published for it."
+    },
+    {
+      "id": "reasoning-thinking-disabled-plain",
+      "thinking": false,
+      "tools": [
+        "bash"
+      ],
+      "rounds": [
+        {
+          "feed": "The answer is 42.",
+          "reasoning": "",
+          "content": "The answer is 42."
+        }
+      ],
+      "final": {
+        "reasoning": "",
+        "content": "The answer is 42.",
+        "tool_calls": []
+      },
+      "basis": [
+        "vllm",
+        "llamacpp",
+        "ninfer_master"
+      ]
+    },
+    {
+      "id": "reasoning-thinking-disabled-close-in-content",
+      "thinking": false,
+      "tools": [
+        "bash"
+      ],
+      "rounds": [
+        {
+          "feed": "Use </think> to close the block.",
+          "reasoning": "",
+          "content": "Use </think> to close the block."
+        }
+      ],
+      "final": {
+        "reasoning": "",
+        "content": "Use </think> to close the block.",
+        "tool_calls": []
+      },
+      "basis": [
+        "llamacpp",
+        "ninfer_master"
+      ],
+      "diverges": [
+        "vllm(row 10): drops the duplicate close token from content"
+      ],
+      "note": "Byte exactness wins: the content channel must not delete model bytes."
+    },
+    {
+      "id": "reasoning-close-inside-tool-arg-value",
+      "thinking": false,
+      "tools": [
+        "bash"
+      ],
+      "rounds": [
+        {
+          "feed": "<tool_call>\n<function=bash>\n<parameter=command>\necho </think> ok\n</parameter>\n</function>\n</tool_call>",
+          "tool_calls": [
+            {
+              "name": "bash",
+              "arguments": {
+                "command": "echo </think> ok"
+              }
+            }
+          ]
+        }
+      ],
+      "final": {
+        "reasoning": "",
+        "content": "",
+        "tool_calls": [
+          {
+            "name": "bash",
+            "arguments": {
+              "command": "echo </think> ok"
+            }
+          }
+        ]
+      },
+      "basis": [
+        "vllm",
+        "llamacpp",
+        "ninfer_master"
+      ]
+    },
+    {
+      "id": "tool-call-canonical-single",
+      "thinking": false,
+      "tools": [
+        "bash"
+      ],
+      "rounds": [
+        {
+          "feed": "<tool_call>\n<function=bash>\n<parameter=command>\necho ok\n</parameter>\n</function>\n</tool_call>",
+          "content": "",
+          "tool_calls": [
+            {
+              "name": "bash",
+              "arguments": {
+                "command": "echo ok"
+              }
+            }
+          ]
+        }
+      ],
+      "final": {
+        "reasoning": "",
+        "content": "",
+        "tool_calls": [
+          {
+            "name": "bash",
+            "arguments": {
+              "command": "echo ok"
+            }
+          }
+        ]
+      },
+      "basis": [
+        "vllm",
+        "llamacpp",
+        "ninfer_master"
+      ]
+    },
+    {
+      "id": "tool-call-prose-before-call",
+      "thinking": false,
+      "tools": [
+        "bash"
+      ],
+      "rounds": [
+        {
+          "feed": "Let me list the files.\n\n",
+          "content": "Let me list the files.\n\n"
+        },
+        {
+          "feed": "<tool_call>\n<function=bash>\n<parameter=command>\nls\n</parameter>\n</function>\n</tool_call>",
+          "content": "Let me list the files.\n\n",
+          "tool_calls": [
+            {
+              "name": "bash",
+              "arguments": {
+                "command": "ls"
+              }
+            }
+          ],
+          "held": "<tool_call>\n<function=bash>\n<parameter=command>\nls\n</parameter>\n</function>\n</tool_call>"
+        }
+      ],
+      "final": {
+        "reasoning": "",
+        "content": "Let me list the files.\n\n",
+        "tool_calls": [
+          {
+            "name": "bash",
+            "arguments": {
+              "command": "ls"
+            }
+          }
+        ]
+      },
+      "basis": [
+        "vllm",
+        "llamacpp",
+        "ninfer_master"
+      ],
+      "note": "Bytes from the marker on are held; at terminal the accepted region is consumed and the earlier content is published once."
+    },
+    {
+      "id": "tool-call-multiline-value-and-framing-newlines",
+      "thinking": false,
+      "tools": [
+        "bash"
+      ],
+      "rounds": [
+        {
+          "feed": "<tool_call>\n<function=bash>\n<parameter=command>\nprintf 'a\nb'\n</parameter>\n<parameter=description>\nlist files\n</parameter>\n</function>\n</tool_call>",
+          "tool_calls": [
+            {
+              "name": "bash",
+              "arguments": {
+                "command": "printf 'a\nb'",
+                "description": "list files"
+              }
+            }
+          ]
+        }
+      ],
+      "final": {
+        "reasoning": "",
+        "content": "",
+        "tool_calls": [
+          {
+            "name": "bash",
+            "arguments": {
+              "command": "printf 'a\nb'",
+              "description": "list files"
+            }
+          }
+        ]
+      },
+      "basis": [
+        "vllm",
+        "llamacpp",
+        "ninfer_master"
+      ],
+      "note": "One leading and one trailing newline of each value are the template's framing and are removed; internal newlines survive."
+    },
+    {
+      "id": "tool-call-two-complete-calls",
+      "thinking": false,
+      "tools": [
+        "bash",
+        "get_time"
+      ],
+      "rounds": [
+        {
+          "feed": "<tool_call>\n<function=bash>\n<parameter=command>\nls\n</parameter>\n</function>\n</tool_call>\n<tool_call>\n<function=get_time>\n</function>\n</tool_call>",
+          "tool_calls": [
+            {
+              "name": "bash",
+              "arguments": {
+                "command": "ls"
+              }
+            },
+            {
+              "name": "get_time",
+              "arguments": {}
+            }
+          ]
+        }
+      ],
+      "final": {
+        "reasoning": "",
+        "content": "",
+        "tool_calls": [
+          {
+            "name": "bash",
+            "arguments": {
+              "command": "ls"
+            }
+          },
+          {
+            "name": "get_time",
+            "arguments": {}
+          }
+        ]
+      },
+      "basis": [
+        "vllm",
+        "ninfer_master",
+        "llamacpp(row 14) only with parallel_tool_calls=true"
+      ],
+      "note": "Declared by the froggeric instructions (separate closed blocks); NInfer always accepts multiple calls in one turn."
+    },
+    {
+      "id": "tool-call-consecutive-without-tool-close",
+      "thinking": false,
+      "tools": [
+        "bash",
+        "get_time"
+      ],
+      "rounds": [
+        {
+          "feed": "<tool_call>\n<function=bash>\n<parameter=command>\nls\n</parameter>\n</function>\n<tool_call>\n<function=get_time>\n</function>\n</tool_call>",
+          "tool_calls": [
+            {
+              "name": "bash",
+              "arguments": {
+                "command": "ls"
+              }
+            },
+            {
+              "name": "get_time",
+              "arguments": {}
+            }
+          ]
+        }
+      ],
+      "final": {
+        "reasoning": "",
+        "content": "",
+        "tool_calls": [
+          {
+            "name": "bash",
+            "arguments": {
+              "command": "ls"
+            }
+          },
+          {
+            "name": "get_time",
+            "arguments": {}
+          }
+        ]
+      },
+      "basis": [
+        "vllm(row 15)"
+      ],
+      "diverges": [
+        "llamacpp(row 15): requires </tool_call>, drops the tail",
+        "ninfer_master(row 15): TrailingContent fallback"
+      ],
+      "note": "Tolerance chosen with vLLM: a missing close between two calls loses the whole turn otherwise. Implementations may keep master's stricter rule if the port's grammar makes tolerance expensive; then this vector moves to the rejected set."
+    },
+    {
+      "id": "tool-call-empty-arguments",
+      "thinking": false,
+      "tools": [
+        "get_time"
+      ],
+      "rounds": [
+        {
+          "feed": "<tool_call>\n<function=get_time>\n</function>\n</tool_call>",
+          "tool_calls": [
+            {
+              "name": "get_time",
+              "arguments": {}
+            }
+          ]
+        }
+      ],
+      "final": {
+        "reasoning": "",
+        "content": "",
+        "tool_calls": [
+          {
+            "name": "get_time",
+            "arguments": {}
+          }
+        ]
+      },
+      "basis": [
+        "vllm",
+        "llamacpp",
+        "ninfer_master"
+      ]
+    },
+    {
+      "id": "tool-call-arg-order-any",
+      "thinking": false,
+      "tools": [
+        "bash"
+      ],
+      "rounds": [
+        {
+          "feed": "<tool_call>\n<function=bash>\n<parameter=description>\nlist files\n</parameter>\n<parameter=command>\nls\n</parameter>\n</function>\n</tool_call>",
+          "tool_calls": [
+            {
+              "name": "bash",
+              "arguments": {
+                "description": "list files",
+                "command": "ls"
+              }
+            }
+          ]
+        }
+      ],
+      "final": {
+        "reasoning": "",
+        "content": "",
+        "tool_calls": [
+          {
+            "name": "bash",
+            "arguments": {
+              "description": "list files",
+              "command": "ls"
+            }
+          }
+        ]
+      },
+      "basis": [
+        "vllm",
+        "ninfer_master"
+      ],
+      "diverges": [
+        "llamacpp(row 17): optional args must follow all required args"
+      ],
+      "note": "Argument order in the emitted JSON follows the model's order."
+    },
+    {
+      "id": "tool-call-value-json-looking-string",
+      "thinking": false,
+      "tools": [
+        "bash"
+      ],
+      "rounds": [
+        {
+          "feed": "<tool_call>\n<function=bash>\n<parameter=command>\n{\"nested\": 1}\n</parameter>\n</function>\n</tool_call>",
+          "tool_calls": [
+            {
+              "name": "bash",
+              "arguments": {
+                "command": "{\"nested\": 1}"
+              }
+            }
+          ]
+        }
+      ],
+      "final": {
+        "reasoning": "",
+        "content": "",
+        "tool_calls": [
+          {
+            "name": "bash",
+            "arguments": {
+              "command": "{\"nested\": 1}"
+            }
+          }
+        ]
+      },
+      "basis": [
+        "vllm(row 18, no schema)",
+        "llamacpp(row 18, string-typed)",
+        "ninfer_master(row 18, declared string)"
+      ],
+      "note": "A declared string parameter keeps the text as a JSON string even when it looks like JSON."
+    },
+    {
+      "id": "tool-call-typed-values",
+      "thinking": false,
+      "tools": [
+        "set_count",
+        "toggle"
+      ],
+      "rounds": [
+        {
+          "feed": "<tool_call>\n<function=set_count>\n<parameter=count>\n42\n</parameter>\n</function>\n</tool_call>\n",
+          "content": "",
+          "held": "<tool_call>\n<function=set_count>\n<parameter=count>\n42\n</parameter>\n</function>\n</tool_call>\n"
+        },
+        {
+          "feed": "<tool_call>\n<function=toggle>\n<parameter=enabled>\ntrue\n</parameter>\n</function>\n</tool_call>",
+          "tool_calls": [
+            {
+              "name": "set_count",
+              "arguments": {
+                "count": 42
+              }
+            },
+            {
+              "name": "toggle",
+              "arguments": {
+                "enabled": true
+              }
+            }
+          ]
+        }
+      ],
+      "final": {
+        "reasoning": "",
+        "content": "",
+        "tool_calls": [
+          {
+            "name": "set_count",
+            "arguments": {
+              "count": 42
+            }
+          },
+          {
+            "name": "toggle",
+            "arguments": {
+              "enabled": true
+            }
+          }
+        ]
+      },
+      "basis": [
+        "llamacpp",
+        "ninfer_master",
+        "vllm(with tool schemas)"
+      ],
+      "diverges": [
+        "vllm(row 19, without schemas): every value stays a string"
+      ],
+      "note": "Both calls in one response tests the region sequence as well. Calls are published at terminal only, so the first round publishes nothing."
+    },
+    {
+      "id": "tool-call-required-arg-missing",
+      "thinking": false,
+      "tools": [
+        "bash"
+      ],
+      "rounds": [
+        {
+          "feed": "<tool_call>\n<function=bash>\n<parameter=description>\nlist files\n</parameter>\n</function>\n</tool_call>",
+          "tool_calls": [
+            {
+              "name": "bash",
+              "arguments": {
+                "description": "list files"
+              }
+            }
+          ]
+        }
+      ],
+      "final": {
+        "reasoning": "",
+        "content": "",
+        "tool_calls": [
+          {
+            "name": "bash",
+            "arguments": {
+              "description": "list files"
+            }
+          }
+        ]
+      },
+      "basis": [
+        "vllm",
+        "ninfer_master"
+      ],
+      "diverges": [
+        "llamacpp(row 16b): required arguments are part of the grammar, the whole turn is dropped"
+      ],
+      "note": "Fail-open: the call is dispatchable and the client validates its arguments; dropping the turn loses the model's intent. Required-argument validation is a serving-layer concern, not a representability one."
+    },
+    {
+      "id": "tool-call-duplicate-parameter",
+      "thinking": false,
+      "tools": [
+        "bash"
+      ],
+      "rounds": [
+        {
+          "feed": "<tool_call>\n<function=bash>\n<parameter=command>\nls\n</parameter>\n<parameter=command>\nrm -rf /\n</parameter>\n</function>\n</tool_call>",
+          "content": "<tool_call>\n<function=bash>\n<parameter=command>\nls\n</parameter>\n<parameter=command>\nrm -rf /\n</parameter>\n</function>\n</tool_call>"
+        }
+      ],
+      "final": {
+        "reasoning": "",
+        "content": "<tool_call>\n<function=bash>\n<parameter=command>\nls\n</parameter>\n<parameter=command>\nrm -rf /\n</parameter>\n</function>\n</tool_call>",
+        "tool_calls": [],
+        "diagnostics": {
+          "fallback_reason": "DuplicateParameter"
+        }
+      },
+      "basis": [
+        "ninfer_master"
+      ],
+      "diverges": [
+        "vllm(row 20): last value wins",
+        "llamacpp(row 20): a repeated required argument drops the turn; a repeated optional argument is accepted and emits duplicate JSON keys"
+      ],
+      "note": "Rejecting the region is the fail-closed choice for a conflicting argument."
+    },
+    {
+      "id": "tool-call-nested-parameter-balanced",
+      "thinking": false,
+      "tools": [
+        "bash"
+      ],
+      "rounds": [
+        {
+          "feed": "<tool_call>\n<function=bash>\n<parameter=command>\nprintf '<parameter=x>y</parameter>'\n</parameter>\n</function>\n</tool_call>",
+          "tool_calls": [
+            {
+              "name": "bash",
+              "arguments": {
+                "command": "printf '<parameter=x>y</parameter>'"
+              }
+            }
+          ]
+        }
+      ],
+      "final": {
+        "reasoning": "",
+        "content": "",
+        "tool_calls": [
+          {
+            "name": "bash",
+            "arguments": {
+              "command": "printf '<parameter=x>y</parameter>'"
+            }
+          }
+        ]
+      },
+      "basis": [
+        "ninfer_master(docs/serving.md)",
+        "llamacpp(when the nested close is not newline-framed)"
+      ],
+      "diverges": [
+        "vllm(row 21): the nested opener is treated as an implicit end of the previous value"
+      ],
+      "note": "Balanced nested markup stays inside the value. The region is only unrepresentable when the nesting does not balance."
+    },
+    {
+      "id": "tool-call-nested-parameter-newline-framed",
+      "thinking": false,
+      "tools": [
+        "bash"
+      ],
+      "rounds": [
+        {
+          "feed": "<tool_call>\n<function=bash>\n<parameter=command>\nprintf '<parameter=x>\ny\n</parameter>\n'\n</parameter>\n</function>\n</tool_call>",
+          "tool_calls": [
+            {
+              "name": "bash",
+              "arguments": {
+                "command": "printf '<parameter=x>\ny\n</parameter>'"
+              }
+            }
+          ]
+        }
+      ],
+      "final": {
+        "reasoning": "",
+        "content": "",
+        "tool_calls": [
+          {
+            "name": "bash",
+            "arguments": {
+              "command": "printf '<parameter=x>\ny\n</parameter>'"
+            }
+          }
+        ]
+      },
+      "basis": [
+        "ninfer_master(docs/serving.md)"
+      ],
+      "diverges": [
+        "llamacpp(row 21): the newline-framed nested close ends the value and the turn fails",
+        "vllm(row 21): re-split"
+      ],
+      "note": "The nested close is written with the wire framing (newline on both sides); balance tracking is what keeps it inside the value."
+    },
+    {
+      "id": "tool-call-unmatched-nested-parameter",
+      "thinking": false,
+      "tools": [
+        "bash"
+      ],
+      "rounds": [
+        {
+          "feed": "<tool_call>\n<function=bash>\n<parameter=command>\nprintf 'x<parameter=y'\n</parameter>\n</function>\n</tool_call>",
+          "content": "<tool_call>\n<function=bash>\n<parameter=command>\nprintf 'x<parameter=y'\n</parameter>\n</function>\n</tool_call>"
+        }
+      ],
+      "final": {
+        "reasoning": "",
+        "content": "<tool_call>\n<function=bash>\n<parameter=command>\nprintf 'x<parameter=y'\n</parameter>\n</function>\n</tool_call>",
+        "tool_calls": [],
+        "diagnostics": {
+          "fallback_reason": "MalformedStructure"
+        }
+      },
+      "basis": [
+        "ninfer_master(docs/serving.md)",
+        "pr309(scoping)"
+      ],
+      "diverges": [
+        "vllm(row 22): value bytes may absorb the text",
+        "llamacpp(row 22): drops the tail"
+      ]
+    },
+    {
+      "id": "tool-call-standalone-parameter-close",
+      "thinking": false,
+      "tools": [
+        "bash"
+      ],
+      "rounds": [
+        {
+          "feed": "<tool_call>\n<function=bash>\n<parameter=command>\necho </parameter> extra\n</parameter>\n</function>\n</tool_call>",
+          "content": "<tool_call>\n<function=bash>\n<parameter=command>\necho </parameter> extra\n</parameter>\n</function>\n</tool_call>"
+        }
+      ],
+      "final": {
+        "reasoning": "",
+        "content": "<tool_call>\n<function=bash>\n<parameter=command>\necho </parameter> extra\n</parameter>\n</function>\n</tool_call>",
+        "tool_calls": [],
+        "diagnostics": {
+          "fallback_reason": "MalformedStructure"
+        }
+      },
+      "basis": [
+        "ninfer_master(docs/serving.md)",
+        "pr309(scoping)"
+      ],
+      "note": "A standalone </parameter> unbalances the value; per PR #309 this only demotes the region, later candidates are still examined."
+    },
+    {
+      "id": "tool-call-quoted-marker-before-real-call",
+      "thinking": false,
+      "tools": [
+        "bash"
+      ],
+      "note": "The quoted candidate is rejected on structure; the search then finds the real call. The first candidate's failure reason is not pinned (MalformedStructure when the structural check runs first, UndeclaredTool when the declared-name policy runs first — the order is an implementation decision for #34).",
+      "rounds": [
+        {
+          "feed": "The failure looked like <tool_call>\\n<function=shell>\\n<function=command>\\nbroken\\n</parameter>\\n</function>\\n</tool_call>\nThen the real call:\n<tool_call>\n<function=bash>\n<parameter=command>\necho ok\n</parameter>\n</function>\n</tool_call>",
+          "content": "The failure looked like <tool_call>\\n<function=shell>\\n<function=command>\\nbroken\\n</parameter>\\n</function>\\n</tool_call>\nThen the real call:",
+          "tool_calls": [
+            {
+              "name": "bash",
+              "arguments": {
+                "command": "echo ok"
+              }
+            }
+          ]
+        }
+      ],
+      "final": {
+        "reasoning": "",
+        "content": "The failure looked like <tool_call>\\n<function=shell>\\n<function=command>\\nbroken\\n</parameter>\\n</function>\\n</tool_call>\nThen the real call:",
+        "tool_calls": [
+          {
+            "name": "bash",
+            "arguments": {
+              "command": "echo ok"
+            }
+          }
+        ],
+        "diagnostics": {
+          "structured_call_count": 1,
+          "marker_seen": true
+        }
+      },
+      "basis": [
+        "pr309"
+      ],
+      "diverges": [
+        "vllm(row 23): swallows the rest of the turn after the first marker",
+        "llamacpp(row 23): drops the rest of the turn"
+      ]
+    },
+    {
+      "id": "tool-call-quoted-marker-real-newlines",
+      "thinking": false,
+      "tools": [
+        "bash"
+      ],
+      "rounds": [
+        {
+          "feed": "The failure looked like <tool_call>\n<function=shell>\n<function=command>\nbroken\n</parameter>\n</function>\n</tool_call>\nThen the real call:\n<tool_call>\n<function=bash>\n<parameter=command>\necho ok\n</parameter>\n</function>\n</tool_call>",
+          "content": "The failure looked like <tool_call>\n<function=shell>\n<function=command>\nbroken\n</parameter>\n</function>\n</tool_call>\nThen the real call:",
+          "tool_calls": [
+            {
+              "name": "bash",
+              "arguments": {
+                "command": "echo ok"
+              }
+            }
+          ]
+        }
+      ],
+      "final": {
+        "reasoning": "",
+        "content": "The failure looked like <tool_call>\n<function=shell>\n<function=command>\nbroken\n</parameter>\n</function>\n</tool_call>\nThen the real call:",
+        "tool_calls": [
+          {
+            "name": "bash",
+            "arguments": {
+              "command": "echo ok"
+            }
+          }
+        ],
+        "diagnostics": {
+          "structured_call_count": 1,
+          "marker_seen": true
+        }
+      },
+      "basis": [
+        "pr309"
+      ],
+      "diverges": [
+        "vllm(row 23): swallows the rest of the turn after the first marker",
+        "llamacpp(row 23): drops the rest of the turn"
+      ]
+    },
+    {
+      "id": "tool-call-later-candidate-must-consume-the-end",
+      "thinking": false,
+      "tools": [
+        "bash"
+      ],
+      "rounds": [
+        {
+          "feed": "<tool_call>\\n<function=shell>\\n<function=command>\\nbroken\\n</parameter>\\n</function>\\n</tool_call>\n<tool_call>\n<function=bash>\n<parameter=command>\necho ok\n</parameter>\n</function>\n</tool_call>\nstill explaining",
+          "content": "<tool_call>\\n<function=shell>\\n<function=command>\\nbroken\\n</parameter>\\n</function>\\n</tool_call>\n<tool_call>\n<function=bash>\n<parameter=command>\necho ok\n</parameter>\n</function>\n</tool_call>\nstill explaining"
+        }
+      ],
+      "final": {
+        "reasoning": "",
+        "content": "<tool_call>\\n<function=shell>\\n<function=command>\\nbroken\\n</parameter>\\n</function>\\n</tool_call>\n<tool_call>\n<function=bash>\n<parameter=command>\necho ok\n</parameter>\n</function>\n</tool_call>\nstill explaining",
+        "tool_calls": [],
+        "diagnostics": {
+          "fallback_reason": "MalformedStructure",
+          "marker_seen": true
+        }
+      },
+      "basis": [
+        "pr309"
+      ],
+      "diverges": [
+        "vllm(row 24): swallow",
+        "llamacpp(row 24): drop tail"
+      ],
+      "note": "PR #309 test_later_candidate_must_consume_the_end. A well-formed call followed by prose is not a structured turn: the response stays content (all-or-nothing). PR #309 asserts MalformedStructure here; see §7 item 6 on the recorded first-failure reason."
+    },
+    {
+      "id": "tool-call-marker-split-across-rounds",
+      "thinking": false,
+      "tools": [
+        "bash"
+      ],
+      "rounds": [
+        {
+          "feed": "calling now ",
+          "content": "calling now "
+        },
+        {
+          "feed": "<tool_c",
+          "content": "calling now ",
+          "held": "<tool_c"
+        },
+        {
+          "feed": "all>\n<function=bash>\n<parameter=command>\nls\n</parameter>\n</function>\n</tool_call>",
+          "content": "calling now ",
+          "tool_calls": [
+            {
+              "name": "bash",
+              "arguments": {
+                "command": "ls"
+              }
+            }
+          ]
+        }
+      ],
+      "final": {
+        "reasoning": "",
+        "content": "calling now ",
+        "tool_calls": [
+          {
+            "name": "bash",
+            "arguments": {
+              "command": "ls"
+            }
+          }
+        ]
+      },
+      "basis": [
+        "vllm",
+        "llamacpp",
+        "ninfer_master"
+      ],
+      "note": "The partial marker must never be published as content; trailing whitespace before the marker is withheld with it and re-emitted only if the region is demoted."
+    },
+    {
+      "id": "tool-call-marker-quoted-without-call",
+      "thinking": true,
+      "tools": [
+        "bash"
+      ],
+      "rounds": [
+        {
+          "feed": "The user said ",
+          "reasoning": "The user said ",
+          "content": ""
+        },
+        {
+          "feed": "<tool_call>",
+          "reasoning": "The user said ",
+          "content": "",
+          "held": "<tool_call>"
+        },
+        {
+          "feed": " is the marker.\nI will not call it.\n</think>\n\nAnswer.",
+          "reasoning": "The user said ",
+          "content": "<tool_call> is the marker.\nI will not call it.\n</think>\n\nAnswer."
+        }
+      ],
+      "final": {
+        "reasoning": "The user said ",
+        "content": "<tool_call> is the marker.\nI will not call it.\n</think>\n\nAnswer.",
+        "tool_calls": [],
+        "diagnostics": {
+          "marker_seen": true,
+          "fallback_reason": "MalformedStructure"
+        }
+      },
+      "basis": [
+        "pr309(rule extrapolated to a reasoning-open input)"
+      ],
+      "diverges": [
+        "vllm(row 26): drops the rest of the turn",
+        "llamacpp(row 26): drops the rest of the turn",
+        "ninfer_master(row 2 and 26): no implicit close while reasoning is open, so the marker and tail stay reasoning and the content channel never starts"
+      ],
+      "note": "The <tool_call> inside reasoning is the implicit reasoning end (row 2), then the candidate region fails to parse, so at terminal the whole region (marker included) is flushed as content: no byte is lost. The </think> inside the flushed region is ordinary content (R6) — the reasoning channel already closed at the tool marker."
+    },
+    {
+      "id": "tool-call-undeclared-parameter",
+      "thinking": false,
+      "tools": [
+        "bash"
+      ],
+      "rounds": [
+        {
+          "feed": "<tool_call>\n<function=bash>\n<parameter=command>\nls\n</parameter>\n<parameter=bogus>\nx\n</parameter>\n</function>\n</tool_call>",
+          "tool_calls": [
+            {
+              "name": "bash",
+              "arguments": {
+                "command": "ls",
+                "bogus": "x"
+              }
+            }
+          ]
+        }
+      ],
+      "final": {
+        "reasoning": "",
+        "content": "",
+        "tool_calls": [
+          {
+            "name": "bash",
+            "arguments": {
+              "command": "ls",
+              "bogus": "x"
+            }
+          }
+        ],
+        "diagnostics": {
+          "schema_mismatch_arguments": 1
+        }
+      },
+      "basis": [
+        "vllm",
+        "ninfer_master"
+      ],
+      "diverges": [
+        "llamacpp(row 27): drops the tail"
+      ],
+      "note": "The call is served; the undeclared argument is recorded as a schema-mismatch diagnostic."
+    },
+    {
+      "id": "tool-call-undeclared-tool-name",
+      "thinking": false,
+      "tools": [
+        "bash"
+      ],
+      "rounds": [
+        {
+          "feed": "<tool_call>\n<function=nonexistent_tool>\n<parameter=x>\n1\n</parameter>\n</function>\n</tool_call>",
+          "content": "<tool_call>\n<function=nonexistent_tool>\n<parameter=x>\n1\n</parameter>\n</function>\n</tool_call>"
+        }
+      ],
+      "final": {
+        "reasoning": "",
+        "content": "<tool_call>\n<function=nonexistent_tool>\n<parameter=x>\n1\n</parameter>\n</function>\n</tool_call>",
+        "tool_calls": [],
+        "diagnostics": {
+          "fallback_reason": "UndeclaredTool"
+        }
+      },
+      "basis": [
+        "ninfer_master"
+      ],
+      "diverges": [
+        "vllm(row 28): accepts any name",
+        "llamacpp(row 28): drops the tail"
+      ],
+      "note": "Serving policy: names must come from the request's tool list; the failure is visible as content plus a diagnostic."
+    },
+    {
+      "id": "tool-call-name-invalid-characters",
+      "thinking": false,
+      "tools": [
+        "bash"
+      ],
+      "rounds": [
+        {
+          "feed": "<tool_call>\n<function=ba sh>\n<parameter=x>\n1\n</parameter>\n</function>\n</tool_call>",
+          "content": "<tool_call>\n<function=ba sh>\n<parameter=x>\n1\n</parameter>\n</function>\n</tool_call>"
+        }
+      ],
+      "final": {
+        "reasoning": "",
+        "content": "<tool_call>\n<function=ba sh>\n<parameter=x>\n1\n</parameter>\n</function>\n</tool_call>",
+        "tool_calls": [],
+        "diagnostics": {
+          "fallback_reason": "InvalidToolName"
+        }
+      },
+      "basis": [
+        "ninfer_master"
+      ],
+      "diverges": [
+        "llamacpp: no match for the literal name",
+        "vllm: accepts any text before '>'"
+      ]
+    },
+    {
+      "id": "tool-call-thinking-budget-ignores-quoted-close",
+      "thinking": true,
+      "tools": [],
+      "note": "Frontend control vector, not a parser vector: PR #309 test_thinking_budget_ignores_quoted_close.",
+      "rounds": [
+        {
+          "feed": "x</think>x",
+          "reasoning": "x</think>x",
+          "content": "",
+          "control": "thinking budget still applies (continuation=ApplyTargetControl)"
+        }
+      ],
+      "final": {
+        "reasoning": "x</think>x",
+        "content": "",
+        "tool_calls": []
+      },
+      "basis": [
+        "pr309"
+      ],
+      "diverges": [
+        "ninfer_master(pre-pr309): the marker closes reasoning and suppresses the budget"
+      ]
+    },
+    {
+      "id": "pr309-quoted-marker-before-real-call",
+      "thinking": false,
+      "tools": [
+        "bash"
+      ],
+      "note": "PR #309 test_quoted_marker_before_real_call, tests-only extraction. The quoted region carries the observed live shape: escaped newlines and a mistyped <function=command>.",
+      "rounds": [
+        {
+          "feed": "explaining <tool_call>\\n<function=shell>\\n<function=command>\\nprintf broken\\n</parameter>\\n</function>\\n</tool_call> then the real turn\n<tool_call>\n<function=bash>\n<parameter=command>\necho ok\n</parameter>\n</function>\n</tool_call>",
+          "content": "explaining <tool_call>\\n<function=shell>\\n<function=command>\\nprintf broken\\n</parameter>\\n</function>\\n</tool_call> then the real turn",
+          "tool_calls": [
+            {
+              "name": "bash",
+              "arguments": {
+                "command": "echo ok"
+              }
+            }
+          ]
+        }
+      ],
+      "final": {
+        "reasoning": "",
+        "content": "explaining <tool_call>\\n<function=shell>\\n<function=command>\\nprintf broken\\n</parameter>\\n</function>\\n</tool_call> then the real turn",
+        "tool_calls": [
+          {
+            "name": "bash",
+            "arguments": {
+              "command": "echo ok"
+            }
+          }
+        ],
+        "diagnostics": {
+          "structured_call_count": 1,
+          "marker_seen": true
+        }
+      },
+      "basis": [
+        "pr309"
+      ]
+    },
+    {
+      "id": "pr309-later-candidate-must-consume-the-end",
+      "thinking": false,
+      "tools": [
+        "bash"
+      ],
+      "note": "PR #309 test_later_candidate_must_consume_the_end, tests-only extraction. The first candidate is the escaped quoted region (structurally malformed); the real call that follows is followed by prose, so it does not consume the response to its end.",
+      "rounds": [
+        {
+          "feed": "<tool_call>\\n<function=shell>\\n<parameter=command>\\nbroken\\n</parameter>\\n</function>\\n</tool_call>\n<tool_call>\n<function=bash>\n<parameter=command>\necho ok\n</parameter>\n</function>\n</tool_call>\nstill explaining",
+          "content": "<tool_call>\\n<function=shell>\\n<parameter=command>\\nbroken\\n</parameter>\\n</function>\\n</tool_call>\n<tool_call>\n<function=bash>\n<parameter=command>\necho ok\n</parameter>\n</function>\n</tool_call>\nstill explaining",
+          "tool_calls": []
+        }
+      ],
+      "final": {
+        "reasoning": "",
+        "content": "<tool_call>\\n<function=shell>\\n<parameter=command>\\nbroken\\n</parameter>\\n</function>\\n</tool_call>\n<tool_call>\n<function=bash>\n<parameter=command>\necho ok\n</parameter>\n</function>\n</tool_call>\nstill explaining",
+        "tool_calls": [],
+        "diagnostics": {
+          "fallback_reason": "MalformedStructure",
+          "marker_seen": true
+        }
+      },
+      "basis": [
+        "pr309"
+      ]
+    },
+    {
+      "id": "pr309-incremental-quoted-marker-preserves-bytes",
+      "thinking": false,
+      "tools": [
+        "bash"
+      ],
+      "note": "PR #309 test_incremental_quoted_marker_preserves_bytes, tests-only extraction: the (A) text fed in 5-byte rounds. Per-round channel values are not pinned here; the terminal state must keep every content byte exactly once.",
+      "rounds": [
+        {
+          "feed": "expla"
+        },
+        {
+          "feed": "ining"
+        },
+        {
+          "feed": " <too"
+        },
+        {
+          "feed": "l_cal"
+        },
+        {
+          "feed": "l>\\n<"
+        },
+        {
+          "feed": "funct"
+        },
+        {
+          "feed": "ion=s"
+        },
+        {
+          "feed": "hell>"
+        },
+        {
+          "feed": "\\n<fu"
+        },
+        {
+          "feed": "nctio"
+        },
+        {
+          "feed": "n=com"
+        },
+        {
+          "feed": "mand>"
+        },
+        {
+          "feed": "\\npri"
+        },
+        {
+          "feed": "ntf b"
+        },
+        {
+          "feed": "roken"
+        },
+        {
+          "feed": "\\n</p"
+        },
+        {
+          "feed": "arame"
+        },
+        {
+          "feed": "ter>\\"
+        },
+        {
+          "feed": "n</fu"
+        },
+        {
+          "feed": "nctio"
+        },
+        {
+          "feed": "n>\\n<"
+        },
+        {
+          "feed": "/tool"
+        },
+        {
+          "feed": "_call"
+        },
+        {
+          "feed": "> the"
+        },
+        {
+          "feed": "n the"
+        },
+        {
+          "feed": " real"
+        },
+        {
+          "feed": " turn"
+        },
+        {
+          "feed": "\n<too"
+        },
+        {
+          "feed": "l_cal"
+        },
+        {
+          "feed": "l>\n<f"
+        },
+        {
+          "feed": "uncti"
+        },
+        {
+          "feed": "on=ba"
+        },
+        {
+          "feed": "sh>\n<"
+        },
+        {
+          "feed": "param"
+        },
+        {
+          "feed": "eter="
+        },
+        {
+          "feed": "comma"
+        },
+        {
+          "feed": "nd>\ne"
+        },
+        {
+          "feed": "cho o"
+        },
+        {
+          "feed": "k\n</p"
+        },
+        {
+          "feed": "arame"
+        },
+        {
+          "feed": "ter>\n"
+        },
+        {
+          "feed": "</fun"
+        },
+        {
+          "feed": "ction"
+        },
+        {
+          "feed": ">\n</t"
+        },
+        {
+          "feed": "ool_c"
+        },
+        {
+          "feed": "all>"
+        }
+      ],
+      "final": {
+        "reasoning": "",
+        "content": "explaining <tool_call>\\n<function=shell>\\n<function=command>\\nprintf broken\\n</parameter>\\n</function>\\n</tool_call> then the real turn",
+        "tool_calls": [
+          {
+            "name": "bash",
+            "arguments": {
+              "command": "echo ok"
+            }
+          }
+        ],
+        "diagnostics": {
+          "marker_seen": true,
+          "structured_call_count": 1,
+          "fallback_reason": "None"
+        }
+      },
+      "basis": [
+        "pr309"
+      ]
+    },
+    {
+      "id": "tool-call-wrapper-less-function-is-content",
+      "thinking": false,
+      "tools": [
+        "bash"
+      ],
+      "note": "Added from the map #25 decision (issue #35 point 3): a wrapper-less <function=...> outside <tool_call> is content (llama.cpp/froggeric); vLLM's tolerance is deliberately not ported.",
+      "rounds": [
+        {
+          "feed": "<function=bash>\n<parameter=command>\necho ok\n</parameter>\n</function>",
+          "content": "<function=bash>\n<parameter=command>\necho ok\n</parameter>\n</function>",
+          "tool_calls": []
+        }
+      ],
+      "final": {
+        "reasoning": "",
+        "content": "<function=bash>\n<parameter=command>\necho ok\n</parameter>\n</function>",
+        "tool_calls": []
+      },
+      "basis": [
+        "llamacpp"
+      ],
+      "diverges": [
+        "vllm(row 7 in the oracle's §7): accepts <function=...> without <tool_call>"
+      ]
+    }
+  ],
+  "corrections": [
+    {
+      "vector": "tool-call-nested-parameter-newline-framed",
+      "tool_call": 0,
+      "argument": "command",
+      "oracle_value": "printf '<parameter=x>\ny\n</parameter>'",
+      "corrected_value": "printf '<parameter=x>\ny\n</parameter>\n'",
+      "reason": "B4 removes exactly one leading and one trailing newline from the balanced value region (the template wraps every value). The oracle value additionally drops the newline that immediately follows the nested </parameter>, which no faithful reading of B4 or of the cited basis produces: the bespoke parser at the port baseline, run on the same feed, yields {\"command\":\"printf '<parameter=x>\\ny\\n</parameter>\\n'\"}. Recorded as a corpus defect; the vector itself is left verbatim."
+    }
+  ]
+}
