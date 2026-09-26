@@ -158,7 +158,9 @@ relabeled as client input errors.
 
 The request `model` must equal the public model ID: the artifact `identity.model_id` by default, or
 the explicit `--model-id` override. Reasoning is returned separately as `reasoning_content`; answer
-text remains in `content`.
+text remains in `content`. A `</think>` splits the two channels only when it is followed by
+whitespace or by the end of the turn, so a marker quoted inside the model's thinking stays in
+`reasoning_content`; a `<tool_call>` seen while thinking closes the reasoning channel first.
 
 Across Chat Completions, Responses, and Anthropic Messages, a direct top-level tool-parameter
 `type`, or an `anyOf`/`oneOf` composed entirely of explicit primitive types, guides conversion of
@@ -174,7 +176,12 @@ properties, perform recursive JSON Schema validation, or use constrained decodin
 String parameters preserve function/tool-call markers and balanced nested
 `<parameter=...>...</parameter>` text as value bytes. The Qwen wire format has no delimiter escape,
 so an unmatched nested parameter opener or a standalone `</parameter>` cannot be represented
-unambiguously; either causes the complete tool-call region to fall back to ordinary content.
+unambiguously; either causes the complete tool-call region to fall back to ordinary content. A
+response may carry several calls in sequence, and a missing `</tool_call>` before the next
+`<tool_call>` is tolerated. NInfer serves the first `<tool_call>` region that parses completely and
+consumes the response to its end; earlier markup and the prose around it stay ordinary content, a
+region without a served candidate stays ordinary content verbatim, and the parse diagnostics report
+the first failure.
 
 Messages enter the selected template in their input order. The maintained Qwen templates keep
 system/developer messages at their original positions.
@@ -205,8 +212,9 @@ because requests can explicitly enable thinking. Anthropic
 Add `--default-thinking-budget 512` to the startup command to cap model-origin thinking at 512
 tokens for every thinking-enabled request.
 
-At the cap boundary, Engine first honors a natural `</think>`, stop condition, cancellation, or
-total output/context limit. If thinking remains open, it commits Qwen's canonical early-close
+At the cap boundary, Engine first honors a natural thinking close (a `</think>` followed by
+whitespace or by the end of the turn), a stop condition, cancellation, or total output/context
+limit. If thinking remains open, it commits Qwen's canonical early-close
 guidance and close marker to the same model sequence without sampling, streams the guidance as a
 reasoning delta, and continues normal content or tool-call generation. Inserted tokens count in
 completion usage and the request's `max_tokens`/`max_output_tokens` budget. If the effective output
