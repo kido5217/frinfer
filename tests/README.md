@@ -166,6 +166,9 @@ python3 -m tools.smoke.serve_contract \
   --base-url http://127.0.0.1:18080 --model qwen3.6-27b
 ```
 
+Any free port works — the server's `--port` and the client's `--base-url` must agree. The server
+default is `8080`; `18080` above is chosen so a resident service can keep the default.
+
 This smoke check is intentionally not a CTest: it needs the real artifact, a supported GPU, and a
 server process that remains alive while the client exercises OpenAI Responses/Chat, Anthropic,
 state, streaming, and multimodal requests.
@@ -181,6 +184,9 @@ python3 tools/smoke/serve_thinking_preservation.py \
 python3 tools/smoke/serve_thinking_preservation.py \
   --artifact out/qwen3_6_35b_a3b.ninfer --backend dflash
 ```
+
+The fixture launches its own server on an automatically chosen free port; pass `--port N` to pin
+a fixed one.
 
 The shared messages are in
 [`fixtures/serve/qwen3_6_thinking_preservation.json`](fixtures/serve/qwen3_6_thinking_preservation.json).
