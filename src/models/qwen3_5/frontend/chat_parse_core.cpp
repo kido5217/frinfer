@@ -729,14 +729,21 @@ ChatParseCore::~ChatParseCore()                                   = default;
 ChatParseCore::ChatParseCore(ChatParseCore&&) noexcept            = default;
 ChatParseCore& ChatParseCore::operator=(ChatParseCore&&) noexcept = default;
 
-ChatParseResult ChatParseCore::preview(std::string_view round_text) {
+void ChatParseCore::warm_up() { (void)region_arena(); }
+
+void ChatParseCore::begin_preview() {
     Impl& impl = *impl_;
     if (impl.committed_.finished) { throw std::logic_error("chat parse core is already terminal"); }
-    impl.preview_                      = impl.committed_;
-    impl.preview_ready_                = true;
+    impl.preview_       = impl.committed_;
+    impl.preview_ready_ = true;
+}
+
+ChatParseResult ChatParseCore::preview_feed(std::string_view text) {
+    Impl& impl = *impl_;
+    if (!impl.preview_ready_) { throw std::logic_error("chat parse core has no active preview"); }
     const std::size_t reasoning_before = impl.preview_.reasoning.size();
     const std::size_t content_before   = impl.preview_.content.size();
-    feed(impl.preview_, impl.context(), round_text);
+    feed(impl.preview_, impl.context(), text);
 
     ChatParseResult result;
     result.reasoning_delta = impl.preview_.reasoning.substr(reasoning_before);
@@ -745,11 +752,10 @@ ChatParseResult ChatParseCore::preview(std::string_view round_text) {
     return result;
 }
 
-ChatParseResult ChatParseCore::preview_terminal() {
+ChatParseResult ChatParseCore::preview_finish() {
     Impl& impl = *impl_;
-    if (impl.committed_.finished) { throw std::logic_error("chat parse core is already terminal"); }
-    impl.preview_                      = impl.committed_;
-    impl.preview_ready_                = true;
+    if (!impl.preview_ready_) { throw std::logic_error("chat parse core has no active preview"); }
+    if (impl.preview_.finished) { return {}; }
     const std::size_t reasoning_before = impl.preview_.reasoning.size();
     const std::size_t content_before   = impl.preview_.content.size();
     terminalize(impl.preview_, impl.context(), impl.contract_.get(),
@@ -762,6 +768,24 @@ ChatParseResult ChatParseCore::preview_terminal() {
     result.tool_calls      = impl.preview_.tool_calls;
     result.diagnostics     = impl.preview_.diagnostics;
     return result;
+}
+
+bool ChatParseCore::preview_in_reasoning() const noexcept {
+    return impl_->preview_ready_ && impl_->preview_.phase == ParseState::Phase::Reasoning;
+}
+
+bool ChatParseCore::in_reasoning() const noexcept {
+    return impl_->committed_.phase == ParseState::Phase::Reasoning;
+}
+
+ChatParseResult ChatParseCore::preview(std::string_view round_text) {
+    begin_preview();
+    return preview_feed(round_text);
+}
+
+ChatParseResult ChatParseCore::preview_terminal() {
+    begin_preview();
+    return preview_finish();
 }
 
 void ChatParseCore::commit() {
@@ -784,6 +808,10 @@ bool ChatParseCore::finished() const noexcept { return impl_->committed_.finishe
 
 const std::vector<GeneratedToolCall>& ChatParseCore::tool_calls() const noexcept {
     return impl_->committed_.tool_calls;
+}
+
+std::vector<GeneratedToolCall> ChatParseCore::take_tool_calls() noexcept {
+    return std::move(impl_->committed_.tool_calls);
 }
 
 ToolCallParseDiagnostics ChatParseCore::diagnostics() const noexcept {
