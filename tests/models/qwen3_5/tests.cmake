@@ -15,6 +15,10 @@ ninfer_add_test(ninfer_qwen3_5_frontend_test
   NEEDS_SOURCE_DIR
   LIBRARIES ninfer_engine ninfer_core ninfer::json)
 
+ninfer_add_test(ninfer_qwen3_5_chat_parse_normalization_test
+  SOURCES "${CMAKE_CURRENT_LIST_DIR}/test_chat_parse_normalization.cpp"
+  LIBRARIES ninfer_chat_parsing ninfer_model_runtime ninfer::json)
+
 ninfer_add_test(ninfer_qwen3_5_chat_parsing_corpus_test
   SOURCES "${CMAKE_CURRENT_LIST_DIR}/test_chat_parsing_corpus.cpp"
   NEEDS_SOURCE_DIR
