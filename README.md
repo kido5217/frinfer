@@ -2,6 +2,12 @@
 
 > Selected checkpoints. Maximum single-GPU inference performance.
 
+This repository is `kido5217/ninfer-yarn`, a fork of
+[Neroued/ninfer](https://github.com/Neroued/ninfer), kept current through regular upstream
+merges. It adds YaRN context extension for `--max-context` beyond a model's native position
+capacity, a llama.cpp-derived chat/tool-call parsing stack, and `ninfer-yarn`-named product
+binaries.
+
 NInfer is a from-scratch C++/CUDA inference engine for Qwen3.5 Dense and MoE architectures on a
 single NVIDIA GeForce RTX 5090. It runs text, image, and video prompts through a local CLI or
 OpenAI-/Anthropic-compatible HTTP APIs. The runtime is deliberately specialized: one GPU, one
@@ -37,8 +43,8 @@ The build rejects CUDA architectures other than `sm_120a`.
 Build the product binaries:
 
 ```bash
-git clone https://github.com/Neroued/ninfer.git
-cd ninfer
+git clone https://github.com/kido5217/ninfer-yarn.git
+cd ninfer-yarn
 
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j
