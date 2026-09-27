@@ -75,6 +75,9 @@ A session-side smart note (`Upstream drift`) surfaces when upstream `master` mov
 recorded synced tip. When it fires, run the procedure above, then re-arm the note with the new
 baseline tip.
 
+Vendored third-party sources carry their own drift notes; for `third_party/llama-chat` see
+[Vendored llama.cpp chat stack](llama-chat-vendor.md).
+
 ## Verification standard
 
 The fork's own qualification applies after every sync: build, op suites, converter tests, and —
