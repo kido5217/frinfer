@@ -61,10 +61,11 @@ and stubbed.
 
 ## Re-vendoring
 
-The baseline above is the authority for this subtree; the drift alert and re-vendor procedure
-are governed by ticket [#30](https://github.com/kido5217/ninfer-yarn/issues/30) (mirroring
-`docs/maintainer/upstream-sync.md`). Do not hand-edit files under `common/`: reconcile upstream
-changes in the compat layer, and keep the file map and adaptation table above current.
+The baseline above is the authority for what is vendored; the re-vendor procedure and its drift
+alert live in
+[`docs/maintainer/llama-chat-vendor.md`](../../docs/maintainer/llama-chat-vendor.md). Do not
+hand-edit files under `common/`: reconcile upstream changes in the compat layer, and keep the
+file map and adaptation table above current.
 
 ## Build and test
 
