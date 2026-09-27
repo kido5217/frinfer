@@ -1544,6 +1544,72 @@ int test_cross_round_stop(const Frontend& frontend) {
     return failures;
 }
 
+int test_stop_inside_withheld_tool_region(const Frontend& frontend) {
+    // A stop string that only occurs inside a tool-call region is not part of the visible model
+    // stream: the region stays withheld while it is open, its bytes never reach the stop matcher,
+    // and the terminal transaction publishes the structured call instead of cutting the turn. The
+    // same stop string in plain content still cuts.
+    ninfer::ChatMessage message;
+    message.role = ninfer::ChatRole::User;
+    message.parts.push_back(
+        ninfer::MessagePart{.kind = ninfer::MessagePartKind::Text, .text = "x", .media = {}});
+    ninfer::PromptInput input;
+    input.messages.push_back(std::move(message));
+    input.options.enable_thinking = false;
+    input.options.tool_jsons.push_back(
+        R"({"type":"function","function":{"name":"bash","parameters":{"type":"object","properties":{"command":{"type":"string"}}}}})");
+    auto prompt = frontend.prepare(std::move(input));
+
+    ninfer::StopPolicy stop;
+    stop.strings.push_back(ninfer::StopString{.text = "STOP"});
+
+    auto session = frontend.make_output_session(prompt, stop);
+    const std::string first_round =
+        "Calling. \n<tool_call>\n<function=bash>\n<parameter=command>\necho STOP";
+    const std::vector<ninfer::TokenId> first_tokens = fixture_tokenizer().encode(first_round);
+    const auto first        = session.preview_model(first_tokens, first_tokens.size() + 2U,
+                                                    ninfer::FinishReason::OutputLimit);
+    int failures            = check(!first.finished(),
+                                    "a stop string inside a withheld tool region ended the turn early");
+    const auto first_output = session.commit_preview();
+    failures += check(channel_text(first_output, ninfer::OutputChannel::Content) == "Calling.",
+                      "a withheld tool region leaked its framing into visible content");
+    failures += check(!session.matched_stop_string(),
+                      "a stop string inside a withheld tool region was matched");
+
+    const std::string second_round                   = "\n</parameter>\n</function>\n</tool_call>";
+    const std::vector<ninfer::TokenId> second_tokens = fixture_tokenizer().encode(second_round);
+    const auto second = session.preview_model(second_tokens, second_tokens.size(),
+                                              ninfer::FinishReason::OutputLimit);
+    failures += check(second.finish_reason == ninfer::FinishReason::OutputLimit,
+                      "a completed tool region did not end at the output limit");
+    const auto second_output                           = session.commit_preview();
+    const std::vector<ninfer::GeneratedToolCall> calls = session.take_tool_calls();
+    failures += check(calls.size() == 1 && calls.front().name == "bash",
+                      "a withheld tool region did not publish its structured call");
+    if (!calls.empty()) {
+        const nlohmann::json arguments = nlohmann::json::parse(calls.front().arguments_json);
+        failures += check(arguments.at("command") == "echo STOP",
+                          "a withheld tool region corrupted the argument bytes");
+    }
+    failures += check(channel_text(second_output, ninfer::OutputChannel::Content).find("STOP") ==
+                          std::string::npos,
+                      "a stop string from inside a tool region leaked into visible content");
+    failures +=
+        check(!session.matched_stop_string(), "the completed tool region reported a stop match");
+
+    auto plain_session                              = frontend.make_output_session(prompt, stop);
+    const std::vector<ninfer::TokenId> plain_tokens = fixture_tokenizer().encode("hello STOP");
+    const auto plain = plain_session.preview_model(plain_tokens, plain_tokens.size(),
+                                                   ninfer::FinishReason::OutputLimit);
+    failures += check(plain.finish_reason == ninfer::FinishReason::StopString,
+                      "a stop string in plain content no longer cuts the turn");
+    const auto plain_output = plain_session.commit_preview();
+    failures += check(channel_text(plain_output, ninfer::OutputChannel::Content) == "hello ",
+                      "a plain-content stop did not cut at the matched byte");
+    return failures;
+}
+
 int test_same_token_stop_priority(const Frontend& frontend) {
     auto prompt = frontend.prepare_tokens({0});
     ninfer::StopPolicy stop;
@@ -2402,6 +2468,7 @@ int main() {
     failures += test_attention_pairs_are_diagnostic(frontend);
     failures += test_video_prepare(frontend);
     failures += test_cross_round_stop(frontend);
+    failures += test_stop_inside_withheld_tool_region(frontend);
     failures += test_same_token_stop_priority(frontend);
     failures += test_terminal_flush(frontend);
     failures += test_structured_tool_output();
