@@ -23,6 +23,7 @@
 #include <future>
 #include <iostream>
 #include <iterator>
+#include <map>
 #include <memory>
 #include <span>
 #include <string>
@@ -1543,6 +1544,72 @@ int test_cross_round_stop(const Frontend& frontend) {
     return failures;
 }
 
+int test_stop_inside_withheld_tool_region(const Frontend& frontend) {
+    // A stop string that only occurs inside a tool-call region is not part of the visible model
+    // stream: the region stays withheld while it is open, its bytes never reach the stop matcher,
+    // and the terminal transaction publishes the structured call instead of cutting the turn. The
+    // same stop string in plain content still cuts.
+    ninfer::ChatMessage message;
+    message.role = ninfer::ChatRole::User;
+    message.parts.push_back(
+        ninfer::MessagePart{.kind = ninfer::MessagePartKind::Text, .text = "x", .media = {}});
+    ninfer::PromptInput input;
+    input.messages.push_back(std::move(message));
+    input.options.enable_thinking = false;
+    input.options.tool_jsons.push_back(
+        R"({"type":"function","function":{"name":"bash","parameters":{"type":"object","properties":{"command":{"type":"string"}}}}})");
+    auto prompt = frontend.prepare(std::move(input));
+
+    ninfer::StopPolicy stop;
+    stop.strings.push_back(ninfer::StopString{.text = "STOP"});
+
+    auto session = frontend.make_output_session(prompt, stop);
+    const std::string first_round =
+        "Calling. \n<tool_call>\n<function=bash>\n<parameter=command>\necho STOP";
+    const std::vector<ninfer::TokenId> first_tokens = fixture_tokenizer().encode(first_round);
+    const auto first        = session.preview_model(first_tokens, first_tokens.size() + 2U,
+                                                    ninfer::FinishReason::OutputLimit);
+    int failures            = check(!first.finished(),
+                                    "a stop string inside a withheld tool region ended the turn early");
+    const auto first_output = session.commit_preview();
+    failures += check(channel_text(first_output, ninfer::OutputChannel::Content) == "Calling.",
+                      "a withheld tool region leaked its framing into visible content");
+    failures += check(!session.matched_stop_string(),
+                      "a stop string inside a withheld tool region was matched");
+
+    const std::string second_round                   = "\n</parameter>\n</function>\n</tool_call>";
+    const std::vector<ninfer::TokenId> second_tokens = fixture_tokenizer().encode(second_round);
+    const auto second = session.preview_model(second_tokens, second_tokens.size(),
+                                              ninfer::FinishReason::OutputLimit);
+    failures += check(second.finish_reason == ninfer::FinishReason::OutputLimit,
+                      "a completed tool region did not end at the output limit");
+    const auto second_output                           = session.commit_preview();
+    const std::vector<ninfer::GeneratedToolCall> calls = session.take_tool_calls();
+    failures += check(calls.size() == 1 && calls.front().name == "bash",
+                      "a withheld tool region did not publish its structured call");
+    if (!calls.empty()) {
+        const nlohmann::json arguments = nlohmann::json::parse(calls.front().arguments_json);
+        failures += check(arguments.at("command") == "echo STOP",
+                          "a withheld tool region corrupted the argument bytes");
+    }
+    failures += check(channel_text(second_output, ninfer::OutputChannel::Content).find("STOP") ==
+                          std::string::npos,
+                      "a stop string from inside a tool region leaked into visible content");
+    failures +=
+        check(!session.matched_stop_string(), "the completed tool region reported a stop match");
+
+    auto plain_session                              = frontend.make_output_session(prompt, stop);
+    const std::vector<ninfer::TokenId> plain_tokens = fixture_tokenizer().encode("hello STOP");
+    const auto plain = plain_session.preview_model(plain_tokens, plain_tokens.size(),
+                                                   ninfer::FinishReason::OutputLimit);
+    failures += check(plain.finish_reason == ninfer::FinishReason::StopString,
+                      "a stop string in plain content no longer cuts the turn");
+    const auto plain_output = plain_session.commit_preview();
+    failures += check(channel_text(plain_output, ninfer::OutputChannel::Content) == "hello ",
+                      "a plain-content stop did not cut at the matched byte");
+    return failures;
+}
+
 int test_same_token_stop_priority(const Frontend& frontend) {
     auto prompt = frontend.prepare_tokens({0});
     ninfer::StopPolicy stop;
@@ -1796,6 +1863,219 @@ int test_thinking_budget_control(const Frontend& frontend) {
     const auto raw_output = raw_session.commit_preview();
     failures += check(channel_text(raw_output, ninfer::OutputChannel::Content) == kThinkingControl,
                       "raw output did not preserve the inserted control representation");
+    return failures;
+}
+
+// Drives the chat-parsing oracle corpus (tests/fixtures/chat_parsing/corpus.json) through the real
+// session seam: prompt with the vector's tools, per-round token license, commit, terminal flush.
+// The corpus pins the parsing core's wire bytes; the session additionally applies the B1 framing
+// rule to its streamed deltas (the format-whitespace run that turns out to precede an accepted
+// tool-call region is trimmed), so a trailing format-whitespace run may still be withheld when a
+// round ends. Reasoning, tool calls and diagnostics are compared exactly; `held` is a core-level
+// observation covered by tests/models/qwen3_5/test_chat_parsing_corpus.cpp.
+int test_chat_parsing_corpus_sessions(const Frontend& frontend) {
+    using ordered_json        = nlohmann::ordered_json;
+    const ordered_json corpus = ordered_json::parse(
+        read_file(NINFER_SOURCE_DIR "/tests/fixtures/chat_parsing/corpus.json"));
+
+    std::map<std::string, ordered_json> tool_definitions;
+    for (const ordered_json& tool : corpus.at("tools")) {
+        tool_definitions.emplace(tool.at("function").at("name").get<std::string>(), tool);
+    }
+    const auto rtrim = [](std::string text) {
+        while (!text.empty() && (text.back() == ' ' || text.back() == '\t' || text.back() == '\r' ||
+                                 text.back() == '\n')) {
+            text.pop_back();
+        }
+        return text;
+    };
+    const auto fallback_reason = [](const std::string& name) {
+        if (name == "MalformedStructure") {
+            return ninfer::ToolCallParseFallbackReason::MalformedStructure;
+        }
+        if (name == "DuplicateParameter") {
+            return ninfer::ToolCallParseFallbackReason::DuplicateParameter;
+        }
+        if (name == "InvalidToolName") {
+            return ninfer::ToolCallParseFallbackReason::InvalidToolName;
+        }
+        if (name == "UndeclaredTool") {
+            return ninfer::ToolCallParseFallbackReason::UndeclaredTool;
+        }
+        if (name == "TrailingContent") {
+            return ninfer::ToolCallParseFallbackReason::TrailingContent;
+        }
+        return ninfer::ToolCallParseFallbackReason::None;
+    };
+
+    int failures         = 0;
+    std::size_t sessions = 0;
+    for (const ordered_json& vector : corpus.at("vectors")) {
+        const std::string id = vector.at("id").get<std::string>();
+        const auto mismatch  = [&](std::string_view what, std::string_view actual,
+                                  std::string_view expected) {
+            std::cerr << "corpus session " << id << ": " << what << " expected=[" << expected
+                      << "] actual=[" << actual << "]\n";
+            return 1;
+        };
+
+        ninfer::ChatMessage message;
+        message.role = ninfer::ChatRole::User;
+        message.parts.push_back(
+            ninfer::MessagePart{.kind = ninfer::MessagePartKind::Text, .text = "x", .media = {}});
+        ninfer::PromptInput input;
+        input.messages.push_back(std::move(message));
+        input.options.enable_thinking = vector.value("thinking", false);
+        for (const ordered_json& name : vector.at("tools")) {
+            const auto tool = tool_definitions.find(name.get<std::string>());
+            if (tool == tool_definitions.end()) {
+                failures += mismatch("tool definition", name.get<std::string>(), "<declared>");
+                continue;
+            }
+            input.options.tool_jsons.push_back(tool->second.dump());
+        }
+        // Control vectors end their round at the thinking-budget cap: license exactly the model
+        // thinking tokens of that round so the session asks for the canonical control span.
+        ninfer::ThinkingControlOptions thinking;
+        for (const ordered_json& round : vector.at("rounds")) {
+            if (round.contains("control")) {
+                thinking.budget = static_cast<std::uint32_t>(
+                    frontend.tokenize_text(round.at("feed").get<std::string>()).size());
+            }
+        }
+
+        auto prompt  = frontend.prepare(std::move(input));
+        auto session = frontend.make_output_session(prompt, {}, {}, thinking);
+        ++sessions;
+
+        std::string reasoning;
+        std::string content;
+        bool control_requested    = false;
+        std::uint32_t budget      = 1U << 20U;
+        const auto check_channels = [&](const ordered_json& expected) {
+            int local = 0;
+            if (expected.contains("reasoning") &&
+                reasoning != expected.at("reasoning").get<std::string>()) {
+                local +=
+                    mismatch("reasoning", reasoning, expected.at("reasoning").get<std::string>());
+            }
+            if (expected.contains("content") &&
+                rtrim(content) != rtrim(expected.at("content").get<std::string>())) {
+                local += mismatch("content", content, expected.at("content").get<std::string>());
+            }
+            return local;
+        };
+
+        const ordered_json& rounds = vector.at("rounds");
+        for (std::size_t round_index = 0; round_index < rounds.size(); ++round_index) {
+            const ordered_json& round = rounds[round_index];
+            const std::vector<ninfer::TokenId> tokens =
+                frontend.tokenize_text(round.at("feed").get<std::string>());
+            for (std::size_t offset = 0; offset < tokens.size();) {
+                const std::uint32_t licensed = session.model_token_budget_remaining(budget);
+                if (licensed == 0) { break; }
+                const std::size_t take = std::min<std::size_t>(tokens.size() - offset, licensed);
+                const auto decision    = session.preview_model(
+                    std::span<const ninfer::TokenId>(tokens).subspan(offset, take), budget,
+                    ninfer::FinishReason::OutputLimit);
+                if (decision.accepted_tokens != take) {
+                    failures +=
+                        mismatch("accepted tokens", std::to_string(decision.accepted_tokens),
+                                 std::to_string(take));
+                }
+                budget -= std::min(budget, decision.accepted_tokens);
+                const PublishedOutput published = session.commit_preview();
+                reasoning += channel_text(published, ninfer::OutputChannel::Reasoning);
+                content += channel_text(published, ninfer::OutputChannel::Content);
+                offset += decision.accepted_tokens;
+                if (decision.continuation ==
+                    ninfer::runtime::ContinuationAction::ApplyTargetControl) {
+                    control_requested = true;
+                    break;
+                }
+                if (decision.accepted_tokens == 0) { break; }
+            }
+            if (round.contains("control") && !control_requested) {
+                failures += mismatch("thinking control", "not requested", "ApplyTargetControl");
+            }
+            // The last round is the end of the turn: its cumulative channels resolve at the
+            // terminal flush below (held regions demote or publish calls there).
+            if (round_index + 1 != rounds.size()) { failures += check_channels(round); }
+        }
+
+        (void)session.preview_terminal(ninfer::FinishReason::Cancelled);
+        const PublishedOutput terminal = session.commit_preview();
+        reasoning += channel_text(terminal, ninfer::OutputChannel::Reasoning);
+        content += channel_text(terminal, ninfer::OutputChannel::Content);
+
+        failures += check_channels(rounds.back());
+        const ordered_json& final = vector.at("final");
+        failures += check_channels(final);
+        const std::vector<ninfer::GeneratedToolCall> calls = session.take_tool_calls();
+        const ordered_json& expected_calls                 = final.at("tool_calls");
+        if (calls.size() != expected_calls.size()) {
+            failures += mismatch("tool call count", std::to_string(calls.size()),
+                                 std::to_string(expected_calls.size()));
+        } else {
+            for (std::size_t index = 0; index < calls.size(); ++index) {
+                const ordered_json& expected = expected_calls[index];
+                if (calls[index].name != expected.at("name").get<std::string>()) {
+                    failures += mismatch("tool name", calls[index].name,
+                                         expected.at("name").get<std::string>());
+                }
+                const ordered_json actual_arguments =
+                    ordered_json::parse(calls[index].arguments_json, nullptr, false);
+                if (actual_arguments.is_discarded() ||
+                    actual_arguments.dump() != expected.at("arguments").dump()) {
+                    failures += mismatch("tool arguments",
+                                         actual_arguments.is_discarded() ? std::string("<invalid>")
+                                                                         : actual_arguments.dump(),
+                                         expected.at("arguments").dump());
+                }
+            }
+        }
+        if (final.contains("diagnostics")) {
+            const ninfer::ToolCallParseDiagnostics diagnostics =
+                session.tool_call_parse_diagnostics();
+            for (const auto& [key, value] : final.at("diagnostics").items()) {
+                if (key == "marker_seen") {
+                    if (diagnostics.marker_seen != value.get<bool>()) {
+                        failures +=
+                            mismatch("marker_seen", diagnostics.marker_seen ? "true" : "false",
+                                     value.get<bool>() ? "true" : "false");
+                    }
+                } else if (key == "structured_call_count") {
+                    if (diagnostics.structured_call_count != value.get<std::uint32_t>()) {
+                        failures += mismatch("structured_call_count",
+                                             std::to_string(diagnostics.structured_call_count),
+                                             value.dump());
+                    }
+                } else if (key == "empty_arguments_omitted") {
+                    if (diagnostics.empty_arguments_omitted != value.get<std::uint32_t>()) {
+                        failures += mismatch("empty_arguments_omitted",
+                                             std::to_string(diagnostics.empty_arguments_omitted),
+                                             value.dump());
+                    }
+                } else if (key == "schema_mismatch_arguments") {
+                    if (diagnostics.schema_mismatch_arguments != value.get<std::uint32_t>()) {
+                        failures += mismatch("schema_mismatch_arguments",
+                                             std::to_string(diagnostics.schema_mismatch_arguments),
+                                             value.dump());
+                    }
+                } else if (key == "fallback_reason") {
+                    if (diagnostics.fallback_reason != fallback_reason(value.get<std::string>())) {
+                        failures += mismatch("fallback_reason",
+                                             ninfer::tool_call_parse_fallback_reason_name(
+                                                 diagnostics.fallback_reason),
+                                             value.get<std::string>());
+                    }
+                }
+            }
+        }
+    }
+    if (failures == 0) {
+        std::cerr << "chat parsing corpus sessions: " << sessions << " vectors OK\n";
+    }
     return failures;
 }
 
@@ -2188,11 +2468,13 @@ int main() {
     failures += test_attention_pairs_are_diagnostic(frontend);
     failures += test_video_prepare(frontend);
     failures += test_cross_round_stop(frontend);
+    failures += test_stop_inside_withheld_tool_region(frontend);
     failures += test_same_token_stop_priority(frontend);
     failures += test_terminal_flush(frontend);
     failures += test_structured_tool_output();
     failures += test_reasoning_split(frontend);
     failures += test_thinking_budget_control(frontend);
+    failures += test_chat_parsing_corpus_sessions(frontend);
     failures += test_utf8_and_hidden_eos(frontend);
     failures += test_media_cache_reuses_immutable_payload();
     failures += test_media_payload_outlives_frontend_cache();

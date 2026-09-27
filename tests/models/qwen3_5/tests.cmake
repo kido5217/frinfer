@@ -15,6 +15,15 @@ ninfer_add_test(ninfer_qwen3_5_frontend_test
   NEEDS_SOURCE_DIR
   LIBRARIES ninfer_engine ninfer_core ninfer::json)
 
+ninfer_add_test(ninfer_qwen3_5_chat_parse_normalization_test
+  SOURCES "${CMAKE_CURRENT_LIST_DIR}/test_chat_parse_normalization.cpp"
+  LIBRARIES ninfer_chat_parsing ninfer_model_runtime ninfer::json)
+
+ninfer_add_test(ninfer_qwen3_5_chat_parsing_corpus_test
+  SOURCES "${CMAKE_CURRENT_LIST_DIR}/test_chat_parsing_corpus.cpp"
+  NEEDS_SOURCE_DIR
+  LIBRARIES ninfer_chat_parsing ninfer_model_runtime ninfer::json)
+
 ninfer_add_test(ninfer_qwen3_5_runtime_mechanisms_test
   SOURCES "${CMAKE_CURRENT_LIST_DIR}/test_runtime_mechanisms.cpp"
   LIBRARIES ninfer_engine ninfer_core)
@@ -86,10 +95,6 @@ ninfer_add_test(ninfer_qwen3_5_dflash_real_test
 set_tests_properties(
   ninfer_qwen3_5_dflash_real_test
   PROPERTIES SKIP_RETURN_CODE 77)
-
-ninfer_add_test(ninfer_tool_call_parser_test
-  SOURCES "${CMAKE_CURRENT_LIST_DIR}/../../test_tool_call_parser.cpp"
-  LIBRARIES ninfer_engine ninfer::json)
 
 ninfer_add_test(ninfer_qwen3_5_visual_scatter_test
   SOURCES "${CMAKE_CURRENT_LIST_DIR}/test_visual_scatter.cpp"

@@ -191,6 +191,25 @@ a fixed one.
 The shared messages are in
 [`fixtures/serve/qwen3_6_thinking_preservation.json`](fixtures/serve/qwen3_6_thinking_preservation.json).
 
+The chat-parsing acceptance gate drives the ported Qwen3.5/froggeric parsing path end to end:
+`ninfer-yarn-serve` on the Qwen3.8-27B NVFP4 artifact with the fetched froggeric template, driven
+by `opencode run --format json --thinking` through a locally served provider. It fails fast while
+the 5090 is busy, asserts that the model's quoted `</think>` in reasoning never reaches visible
+text and that its `bash` call arrives structured exactly once, and records the serve log, template
+digest and decode rate as evidence:
+
+```bash
+nix develop -c cmake --build build --target ninfer-yarn-serve
+tools/fetch_froggeric_template.py /tmp/opencode/froggeric_chat_template.jinja
+tools/e2e/chat_parsing_e2e.sh --model <provider>/<model-id>
+```
+
+The provider is not discoverable from the repository: it must be an OpenAI-compatible OpenCode
+provider (https://opencode.ai/v2/docs/providers) whose `settings.baseURL` is
+`http://127.0.0.1:8080/v1` and whose model key equals the server's public model id, which the gate
+checks against `GET /v1/models`. The same froggeric template is validated against the vendored
+renderer with `NINFER_PARITY_TEMPLATE=<file> python3.13 -B tests/text/test_chat_templates.py`.
+
 ## What belongs here
 
 A permanent test should protect one current risk, such as:

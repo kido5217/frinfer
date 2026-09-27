@@ -3,6 +3,7 @@
 #include "models/qwen3_5/frontend/resources.h"
 #include "models/qwen3_5/frontend/prepared_prompt.h"
 
+#include "models/qwen3_5/frontend/chat_parse_core.h"
 #include "models/qwen3_5/frontend/chat_template.h"
 #include "models/qwen3_5/frontend/media_cache.h"
 #include "models/qwen3_5/frontend/processor.h"
@@ -622,6 +623,9 @@ public:
             }
         }
         thinking_control_tokens = std::make_shared<const std::vector<TokenId>>(std::move(encoded));
+        // The ported chat-parsing region arena is immutable and shared by every request; build it
+        // once here so no decode step pays for the first construction.
+        fi::ChatParseCore::warm_up();
     }
 
     fi::CompiledChatTemplate chat_template;
