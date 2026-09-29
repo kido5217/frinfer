@@ -790,7 +790,7 @@ int main() {
     }
 
     DeviceContext device;
-    const auto execution = device.execution_view();
+    const auto execution = device.execution_view().on_stream(nullptr);
     int failures         = 0;
 
     // Text pair form: both registered checkpoint geometries, decode/prefill, and 1-D/MRoPE.

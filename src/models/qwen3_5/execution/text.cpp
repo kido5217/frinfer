@@ -412,7 +412,7 @@ void TextContext::mtp_forward_tail(Tensor& x, const Tensor& ah, const Tensor& po
 
     {
         auto post_mixer_scope = work_.scope();
-        ffn(mh, mtp_->ffn, x, {}, work_, s, true);
+        ffn(mh, mtp_->ffn, x, {}, work_, ctx_.execution_view(), true);
     }
 
     Tensor flat_mtp_hidden = mtp_hidden.view({dimension(config_.hidden_size), T});
@@ -560,7 +560,7 @@ void TextContext::mtp_prefill_chunk(const Tensor& ids, const Tensor& hidden,
         ops::rmsnorm(x_last, mtp_->post_attention_norm, config_.rms_norm_eps, true, mh, s);
         {
             auto post_mixer_scope = work_.scope();
-            ffn(mh, mtp_->ffn, x_last, {}, work_, s, true);
+            ffn(mh, mtp_->ffn, x_last, {}, work_, ctx_.execution_view(), true);
         }
         ops::rmsnorm(x_last, mtp_->final_norm, config_.rms_norm_eps, true, *final_hidden, s);
         proposal_argmax(*final_hidden, *logits, *draft_token);
@@ -1067,7 +1067,7 @@ void TextContext::gdn_mix(const BlockParameters& w, Tensor& x, int gidx, Phase p
     Tensor on = workspace::gdn_normalized_output(work_, config_, T)
                     .view({dimension(config_.gdn->linear_value_head_dim),
                            dimension(config_.gdn->linear_num_value_heads), T});
-    ops::gated_rmsnorm(o, p.norm, z, config_.rms_norm_eps, on, s);
+    ops::gated_rmsnorm(o, p.norm, z, config_.rms_norm_eps, on, ctx_.execution_view());
 
     ops::linear_add(on.view({dimension(config_.gdn->value_width()), T}), p.output.weight, x,
                     p.output.policy, work_, s);
@@ -1083,7 +1083,7 @@ void TextContext::mlp_tail(const BlockParameters& weights, Tensor& x, Phase,
                            const ops::SparseMoeHints& hints) {
     Tensor h = workspace::post_mixer_hidden(work_, config_, x.ne[1]);
     ops::rmsnorm(x, weights.post_attention_norm, config_.rms_norm_eps, true, h, ctx_.stream);
-    ffn(h, weights.ffn, x, hints, work_, ctx_.stream);
+    ffn(h, weights.ffn, x, hints, work_, ctx_.execution_view());
 }
 
 template <class Tap>
