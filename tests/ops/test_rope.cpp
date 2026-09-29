@@ -368,8 +368,9 @@ int verify_padding(const std::string& label, const std::vector<std::uint16_t>& s
     return 0;
 }
 
-int run_pair_case(const Geometry& geometry, int q_heads, int k_heads, int first_position,
-                  int q_padding = 0, int k_padding = 0, int lane_width = 0, bool graph = false) {
+int run_pair_case(DeviceExecutionView execution, const Geometry& geometry, int q_heads, int k_heads,
+                  int first_position, int q_padding = 0, int k_padding = 0, int lane_width = 0,
+                  bool graph = false) {
     constexpr std::uint16_t kPadding = 0x3f81U;
     const int q_dense_per_token      = geometry.head_dim * q_heads;
     const int k_dense_per_token      = geometry.head_dim * k_heads;
@@ -410,7 +411,7 @@ int run_pair_case(const Geometry& geometry, int q_heads, int k_heads, int first_
     q_tensor.nb[2] = static_cast<std::int64_t>(q_stride) * sizeof(std::uint16_t);
     k_tensor.nb[2] = static_cast<std::int64_t>(k_stride) * sizeof(std::uint16_t);
 
-    ops::rope(position_tensor, geometry.rotary_dim, geometry.theta, q_tensor, k_tensor, nullptr);
+    ops::rope(position_tensor, geometry.rotary_dim, geometry.theta, q_tensor, k_tensor, execution);
     cuda_synchronize();
 
     if (graph) {
@@ -419,7 +420,8 @@ int run_pair_case(const Geometry& geometry, int q_heads, int k_heads, int first_
         cudaGraphExec_t executable;
         CUDA_CHECK(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
         CUDA_CHECK(cudaStreamBeginCapture(stream, cudaStreamCaptureModeGlobal));
-        ops::rope(position_tensor, geometry.rotary_dim, geometry.theta, q_tensor, k_tensor, stream);
+        ops::rope(position_tensor, geometry.rotary_dim, geometry.theta, q_tensor, k_tensor,
+                  execution.on_stream(stream));
         CUDA_CHECK(cudaStreamEndCapture(stream, &captured));
         CUDA_CHECK(cudaGraphInstantiate(&executable, captured, nullptr, nullptr, 0));
         for (int replay = 0; replay < 2; ++replay) {
@@ -481,8 +483,9 @@ std::vector<int> make_yarn_positions(int axes, int tokens, int original_max, dou
 // Runs the YaRN pair form: builds the host table, uploads it to a stable device buffer, calls the
 // YaRN Op (dispatched on table presence), and verifies against the table-driven oracle. The
 // graph flag also captures + replays the YaRN launch (table pointer is stable under capture).
-int run_yarn_pair_case(const Geometry& geometry, int q_heads, int k_heads, double scale,
-                       int q_padding = 0, int k_padding = 0, bool graph = false) {
+int run_yarn_pair_case(DeviceExecutionView execution, const Geometry& geometry, int q_heads,
+                       int k_heads, double scale, int q_padding = 0, int k_padding = 0,
+                       bool graph = false) {
     constexpr std::uint16_t kPadding = 0x3f81U;
     const int q_dense_per_token      = geometry.head_dim * q_heads;
     const int k_dense_per_token      = geometry.head_dim * k_heads;
@@ -525,7 +528,7 @@ int run_yarn_pair_case(const Geometry& geometry, int q_heads, int k_heads, doubl
 
     ops::YarnScale yarn{static_cast<const float*>(table_device.data()), table.mscale};
     ops::rope(position_tensor, geometry.rotary_dim, geometry.theta, yarn, q_tensor, k_tensor,
-              nullptr);
+              execution);
     cuda_synchronize();
 
     if (graph) {
@@ -535,7 +538,7 @@ int run_yarn_pair_case(const Geometry& geometry, int q_heads, int k_heads, doubl
         CUDA_CHECK(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
         CUDA_CHECK(cudaStreamBeginCapture(stream, cudaStreamCaptureModeGlobal));
         ops::rope(position_tensor, geometry.rotary_dim, geometry.theta, yarn, q_tensor, k_tensor,
-                  stream);
+                  execution.on_stream(stream));
         CUDA_CHECK(cudaStreamEndCapture(stream, &captured));
         CUDA_CHECK(cudaGraphInstantiate(&executable, captured, nullptr, nullptr, 0));
         for (int replay = 0; replay < 2; ++replay) {
@@ -580,7 +583,8 @@ int run_yarn_pair_case(const Geometry& geometry, int q_heads, int k_heads, doubl
 
 // Direct structural-inert check: the s=1.0 YaRN output must be byte-identical to the non-YaRN
 // (power-law) output on the same input (invariant D6.1).
-int run_yarn_structural_inert(const Geometry& geometry, int q_heads, int k_heads) {
+int run_yarn_structural_inert(DeviceExecutionView execution, const Geometry& geometry, int q_heads,
+                              int k_heads) {
     constexpr std::uint16_t kPadding = 0x3f81U;
     const int q_dense_per_token      = geometry.head_dim * q_heads;
     const int k_dense_per_token      = geometry.head_dim * k_heads;
@@ -610,7 +614,7 @@ int run_yarn_structural_inert(const Geometry& geometry, int q_heads, int k_heads
     Tensor q_tensor_ny(q_ny.data(), DType::BF16, {geometry.head_dim, q_heads, geometry.tokens});
     Tensor k_tensor_ny(k_ny.data(), DType::BF16, {geometry.head_dim, k_heads, geometry.tokens});
     ops::rope(pos_tensor_ny, geometry.rotary_dim, geometry.theta, q_tensor_ny, k_tensor_ny,
-              nullptr);
+              execution);
     cuda_synchronize();
 
     // YaRN s=1.0 run.
@@ -627,7 +631,7 @@ int run_yarn_structural_inert(const Geometry& geometry, int q_heads, int k_heads
     Tensor k_tensor_y(k_y.data(), DType::BF16, {geometry.head_dim, k_heads, geometry.tokens});
     ops::YarnScale yarn{static_cast<const float*>(table_device.data()), table.mscale};
     ops::rope(pos_tensor_y, geometry.rotary_dim, geometry.theta, yarn, q_tensor_y, k_tensor_y,
-              nullptr);
+              execution);
     cuda_synchronize();
 
     const auto q_ny_got     = from_device<std::uint16_t>(q_ny.data(), q_storage.size());
@@ -656,6 +660,10 @@ int run_yarn_structural_inert(const Geometry& geometry, int q_heads, int k_heads
 }
 
 int run_single_case(const Geometry& geometry, int heads, int first_position, int padding = 0) {
+=======
+int run_single_case(DeviceExecutionView execution, const Geometry& geometry, int heads,
+                    int first_position, int padding = 0) {
+>>>>>>> a667efdd (refactor(rope): derive launch capacity from device sm count)
     constexpr std::uint16_t kPadding = 0x3f81U;
     const int dense_per_token        = geometry.head_dim * heads;
     const int token_stride           = dense_per_token + padding;
@@ -675,7 +683,7 @@ int run_single_case(const Geometry& geometry, int heads, int first_position, int
     Tensor position_tensor(position_device.data(), DType::I32, {geometry.tokens, geometry.axes});
     Tensor tensor(device.data(), DType::BF16, {geometry.head_dim, heads, geometry.tokens});
     tensor.nb[2] = static_cast<std::int64_t>(token_stride) * sizeof(std::uint16_t);
-    ops::rope(position_tensor, geometry.rotary_dim, geometry.theta, tensor, nullptr);
+    ops::rope(position_tensor, geometry.rotary_dim, geometry.theta, tensor, execution);
     cuda_synchronize();
 
     const auto got          = from_device<std::uint16_t>(device.data(), storage.size());
@@ -695,7 +703,7 @@ int run_single_case(const Geometry& geometry, int heads, int first_position, int
     return failures;
 }
 
-int run_vision_packed_case() {
+int run_vision_packed_case(DeviceExecutionView execution) {
     constexpr int kHeadDim = 72;
     constexpr int kHeads   = 16;
     constexpr int kTokens  = 11;
@@ -736,7 +744,7 @@ int run_vision_packed_case() {
     Tensor k_tensor(packed_data + kPlane, DType::BF16, {kHeadDim, kHeads, kTokens});
     q_tensor.nb[2] = static_cast<std::int64_t>(kStride) * sizeof(std::uint16_t);
     k_tensor.nb[2] = static_cast<std::int64_t>(kStride) * sizeof(std::uint16_t);
-    ops::rope(position_tensor, kHeadDim, kVisionTheta, q_tensor, k_tensor, nullptr);
+    ops::rope(position_tensor, kHeadDim, kVisionTheta, q_tensor, k_tensor, execution);
     cuda_synchronize();
 
     const auto got = from_device<std::uint16_t>(packed_device.data(), packed.size());
@@ -781,34 +789,53 @@ int main() {
         return 77;
     }
 
-    int failures = 0;
+    DeviceContext device;
+    const auto execution = device.execution_view();
+    int failures         = 0;
 
     // Text pair form: both registered checkpoint geometries, decode/prefill, and 1-D/MRoPE.
     for (int axes : {1, 3}) {
         for (int width : {2, 7, 16}) {
             for (int batch : {1, 8}) {
                 failures += run_pair_case(
-                    {"27b dflash2 lanes", 256, 64, axes, width * batch, kTextTheta}, 24, 4, 131072,
-                    batch == 8 ? 16 : 0, batch == 8 ? 8 : 0, width, width == 16 && batch == 8);
+                    execution, {"27b dflash2 lanes", 256, 64, axes, width * batch, kTextTheta}, 24,
+                    4, 131072, batch == 8 ? 16 : 0, batch == 8 ? 8 : 0, width,
+                    width == 16 && batch == 8);
             }
         }
     }
-    failures += run_pair_case({"27b text decode", 256, 64, 1, 1, kTextTheta}, 24, 4, 31);
-    failures += run_pair_case({"27b text mrope prefill", 256, 64, 3, 128, kTextTheta}, 24, 4, 4096);
+    failures += run_pair_case(execution, {"27b text decode", 256, 64, 1, 1, kTextTheta}, 24, 4, 31);
+    failures += run_pair_case(execution, {"27b text mrope prefill", 256, 64, 3, 128, kTextTheta},
+                              24, 4, 4096);
+    failures += run_pair_case(
+        execution, {"35b text native-context tail", 256, 64, 1, 7, kTextTheta}, 16, 2, 262'137);
     failures +=
-        run_pair_case({"35b text native-context tail", 256, 64, 1, 7, kTextTheta}, 16, 2, 262'137);
-    failures += run_pair_case({"35b text mrope", 256, 64, 3, 7, kTextTheta}, 16, 2, 2048, 16, 8);
+        run_pair_case(execution, {"35b text mrope", 256, 64, 3, 7, kTextTheta}, 16, 2, 2048, 16, 8);
+
+    // Exercise both public forms on either side of the large-block residency boundary.
+    const int large_block_capacity = execution.multiprocessor_count * 6;
+    for (int tokens : {large_block_capacity, large_block_capacity + 1}) {
+        failures += run_pair_case(execution,
+                                  {"27b text residency boundary", 256, 64, 1, tokens, kTextTheta},
+                                  24, 4, 8192);
+        failures += run_single_case(
+            execution, {"27b text mrope residency boundary", 256, 64, 3, tokens, kTextTheta}, 24,
+            8192);
+    }
 
     // MTP bulk K append uses the single-tensor form; proposal tail uses the pair form above.
-    failures += run_single_case({"27b mtp k mrope", 256, 64, 3, 128, kTextTheta}, 4, 8192);
-    failures += run_single_case({"35b mtp k text", 256, 64, 1, 5, kTextTheta}, 2, 16384, 8);
+    failures +=
+        run_single_case(execution, {"27b mtp k mrope", 256, 64, 3, 128, kTextTheta}, 4, 8192);
+    failures +=
+        run_single_case(execution, {"35b mtp k text", 256, 64, 1, 5, kTextTheta}, 2, 16384, 8);
 
-    failures += run_vision_packed_case();
+    failures += run_vision_packed_case(execution);
 
     // DFlash proposal consumes 2..16 tokens; context append uses the single-K form.
-    failures += run_pair_case({"35b dflash proposal", 128, 128, 1, 16, kTextTheta}, 32, 8, 262'128);
-    failures +=
-        run_single_case({"35b dflash context k", 128, 128, 1, 128, kTextTheta}, 8, 131'072, 16);
+    failures += run_pair_case(execution, {"35b dflash proposal", 128, 128, 1, 16, kTextTheta}, 32,
+                              8, 262'128);
+    failures += run_single_case(execution, {"35b dflash context k", 128, 128, 1, 128, kTextTheta},
+                                8, 131'072, 16);
 
     // YaRN context extension (ticket #11). The table construction is pinned against the
     // committed (torch-derived) golden vectors; the rotation is qualified against the
@@ -818,19 +845,22 @@ int main() {
     for (double scale : {1.0, 1.1, 1.5, 2.0, 4.0}) {
         for (int axes : {1, 3}) {
             failures +=
-                run_yarn_pair_case({"yarn 27b text", 256, 64, axes, 6, kTextTheta}, 24, 4, scale);
+                run_yarn_pair_case(execution, {"yarn 27b text", 256, 64, axes, 6, kTextTheta}, 24,
+                                   4, scale);
         }
         // Synthetic R=8 (4 pairs) via the generic path; catches table-construction index
         // handling independent of the model constants.
-        failures += run_yarn_pair_case({"yarn synth R8", 256, 8, 1, 6, kTextTheta}, 4, 4, scale);
+        failures +=
+            run_yarn_pair_case(execution, {"yarn synth R8", 256, 8, 1, 6, kTextTheta}, 4, 4, scale);
     }
     // Graph capture with the YaRN table (the stable table pointer must survive capture/replay).
-    failures += run_yarn_pair_case({"yarn 27b text graph", 256, 64, 1, 6, kTextTheta}, 24, 4, 2.0,
-                                   0, 0, true);
+    failures += run_yarn_pair_case(execution, {"yarn 27b text graph", 256, 64, 1, 6, kTextTheta},
+                                   24, 4, 2.0, 0, 0, true);
     // Structural-inert check: the s=1.0 YaRN output is byte-identical to the non-YaRN output.
     for (int axes : {1, 3}) {
         failures +=
-            run_yarn_structural_inert({"yarn 27b text inert", 256, 64, axes, 6, kTextTheta}, 24, 4);
+            run_yarn_structural_inert(execution, {"yarn 27b text inert", 256, 64, axes, 6, kTextTheta},
+                                      24, 4);
     }
 
     std::cout << (failures == 0 ? "OK" : "FAIL") << " rope correctness\n";

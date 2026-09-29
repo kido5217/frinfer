@@ -45,23 +45,25 @@ void attention_projection(const Tensor& hidden, const AttentionParameters& param
 }
 
 void text_rope(const Tensor& positions, const RopeConfig& config, Tensor& query,
-               const ops::YarnScale* yarn, cudaStream_t stream) {
+               const ops::YarnScale* yarn, DeviceExecutionView execution) {
     require_rope_axes(positions, config);
     if (yarn != nullptr && yarn->inv_freq != nullptr) {
-        ops::rope(positions, dimension(config.rotary_dim), config.rope_theta, *yarn, query, stream);
+        ops::rope(positions, dimension(config.rotary_dim), config.rope_theta, *yarn, query,
+                  execution);
     } else {
-        ops::rope(positions, dimension(config.rotary_dim), config.rope_theta, query, stream);
+        ops::rope(positions, dimension(config.rotary_dim), config.rope_theta, query, execution);
     }
 }
 
 void text_rope(const Tensor& positions, const RopeConfig& config, Tensor& query, Tensor& key,
-               const ops::YarnScale* yarn, cudaStream_t stream) {
+               const ops::YarnScale* yarn, DeviceExecutionView execution) {
     require_rope_axes(positions, config);
     if (yarn != nullptr && yarn->inv_freq != nullptr) {
         ops::rope(positions, dimension(config.rotary_dim), config.rope_theta, *yarn, query, key,
-                  stream);
+                  execution);
     } else {
-        ops::rope(positions, dimension(config.rotary_dim), config.rope_theta, query, key, stream);
+        ops::rope(positions, dimension(config.rotary_dim), config.rope_theta, query, key,
+                  execution);
     }
 }
 
