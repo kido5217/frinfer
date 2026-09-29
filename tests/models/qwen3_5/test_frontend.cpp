@@ -2062,6 +2062,12 @@ int test_chat_parsing_corpus_sessions(const Frontend& frontend) {
                                              std::to_string(diagnostics.schema_mismatch_arguments),
                                              value.dump());
                     }
+                } else if (key == "duplicate_arguments_merged") {
+                    if (diagnostics.duplicate_arguments_merged != value.get<std::uint32_t>()) {
+                        failures += mismatch("duplicate_arguments_merged",
+                                             std::to_string(diagnostics.duplicate_arguments_merged),
+                                             value.dump());
+                    }
                 } else if (key == "fallback_reason") {
                     if (diagnostics.fallback_reason != fallback_reason(value.get<std::string>())) {
                         failures += mismatch("fallback_reason",
