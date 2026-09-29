@@ -937,7 +937,85 @@
         "vllm(row 20): last value wins",
         "llamacpp(row 20): a repeated required argument drops the turn; a repeated optional argument is accepted and emits duplicate JSON keys"
       ],
-      "note": "Rejecting the region is the fail-closed choice for a conflicting argument."
+      "note": "Rejecting the region is the fail-closed choice for a conflicting argument. A repeat whose raw value bytes equal the first occurrence's collapses into one argument instead of demoting (see tool-call-duplicate-parameter-identical); merging does not weaken this conflict check."
+    },
+    {
+      "id": "tool-call-duplicate-parameter-identical",
+      "thinking": false,
+      "tools": [
+        "bash"
+      ],
+      "rounds": [
+        {
+          "feed": "<tool_call>\n<function=bash>\n<parameter=command>\nls -la\n</parameter>\n<parameter=description>\nlist files\n</parameter>\n<parameter=command>\nls -la\n</parameter>\n</function>\n</tool_call>",
+          "tool_calls": [
+            {
+              "name": "bash",
+              "arguments": {
+                "command": "ls -la",
+                "description": "list files"
+              }
+            }
+          ]
+        }
+      ],
+      "final": {
+        "reasoning": "",
+        "content": "",
+        "tool_calls": [
+          {
+            "name": "bash",
+            "arguments": {
+              "command": "ls -la",
+              "description": "list files"
+            }
+          }
+        ],
+        "diagnostics": {
+          "marker_seen": true,
+          "structured_call_count": 1,
+          "duplicate_arguments_merged": 1,
+          "fallback_reason": "None"
+        }
+      },
+      "basis": [
+        "ninfer_yarn(map #40)"
+      ],
+      "diverges": [
+        "llamacpp(row 20): a repeated required argument drops the turn"
+      ],
+      "note": "Added from the map #40 decision: a repeat whose raw value bytes equal the first occurrence's collapses into one argument (first occurrence position kept, non-adjacent repeats included) instead of demoting the region. vLLM's last-value-wins is observably equal for identical values."
+    },
+    {
+      "id": "tool-call-duplicate-parameter-conflict-wins",
+      "thinking": false,
+      "tools": [
+        "bash"
+      ],
+      "rounds": [
+        {
+          "feed": "<tool_call>\n<function=bash>\n<parameter=command>\nls\n</parameter>\n<parameter=command>\nls\n</parameter>\n<parameter=command>\nrm -rf /\n</parameter>\n</function>\n</tool_call>",
+          "content": "<tool_call>\n<function=bash>\n<parameter=command>\nls\n</parameter>\n<parameter=command>\nls\n</parameter>\n<parameter=command>\nrm -rf /\n</parameter>\n</function>\n</tool_call>"
+        }
+      ],
+      "final": {
+        "reasoning": "",
+        "content": "<tool_call>\n<function=bash>\n<parameter=command>\nls\n</parameter>\n<parameter=command>\nls\n</parameter>\n<parameter=command>\nrm -rf /\n</parameter>\n</function>\n</tool_call>",
+        "tool_calls": [],
+        "diagnostics": {
+          "duplicate_arguments_merged": 0,
+          "fallback_reason": "DuplicateParameter"
+        }
+      },
+      "basis": [
+        "ninfer_master",
+        "ninfer_yarn(map #40)"
+      ],
+      "diverges": [
+        "vllm(row 20): last value wins (this call would dispatch as rm -rf /)",
+        "llamacpp(row 20): a repeated required argument drops the turn"
+      ],
+      "note": "Added from the map #40 decision (precedence): merging identical repeats does not weaken conflict detection — one repeat with differing value bytes anywhere in the call still returns the complete region to ordinary content."
     },
     {
       "id": "tool-call-nested-parameter-balanced",

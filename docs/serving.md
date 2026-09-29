@@ -177,7 +177,11 @@ String parameters preserve function/tool-call markers and balanced nested
 `<parameter=...>...</parameter>` text as value bytes. The Qwen wire format has no delimiter escape,
 so an unmatched nested parameter opener or a standalone `</parameter>` cannot be represented
 unambiguously; either causes the complete tool-call region to fall back to ordinary content. A
-response may carry several calls in sequence, and a missing `</tool_call>` before the next
+repeated parameter name is representable only when every later occurrence repeats the first
+occurrence's raw value bytes: the duplicates collapse into one argument, first occurrence position
+kept. A repeat whose value bytes differ is unrepresentable ambiguity and returns the complete
+region to ordinary content.
+A response may carry several calls in sequence, and a missing `</tool_call>` before the next
 `<tool_call>` is tolerated. NInfer serves the first `<tool_call>` region that parses completely and
 consumes the response to its end; earlier markup and the prose around it stay ordinary content, a
 region without a served candidate stays ordinary content verbatim, and the parse diagnostics report
@@ -850,7 +854,7 @@ in append mode and flushes every event, so successive model or MTP blocks may sh
 file. The parent directory must already exist. Failure to open the file aborts startup; the log path
 is also rejected if it resolves to the model artifact.
 
-Every line is one `ninfer_serve_request_log` schema-v21 JSON object. All events carry
+Every line is one `ninfer_serve_request_log` schema-v22 JSON object. All events carry
 `timestamp_unix_ms` and a process-unique `server_instance_id`; request IDs are monotonic only within
 that server instance. Successful request-start records include request-scoped acquisition,
 media-preprocessing wall/work, tokenizer, cache hit/miss/single-flight, and payload-size fields;
@@ -869,9 +873,10 @@ they do not infer request behavior from process-global counter deltas.
 unspecified. `enable_thinking` records whether the response starts in thinking mode.
 
 `request_done.result.tool_call_parse` records whether a complete marker was seen, the structured
-call count, empty non-string arguments omitted during normalization, schema-mismatched arguments
-preserved for consumer validation, and a stable text-fallback reason. Fallback reasons are `none`,
-`malformed_structure`, `duplicate_parameter`, `invalid_tool_name`, `undeclared_tool`, and
+call count, empty non-string arguments omitted during normalization, byte-identical repeated
+arguments merged away, schema-mismatched arguments preserved for consumer validation, and a stable
+text-fallback reason. Fallback reasons are `none`, `malformed_structure`, `duplicate_parameter` (a
+repeated parameter with differing value bytes), `invalid_tool_name`, `undeclared_tool`, and
 `trailing_content`. These counters contain no tool arguments or generated text.
 
 `request_done.timings_seconds` contains `prepare`, `ttft`, `vision`, `prefill`, `decode`, and `total`

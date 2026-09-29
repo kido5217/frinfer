@@ -447,6 +447,8 @@ int main() {
                   done.at("result").at("tool_call_parse").at("structured_call_count") == 0 &&
                   done.at("result").at("tool_call_parse").at("empty_arguments_omitted") == 0 &&
                   done.at("result").at("tool_call_parse").at("schema_mismatch_arguments") == 0 &&
+                  done.at("result").at("tool_call_parse").contains("duplicate_arguments_merged") &&
+                  done.at("result").at("tool_call_parse").at("duplicate_arguments_merged") == 0 &&
                   done.at("result").at("tool_call_parse").at("fallback_reason") == "none",
               "default tool-call parse diagnostics missing");
     outcome.metrics.prefix_reuse_path = ninfer::PrefixReusePath::PrivateResponseReplay;
@@ -495,11 +497,12 @@ int main() {
     normalized_tool_outcome.tool_calls.push_back(
         ninfer::GeneratedToolCall{.name = "Edit", .arguments_json = R"({"file_path":"x"})"});
     normalized_tool_outcome.tool_call_parse = {
-        .marker_seen               = true,
-        .structured_call_count     = 1,
-        .empty_arguments_omitted   = 1,
-        .schema_mismatch_arguments = 2,
-        .fallback_reason           = ninfer::ToolCallParseFallbackReason::None,
+        .marker_seen                = true,
+        .structured_call_count      = 1,
+        .empty_arguments_omitted    = 1,
+        .schema_mismatch_arguments  = 2,
+        .duplicate_arguments_merged = 3,
+        .fallback_reason            = ninfer::ToolCallParseFallbackReason::None,
     };
     const Json normalized_tool_done =
         Json::parse(format_request_done_json("serve-test", 3002, context, normalized_tool_outcome));
@@ -512,6 +515,12 @@ int main() {
             normalized_tool_done.at("result")
                     .at("tool_call_parse")
                     .at("schema_mismatch_arguments") == 2 &&
+            normalized_tool_done.at("result")
+                .at("tool_call_parse")
+                .contains("duplicate_arguments_merged") &&
+            normalized_tool_done.at("result")
+                    .at("tool_call_parse")
+                    .at("duplicate_arguments_merged") == 3 &&
             normalized_tool_done.at("result").at("tool_call_parse").at("fallback_reason") ==
                 "none" &&
             !render_tool_call_fallback(context, normalized_tool_outcome),

@@ -467,12 +467,14 @@ void resolve_tool_region(ParseState& state, const ParseContext& context, const C
     FallbackReason first_failure = FallbackReason::MalformedStructure;
     bool failure_recorded        = false;
     std::size_t accepted         = std::string_view::npos;
+    std::size_t accepted_merged  = 0;
     std::vector<RawToolCall> accepted_calls;
 
     for (std::size_t candidate = region.find(tool_open); candidate != std::string_view::npos;
          candidate             = region.find(tool_open, candidate + 1)) {
         std::vector<RawToolCall> calls;
-        FallbackReason failure = parse_candidate_region(region.substr(candidate), calls);
+        std::size_t merged_arguments = 0;
+        FallbackReason failure       = parse_candidate_region(region.substr(candidate), calls);
         if (failure == FallbackReason::None) {
             // Structure first, then the declared-name policy, then the parameters (B5).
             for (const RawToolCall& call : calls) {
@@ -490,23 +492,37 @@ void resolve_tool_region(ParseState& state, const ParseContext& context, const C
                 }
             }
             if (failure == FallbackReason::None) {
-                for (const RawToolCall& call : calls) {
-                    for (std::size_t i = 0; i < call.parameters.size(); ++i) {
-                        for (std::size_t j = i + 1; j < call.parameters.size(); ++j) {
-                            if (call.parameters[i].name == call.parameters[j].name) {
-                                failure = FallbackReason::DuplicateParameter;
-                                break;
-                            }
+                // A repeated parameter is representable only when its raw value bytes equal the
+                // first occurrence's: the repeat collapses into one argument (first occurrence
+                // position kept) and the call is served. Differing bytes are a conflicting repeat
+                // and stay fail-closed (B5).
+                for (RawToolCall& call : calls) {
+                    std::vector<RawParameter> merged;
+                    merged.reserve(call.parameters.size());
+                    for (RawParameter& parameter : call.parameters) {
+                        const auto kept = std::find_if(merged.begin(), merged.end(),
+                                                       [&parameter](const RawParameter& candidate) {
+                                                           return candidate.name == parameter.name;
+                                                       });
+                        if (kept == merged.end()) {
+                            merged.push_back(std::move(parameter));
+                            continue;
                         }
-                        if (failure != FallbackReason::None) { break; }
+                        if (kept->value != parameter.value) {
+                            failure = FallbackReason::DuplicateParameter;
+                            break;
+                        }
+                        ++merged_arguments;
                     }
                     if (failure != FallbackReason::None) { break; }
+                    call.parameters = std::move(merged);
                 }
             }
         }
         if (failure == FallbackReason::None) {
-            accepted       = candidate;
-            accepted_calls = std::move(calls);
+            accepted        = candidate;
+            accepted_merged = merged_arguments;
+            accepted_calls  = std::move(calls);
             break;
         }
         if (!failure_recorded) {
@@ -525,6 +541,7 @@ void resolve_tool_region(ParseState& state, const ParseContext& context, const C
 
     publish(state.content, rtrim_format_whitespace(region.substr(0, accepted)));
     state.diagnostics.structured_call_count = static_cast<std::uint32_t>(accepted_calls.size());
+    state.diagnostics.duplicate_arguments_merged += static_cast<std::uint32_t>(accepted_merged);
     state.tool_calls.reserve(state.tool_calls.size() + accepted_calls.size());
     for (const RawToolCall& raw : accepted_calls) {
         state.tool_calls.push_back(normalize_raw_tool_call(raw, contract, state.diagnostics));

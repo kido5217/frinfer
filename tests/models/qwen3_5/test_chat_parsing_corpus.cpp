@@ -28,7 +28,7 @@ using ninfer::ToolCallParseDiagnostics;
 using ninfer::ToolCallParseFallbackReason;
 using ninfer::tool_call_parse_fallback_reason_name;
 
-constexpr std::size_t kExpectedVectorCount = 40;
+constexpr std::size_t kExpectedVectorCount = 42;
 
 int g_failures = 0;
 
@@ -91,6 +91,8 @@ void check_diagnostics(const ToolCallParseDiagnostics& actual, const ordered_jso
             check(actual.empty_arguments_omitted == value.get<std::uint32_t>(), context);
         } else if (key == "schema_mismatch_arguments") {
             check(actual.schema_mismatch_arguments == value.get<std::uint32_t>(), context);
+        } else if (key == "duplicate_arguments_merged") {
+            check(actual.duplicate_arguments_merged == value.get<std::uint32_t>(), context);
         } else if (key == "fallback_reason") {
             const std::string name             = value.get<std::string>();
             ToolCallParseFallbackReason reason = ToolCallParseFallbackReason::None;
