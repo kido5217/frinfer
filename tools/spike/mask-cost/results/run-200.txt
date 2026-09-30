@@ -1,0 +1,118 @@
+mask-cost spike harness
+vocab ids:        248077
+mask row:         ceil(248077/32)*4 = 31012 bytes
+eog ids:          248044,248046
+iters:            200
+
+  mask row memset        n=1000 median=    0.250 us  min=    0.240  max=    5.420  mean=    0.253
+  mask row memcpy        n=1000 median=    0.451 us  min=    0.431  max=    0.752  mean=    0.454
+
+== G1: literal alternation (g1_literal_alternation.gbnf) ==
+  init (compile+free)    n=200 median=    0.471 us  min=    0.460  max=    0.702  mean=    0.473
+  state fresh prefix="" (0 bytes) stacks=2 allow_eog=0 allowed_tokens=6
+    stack sizes: 1,1
+  fill (full vocab)      n=200 median=12374.712 us  min=12216.282  max=14512.980  mean=12434.511
+    |- decode stage      n=200 median= 8988.139 us  min= 8455.851  max=10178.433  mean= 8988.716
+    |- reject stage      n=200 median= 1293.509 us  min= 1278.501  max= 1428.565  mean= 1295.247
+  validate good          n=1000 median=    0.420 us  min=    0.401  max=    8.125  mean=    0.468
+  validate bad           n=1000 median=    0.230 us  min=    0.220  max=    0.461  mean=    0.235
+  state mid   prefix="\xd0\xbd" (2 bytes) stacks=1 allow_eog=0 allowed_tokens=3
+    stack sizes: 1
+  fill (full vocab)      n=200 median=11681.289 us  min=11576.580  max=15018.237  mean=11726.383
+    |- decode stage      n=200 median= 9209.694 us  min= 8770.326  max=21237.002  mean= 9375.669
+    |- reject stage      n=200 median=  646.850 us  min=  637.487  max=  701.608  mean=  651.381
+  validate good          n=1000 median=    0.210 us  min=    0.200  max=    5.250  mean=    0.216
+  validate bad           n=1000 median=    0.140 us  min=    0.140  max=    0.200  mean=    0.143
+  state near  prefix="\xd0\xbd\xd0\xb5" (4 bytes) stacks=1 allow_eog=0 allowed_tokens=2
+    stack sizes: 1
+  fill (full vocab)      n=200 median=11657.714 us  min=11505.245  max=14939.167  mean=11712.742
+    |- decode stage      n=200 median= 9117.209 us  min= 8681.238  max=10201.236  mean= 9153.554
+    |- reject stage      n=200 median=  646.238 us  min=  638.709  max=  760.480  mean=  647.658
+  validate good          n=1000 median=    0.120 us  min=    0.110  max=    0.180  mean=    0.123
+  validate bad           n=1000 median=    0.110 us  min=    0.100  max=    0.161  mean=    0.111
+  accept from fresh: [\xd0\xbd\xd0\xb5\xd1\x82](6b)=0.290us
+  accept from mid  : [\xd0\xb5\xd1\x82](4b)=0.191us
+  accept from near : [\xd1\x82](2b)=0.111us
+
+== G2: bounded line [^\n]{3,240} (g2_bounded_line.gbnf) ==
+  init (compile+free)    n=200 median=   54.774 us  min=   52.810  max=   80.241  mean=   55.090
+  state fresh prefix="" (0 bytes) stacks=1 allow_eog=0 allowed_tokens=247709
+    stack sizes: 1
+  fill (full vocab)      n=200 median=17135.927 us  min=16920.399  max=18762.366  mean=17231.301
+    |- decode stage      n=200 median= 8860.828 us  min= 8303.934  max=12671.794  mean= 8897.993
+    |- reject stage      n=200 median= 5859.841 us  min= 5770.757  max= 6535.044  mean= 5933.122
+  validate good          n=1000 median=    1.012 us  min=    0.991  max=    1.623  mean=    1.018
+  validate bad           n=1000 median=    0.140 us  min=    0.130  max=    0.190  mean=    0.139
+  state mid   prefix="xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" (120 bytes) stacks=2 allow_eog=1 allowed_tokens=247710
+    stack sizes: 0,1
+  fill (full vocab)      n=200 median=18477.617 us  min=18191.165  max=21021.955  mean=18595.702
+    |- decode stage      n=200 median= 9155.922 us  min= 8930.419  max=11684.664  mean= 9210.492
+    |- reject stage      n=200 median= 7166.295 us  min= 6989.264  max= 8721.383  mean= 7291.536
+  validate good          n=1000 median=    1.262 us  min=    1.242  max=    6.252  mean=    1.270
+  validate bad           n=1000 median=    0.221 us  min=    0.220  max=    3.597  mean=    0.229
+  state near  prefix="xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" (238 bytes) stacks=2 allow_eog=1 allowed_tokens=49559
+    stack sizes: 0,1
+  fill (full vocab)      n=200 median=14273.882 us  min=13967.627  max=16948.773  mean=14386.719
+    |- decode stage      n=200 median= 8859.770 us  min= 8432.807  max=11268.026  mean= 8896.346
+    |- reject stage      n=200 median= 2958.958 us  min= 2619.270  max= 3867.403  mean= 2979.503
+  validate good          n=1000 median=    0.321 us  min=    0.310  max=    5.130  mean=    0.327
+  validate bad           n=1000 median=    0.230 us  min=    0.220  max=    0.300  mean=    0.226
+  accept from fresh: [Hello](5b)=0.761us [ world](6b)=0.962us [!](1b)=0.260us [ The](4b)=0.691us [ quick](6b)=0.912us [ brown](6b)=0.912us [ fox](4b)=0.682us [.](1b)=0.260us
+  accept from mid  : [Hello](5b)=0.911us [ world](6b)=0.952us [!](1b)=0.270us [ The](4b)=0.691us [ quick](6b)=0.932us [ brown](6b)=0.922us [ fox](4b)=0.691us [.](1b)=0.270us
+  accept from near : [xy](2b)=0.331us
+
+== G3: key=value record (g3_key_value_record.gbnf) ==
+  init (compile+free)    n=200 median=    3.727 us  min=    3.657  max=    9.177  mean=    3.761
+  state fresh prefix="" (0 bytes) stacks=1 allow_eog=0 allowed_tokens=3
+    stack sizes: 1
+  fill (full vocab)      n=200 median=11693.547 us  min=11613.410  max=13831.439  mean=11737.243
+    |- decode stage      n=200 median= 9054.274 us  min= 8717.907  max=11917.215  mean= 9112.916
+    |- reject stage      n=200 median=  684.095 us  min=  676.411  max=  757.244  mean=  686.921
+  validate good          n=1000 median=    1.192 us  min=    1.132  max=    7.434  mean=    1.205
+  validate bad           n=1000 median=    0.140 us  min=    0.140  max=    4.429  mean=    0.155
+  state mid   prefix="act=base;base=forward;base_amount=0.5;" (38 bytes) stacks=14 allow_eog=0 allowed_tokens=51
+    stack sizes: 1,4,4,4,4,4,4,4,4,4,4,4,4,4
+  fill (full vocab)      n=200 median=20359.680 us  min=20182.374  max=23380.200  mean=20446.222
+    |- decode stage      n=200 median= 8844.226 us  min= 8344.160  max=10136.653  mean= 8850.523
+    |- reject stage      n=200 median= 9421.224 us  min= 9301.532  max=11604.533  mean= 9499.149
+  validate good          n=1000 median=    1.563 us  min=    1.552  max=    6.061  mean=    1.579
+  validate bad           n=1000 median=    1.412 us  min=    1.402  max=    4.568  mean=    1.413
+  state near  prefix="act=view;say=All clear;tone=calm" (32 bytes) stacks=2 allow_eog=1 allowed_tokens=247520
+    stack sizes: 0,1
+  fill (full vocab)      n=200 median=18979.081 us  min=18773.758  max=21009.831  mean=19024.381
+    |- decode stage      n=200 median= 8893.890 us  min= 8325.474  max=10587.297  mean= 8889.980
+    |- reject stage      n=200 median= 7641.033 us  min= 7489.351  max= 8077.194  mean= 7674.862
+  validate good          n=1000 median=    1.042 us  min=    1.031  max=    1.793  mean=    1.050
+  validate bad           n=1000 median=    0.230 us  min=    0.220  max=   10.249  mean=    0.237
+  accept from fresh: [act](3b)=0.311us [=b](2b)=1.072us [ase](3b)=0.661us [;s](2b)=1.904us [ay](2b)=0.260us [=R](2b)=0.461us [ead](3b)=0.791us [y](1b)=0.341us [;t](2b)=0.291us [one](3b)=0.320us [=c](2b)=0.491us [alm](3b)=0.621us
+  accept from mid  : [say](3b)=0.762us [=R](2b)=0.440us [ead](3b)=0.741us [y](1b)=0.331us [;t](2b)=0.280us [one](3b)=0.311us [=c](2b)=0.441us [alm](3b)=0.571us
+  accept from near : [ for](4b)=0.681us [ now](4b)=0.651us
+
+== G4: diary JSON schema (converted) (g4_diary_schema.gbnf) ==
+  init (compile+free)    n=200 median=   76.195 us  min=   72.307  max=   87.356  mean=   76.479
+  state fresh prefix="" (0 bytes) stacks=1 allow_eog=0 allowed_tokens=2
+    stack sizes: 1
+  fill (full vocab)      n=200 median=11557.559 us  min=11486.279  max=11848.945  mean=11570.115
+    |- decode stage      n=200 median= 8846.329 us  min= 8326.967  max=10296.587  mean= 8866.695
+    |- reject stage      n=200 median=  640.117 us  min=  632.939  max=  655.912  mean=  640.639
+  validate good          n=1000 median=    1.202 us  min=    1.172  max=    6.132  mean=    1.206
+  validate bad           n=1000 median=    0.421 us  min=    0.400  max=    3.927  mean=    0.424
+  state mid   prefix="{"title": "Day one", "text": "The park" (38 bytes) stacks=3 allow_eog=0 allowed_tokens=245466
+    stack sizes: 2,4,4
+  fill (full vocab)      n=200 median=25849.685 us  min=25224.741  max=28861.739  mean=25770.475
+    |- decode stage      n=200 median= 9083.063 us  min= 8807.697  max=11211.118  mean= 9121.886
+    |- reject stage      n=200 median=14484.540 us  min=14280.108  max=16349.838  mean=14669.415
+  validate good          n=1000 median=    3.727 us  min=    3.677  max=    7.754  mean=    3.741
+  validate bad           n=1000 median=    0.751 us  min=    0.731  max=    4.598  mean=    0.756
+  state near  prefix="{"title": "Day one", "text": "ok", "facts": ["a"], "people": [{"name": "Ann", "when": "9am"}]" (93 bytes) stacks=3 allow_eog=0 allowed_tokens=5
+    stack sizes: 2,2,1
+  fill (full vocab)      n=200 median=13776.855 us  min=13702.134  max=14391.440  mean=13812.074
+    |- decode stage      n=200 median= 9096.634 us  min= 8582.961  max= 9654.891  mean= 9115.076
+    |- reject stage      n=200 median= 2777.138 us  min= 2753.373  max= 2980.323  mean= 2789.190
+  validate good          n=1000 median=    0.581 us  min=    0.571  max=    0.802  mean=    0.581
+  validate bad           n=1000 median=    0.571 us  min=    0.561  max=    4.869  mean=    0.577
+  accept from fresh: [{"](2b)=0.672us [title](5b)=0.521us [":](2b)=0.942us [ "](2b)=0.802us [T](1b)=0.621us [",](2b)=0.691us [ "](2b)=0.401us [text](4b)=0.431us [":](2b)=0.891us [ "](2b)=0.731us [x](1b)=0.551us [",](2b)=0.671us [ "](2b)=0.401us [facts](5b)=0.511us [":](2b)=0.882us [ [],](4b)=1.833us [ "](2b)=0.411us [people](6b)=0.592us [":](2b)=0.881us [ []](3b)=1.593us [}](1b)=0.191us
+  accept from mid  : [ was](4b)=1.713us [ quiet](6b)=2.114us ["](1b)=0.241us
+  accept from near : [}](1b)=0.220us
+
+json report: /tmp/opencode/mask-cost-work/run-200.json

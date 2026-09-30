@@ -1,0 +1,340 @@
+{
+  "vocab_size": 248077,
+  "mask_row_bytes": 31012,
+  "iters": 200,
+  "mask_row_memset_us": {"n": 1000, "median": 0.25, "min": 0.23999, "max": 5.42, "mean": 0.252822},
+  "mask_row_memcpy_us": {"n": 1000, "median": 0.451004, "min": 0.431, "max": 0.751999, "mean": 0.453829},
+  "grammars": [
+    {
+      "name": "G1",
+      "desc": "literal alternation",
+      "file": "g1_literal_alternation.gbnf",
+      "grammar_bytes": 27,
+      "rules": 1,
+      "init_us": {"n": 200, "median": 0.470993, "min": 0.459991, "max": 0.701996, "mean": 0.472995},
+      "states": [
+        {
+          "name": "fresh",
+          "prefix_printable": "",
+          "prefix_hex": "",
+          "stacks": 2,
+          "allow_eog": false,
+          "allowed_tokens": 6,
+          "fill_us": {"n": 200, "median": 12374.7, "min": 12216.3, "max": 14513, "mean": 12434.5},
+          "decode_only_us": {"n": 200, "median": 8988.14, "min": 8455.85, "max": 10178.4, "mean": 8988.72},
+          "reject_only_us": {"n": 200, "median": 1293.51, "min": 1278.5, "max": 1428.57, "mean": 1295.25},
+          "validate_good": {"id": 151443, "piece_hex": "d0bdd0b5d182", "accepted": true, "us": {"n": 1000, "median": 0.419998, "min": 0.401001, "max": 8.125, "mean": 0.467507}},
+          "validate_bad": {"id": 0, "piece_hex": "21", "us": {"n": 1000, "median": 0.230011, "min": 0.219986, "max": 0.460999, "mean": 0.234874}}
+        },
+        {
+          "name": "mid",
+          "prefix_printable": "\\xd0\\xbd",
+          "prefix_hex": "d0bd",
+          "stacks": 1,
+          "allow_eog": false,
+          "allowed_tokens": 3,
+          "fill_us": {"n": 200, "median": 11681.3, "min": 11576.6, "max": 15018.2, "mean": 11726.4},
+          "decode_only_us": {"n": 200, "median": 9209.69, "min": 8770.33, "max": 21237, "mean": 9375.67},
+          "reject_only_us": {"n": 200, "median": 646.85, "min": 637.487, "max": 701.608, "mean": 651.381},
+          "validate_good": {"id": 7921, "piece_hex": "d0b5d182", "accepted": true, "us": {"n": 1000, "median": 0.210007, "min": 0.199997, "max": 5.25, "mean": 0.215655}},
+          "validate_bad": {"id": 0, "piece_hex": "21", "us": {"n": 1000, "median": 0.139999, "min": 0.139999, "max": 0.199997, "mean": 0.142692}}
+        },
+        {
+          "name": "near",
+          "prefix_printable": "\\xd0\\xbd\\xd0\\xb5",
+          "prefix_hex": "d0bdd0b5",
+          "stacks": 1,
+          "allow_eog": false,
+          "allowed_tokens": 2,
+          "fill_us": {"n": 200, "median": 11657.7, "min": 11505.2, "max": 14939.2, "mean": 11712.7},
+          "decode_only_us": {"n": 200, "median": 9117.21, "min": 8681.24, "max": 10201.2, "mean": 9153.55},
+          "reject_only_us": {"n": 200, "median": 646.238, "min": 638.709, "max": 760.48, "mean": 647.658},
+          "validate_good": {"id": 1729, "piece_hex": "d182", "accepted": true, "us": {"n": 1000, "median": 0.12001, "min": 0.110001, "max": 0.179993, "mean": 0.123427}},
+          "validate_bad": {"id": 0, "piece_hex": "21", "us": {"n": 1000, "median": 0.110001, "min": 0.0999908, "max": 0.160995, "mean": 0.110672}}
+        }
+      ],
+      "accept": [
+        {
+          "state": "fresh",
+          "tokens": [
+            {"id": 151443, "piece_hex": "d0bdd0b5d182", "bytes": 6, "us": {"n": 200, "median": 0.290009, "min": 0.279999, "max": 0.381012, "mean": 0.289551}}
+          ]
+        },
+        {
+          "state": "mid",
+          "tokens": [
+            {"id": 7921, "piece_hex": "d0b5d182", "bytes": 4, "us": {"n": 200, "median": 0.190994, "min": 0.179993, "max": 0.26001, "mean": 0.19491}}
+          ]
+        },
+        {
+          "state": "near",
+          "tokens": [
+            {"id": 1729, "piece_hex": "d182", "bytes": 2, "us": {"n": 200, "median": 0.110992, "min": 0.0999908, "max": 0.160004, "mean": 0.113765}}
+          ]
+        }
+      ]
+    },
+    {
+      "name": "G2",
+      "desc": "bounded line [^\\n]{3,240}",
+      "file": "g2_bounded_line.gbnf",
+      "grammar_bytes": 22,
+      "rules": 238,
+      "init_us": {"n": 200, "median": 54.774, "min": 52.81, "max": 80.241, "mean": 55.0895},
+      "states": [
+        {
+          "name": "fresh",
+          "prefix_printable": "",
+          "prefix_hex": "",
+          "stacks": 1,
+          "allow_eog": false,
+          "allowed_tokens": 247709,
+          "fill_us": {"n": 200, "median": 17135.9, "min": 16920.4, "max": 18762.4, "mean": 17231.3},
+          "decode_only_us": {"n": 200, "median": 8860.83, "min": 8303.93, "max": 12671.8, "mean": 8897.99},
+          "reject_only_us": {"n": 200, "median": 5859.84, "min": 5770.76, "max": 6535.04, "mean": 5933.12},
+          "validate_good": {"id": 9419, "piece_hex": "48656c6c6f", "accepted": true, "us": {"n": 1000, "median": 1.01199, "min": 0.990997, "max": 1.623, "mean": 1.01767}},
+          "validate_bad": {"id": 94, "piece_hex": "a1", "us": {"n": 1000, "median": 0.139999, "min": 0.12999, "max": 0.190002, "mean": 0.139187}}
+        },
+        {
+          "name": "mid",
+          "prefix_printable": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+          "prefix_hex": "787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878",
+          "stacks": 2,
+          "allow_eog": true,
+          "allowed_tokens": 247710,
+          "fill_us": {"n": 200, "median": 18477.6, "min": 18191.2, "max": 21022, "mean": 18595.7},
+          "decode_only_us": {"n": 200, "median": 9155.92, "min": 8930.42, "max": 11684.7, "mean": 9210.49},
+          "reject_only_us": {"n": 200, "median": 7166.29, "min": 6989.26, "max": 8721.38, "mean": 7291.54},
+          "validate_good": {"id": 9419, "piece_hex": "48656c6c6f", "accepted": true, "us": {"n": 1000, "median": 1.26201, "min": 1.24199, "max": 6.252, "mean": 1.26976}},
+          "validate_bad": {"id": 94, "piece_hex": "a1", "us": {"n": 1000, "median": 0.221008, "min": 0.219986, "max": 3.597, "mean": 0.228525}}
+        },
+        {
+          "name": "near",
+          "prefix_printable": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+          "prefix_hex": "78787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878",
+          "stacks": 2,
+          "allow_eog": true,
+          "allowed_tokens": 49559,
+          "fill_us": {"n": 200, "median": 14273.9, "min": 13967.6, "max": 16948.8, "mean": 14386.7},
+          "decode_only_us": {"n": 200, "median": 8859.77, "min": 8432.81, "max": 11268, "mean": 8896.35},
+          "reject_only_us": {"n": 200, "median": 2958.96, "min": 2619.27, "max": 3867.4, "mean": 2979.5},
+          "validate_good": {"id": 3994, "piece_hex": "7879", "accepted": true, "us": {"n": 1000, "median": 0.320999, "min": 0.309998, "max": 5.13, "mean": 0.326819}},
+          "validate_bad": {"id": 94, "piece_hex": "a1", "us": {"n": 1000, "median": 0.229996, "min": 0.219986, "max": 0.300003, "mean": 0.226231}}
+        }
+      ],
+      "accept": [
+        {
+          "state": "fresh",
+          "tokens": [
+            {"id": 9419, "piece_hex": "48656c6c6f", "bytes": 5, "us": {"n": 200, "median": 0.761002, "min": 0.720993, "max": 4.228, "mean": 0.778271}},
+            {"id": 1814, "piece_hex": "20776f726c64", "bytes": 6, "us": {"n": 200, "median": 0.962006, "min": 0.931, "max": 1.112, "mean": 0.973675}},
+            {"id": 0, "piece_hex": "21", "bytes": 1, "us": {"n": 200, "median": 0.26001, "min": 0.25, "max": 0.341003, "mean": 0.26255}},
+            {"id": 561, "piece_hex": "20546865", "bytes": 4, "us": {"n": 200, "median": 0.690994, "min": 0.660995, "max": 0.750992, "mean": 0.689061}},
+            {"id": 3841, "piece_hex": "20717569636b", "bytes": 6, "us": {"n": 200, "median": 0.912003, "min": 0.900986, "max": 0.98201, "mean": 0.917951}},
+            {"id": 13477, "piece_hex": "2062726f776e", "bytes": 6, "us": {"n": 200, "median": 0.912003, "min": 0.900986, "max": 4.19701, "mean": 0.935394}},
+            {"id": 37550, "piece_hex": "20666f78", "bytes": 4, "us": {"n": 200, "median": 0.681992, "min": 0.660995, "max": 0.811996, "mean": 0.68692}},
+            {"id": 13, "piece_hex": "2e", "bytes": 1, "us": {"n": 200, "median": 0.26001, "min": 0.23999, "max": 0.341003, "mean": 0.26022}}
+          ]
+        },
+        {
+          "state": "mid",
+          "tokens": [
+            {"id": 9419, "piece_hex": "48656c6c6f", "bytes": 5, "us": {"n": 200, "median": 0.910995, "min": 0.862, "max": 1.062, "mean": 0.91287}},
+            {"id": 1814, "piece_hex": "20776f726c64", "bytes": 6, "us": {"n": 200, "median": 0.952011, "min": 0.912003, "max": 5.60101, "mean": 0.999644}},
+            {"id": 0, "piece_hex": "21", "bytes": 1, "us": {"n": 200, "median": 0.270004, "min": 0.25, "max": 0.380997, "mean": 0.268871}},
+            {"id": 561, "piece_hex": "20546865", "bytes": 4, "us": {"n": 200, "median": 0.690994, "min": 0.660995, "max": 0.772003, "mean": 0.689845}},
+            {"id": 3841, "piece_hex": "20717569636b", "bytes": 6, "us": {"n": 200, "median": 0.932007, "min": 0.901001, "max": 1.002, "mean": 0.93421}},
+            {"id": 13477, "piece_hex": "2062726f776e", "bytes": 6, "us": {"n": 200, "median": 0.921997, "min": 0.901001, "max": 0.972, "mean": 0.92553}},
+            {"id": 37550, "piece_hex": "20666f78", "bytes": 4, "us": {"n": 200, "median": 0.69101, "min": 0.67099, "max": 0.751007, "mean": 0.69406}},
+            {"id": 13, "piece_hex": "2e", "bytes": 1, "us": {"n": 200, "median": 0.270004, "min": 0.25, "max": 0.330994, "mean": 0.26599}}
+          ]
+        },
+        {
+          "state": "near",
+          "tokens": [
+            {"id": 3994, "piece_hex": "7879", "bytes": 2, "us": {"n": 200, "median": 0.331009, "min": 0.300003, "max": 0.450989, "mean": 0.33402}}
+          ]
+        }
+      ]
+    },
+    {
+      "name": "G3",
+      "desc": "key=value record",
+      "file": "g3_key_value_record.gbnf",
+      "grammar_bytes": 393,
+      "rules": 11,
+      "init_us": {"n": 200, "median": 3.72701, "min": 3.657, "max": 9.177, "mean": 3.76084},
+      "states": [
+        {
+          "name": "fresh",
+          "prefix_printable": "",
+          "prefix_hex": "",
+          "stacks": 1,
+          "allow_eog": false,
+          "allowed_tokens": 3,
+          "fill_us": {"n": 200, "median": 11693.5, "min": 11613.4, "max": 13831.4, "mean": 11737.2},
+          "decode_only_us": {"n": 200, "median": 9054.27, "min": 8717.91, "max": 11917.2, "mean": 9112.92},
+          "reject_only_us": {"n": 200, "median": 684.095, "min": 676.411, "max": 757.244, "mean": 686.921},
+          "validate_good": {"id": 519, "piece_hex": "616374", "accepted": true, "us": {"n": 1000, "median": 1.19199, "min": 1.132, "max": 7.43401, "mean": 1.2052}},
+          "validate_bad": {"id": 0, "piece_hex": "21", "us": {"n": 1000, "median": 0.139999, "min": 0.139999, "max": 4.429, "mean": 0.155204}}
+        },
+        {
+          "name": "mid",
+          "prefix_printable": "act=base;base=forward;base_amount=0.5;",
+          "prefix_hex": "6163743d626173653b626173653d666f72776172643b626173655f616d6f756e743d302e353b",
+          "stacks": 14,
+          "allow_eog": false,
+          "allowed_tokens": 51,
+          "fill_us": {"n": 200, "median": 20359.7, "min": 20182.4, "max": 23380.2, "mean": 20446.2},
+          "decode_only_us": {"n": 200, "median": 8844.23, "min": 8344.16, "max": 10136.7, "mean": 8850.52},
+          "reject_only_us": {"n": 200, "median": 9421.22, "min": 9301.53, "max": 11604.5, "mean": 9499.15},
+          "validate_good": {"id": 35571, "piece_hex": "736179", "accepted": true, "us": {"n": 1000, "median": 1.563, "min": 1.55199, "max": 6.061, "mean": 1.57903}},
+          "validate_bad": {"id": 0, "piece_hex": "21", "us": {"n": 1000, "median": 1.412, "min": 1.40199, "max": 4.56799, "mean": 1.41264}}
+        },
+        {
+          "name": "near",
+          "prefix_printable": "act=view;say=All clear;tone=calm",
+          "prefix_hex": "6163743d766965773b7361793d416c6c20636c6561723b746f6e653d63616c6d",
+          "stacks": 2,
+          "allow_eog": true,
+          "allowed_tokens": 247520,
+          "fill_us": {"n": 200, "median": 18979.1, "min": 18773.8, "max": 21009.8, "mean": 19024.4},
+          "decode_only_us": {"n": 200, "median": 8893.89, "min": 8325.47, "max": 10587.3, "mean": 8889.98},
+          "reject_only_us": {"n": 200, "median": 7641.03, "min": 7489.35, "max": 8077.19, "mean": 7674.86},
+          "validate_good": {"id": 364, "piece_hex": "20666f72", "accepted": true, "us": {"n": 1000, "median": 1.04201, "min": 1.03099, "max": 1.793, "mean": 1.04979}},
+          "validate_bad": {"id": 26, "piece_hex": "3b", "us": {"n": 1000, "median": 0.229996, "min": 0.219986, "max": 10.249, "mean": 0.237049}}
+        }
+      ],
+      "accept": [
+        {
+          "state": "fresh",
+          "tokens": [
+            {"id": 519, "piece_hex": "616374", "bytes": 3, "us": {"n": 200, "median": 0.311005, "min": 0.299988, "max": 0.630997, "mean": 0.365401}},
+            {"id": 21402, "piece_hex": "3d62", "bytes": 2, "us": {"n": 200, "median": 1.07199, "min": 1.02199, "max": 7.47499, "mean": 1.27422}},
+            {"id": 507, "piece_hex": "617365", "bytes": 3, "us": {"n": 200, "median": 0.661003, "min": 0.631012, "max": 1.44301, "mean": 0.766845}},
+            {"id": 38109, "piece_hex": "3b73", "bytes": 2, "us": {"n": 200, "median": 1.90401, "min": 1.843, "max": 4.03799, "mean": 2.22637}},
+            {"id": 347, "piece_hex": "6179", "bytes": 2, "us": {"n": 200, "median": 0.260498, "min": 0.240005, "max": 0.570999, "mean": 0.303511}},
+            {"id": 70206, "piece_hex": "3d52", "bytes": 2, "us": {"n": 200, "median": 0.460999, "min": 0.431, "max": 1.07199, "mean": 0.531115}},
+            {"id": 3048, "piece_hex": "656164", "bytes": 3, "us": {"n": 200, "median": 0.791496, "min": 0.770996, "max": 4.96901, "mean": 0.94083}},
+            {"id": 88, "piece_hex": "79", "bytes": 1, "us": {"n": 200, "median": 0.341003, "min": 0.329987, "max": 0.710999, "mean": 0.40324}},
+            {"id": 51944, "piece_hex": "3b74", "bytes": 2, "us": {"n": 200, "median": 0.291, "min": 0.279999, "max": 0.580994, "mean": 0.34234}},
+            {"id": 588, "piece_hex": "6f6e65", "bytes": 3, "us": {"n": 200, "median": 0.32, "min": 0.299988, "max": 0.901001, "mean": 0.37173}},
+            {"id": 18941, "piece_hex": "3d63", "bytes": 2, "us": {"n": 200, "median": 0.490997, "min": 0.470001, "max": 1.10201, "mean": 0.56982}},
+            {"id": 7430, "piece_hex": "616c6d", "bytes": 3, "us": {"n": 200, "median": 0.620995, "min": 0.582001, "max": 1.18201, "mean": 0.710825}}
+          ]
+        },
+        {
+          "state": "mid",
+          "tokens": [
+            {"id": 35571, "piece_hex": "736179", "bytes": 3, "us": {"n": 200, "median": 0.761993, "min": 0.750992, "max": 1.002, "mean": 0.76733}},
+            {"id": 70206, "piece_hex": "3d52", "bytes": 2, "us": {"n": 200, "median": 0.440002, "min": 0.410004, "max": 0.612, "mean": 0.438614}},
+            {"id": 3048, "piece_hex": "656164", "bytes": 3, "us": {"n": 200, "median": 0.741013, "min": 0.710999, "max": 1.022, "mean": 0.74409}},
+            {"id": 88, "piece_hex": "79", "bytes": 1, "us": {"n": 200, "median": 0.330994, "min": 0.309998, "max": 0.410995, "mean": 0.330965}},
+            {"id": 51944, "piece_hex": "3b74", "bytes": 2, "us": {"n": 200, "median": 0.279999, "min": 0.259995, "max": 0.360992, "mean": 0.278535}},
+            {"id": 588, "piece_hex": "6f6e65", "bytes": 3, "us": {"n": 200, "median": 0.311005, "min": 0.299988, "max": 0.401001, "mean": 0.314895}},
+            {"id": 18941, "piece_hex": "3d63", "bytes": 2, "us": {"n": 200, "median": 0.440994, "min": 0.419998, "max": 4.08701, "mean": 0.467355}},
+            {"id": 7430, "piece_hex": "616c6d", "bytes": 3, "us": {"n": 200, "median": 0.570999, "min": 0.530991, "max": 4.02699, "mean": 0.59139}}
+          ]
+        },
+        {
+          "state": "near",
+          "tokens": [
+            {"id": 364, "piece_hex": "20666f72", "bytes": 4, "us": {"n": 200, "median": 0.681, "min": 0.660995, "max": 0.791, "mean": 0.68133}},
+            {"id": 1381, "piece_hex": "206e6f77", "bytes": 4, "us": {"n": 200, "median": 0.651001, "min": 0.640991, "max": 0.731003, "mean": 0.655445}}
+          ]
+        }
+      ]
+    },
+    {
+      "name": "G4",
+      "desc": "diary JSON schema (converted)",
+      "file": "g4_diary_schema.gbnf",
+      "grammar_bytes": 946,
+      "rules": 277,
+      "init_us": {"n": 200, "median": 76.195, "min": 72.307, "max": 87.356, "mean": 76.4788},
+      "states": [
+        {
+          "name": "fresh",
+          "prefix_printable": "",
+          "prefix_hex": "",
+          "stacks": 1,
+          "allow_eog": false,
+          "allowed_tokens": 2,
+          "fill_us": {"n": 200, "median": 11557.6, "min": 11486.3, "max": 11848.9, "mean": 11570.1},
+          "decode_only_us": {"n": 200, "median": 8846.33, "min": 8326.97, "max": 10296.6, "mean": 8866.69},
+          "reject_only_us": {"n": 200, "median": 640.117, "min": 632.939, "max": 655.912, "mean": 640.639},
+          "validate_good": {"id": 4754, "piece_hex": "7b22", "accepted": true, "us": {"n": 1000, "median": 1.202, "min": 1.172, "max": 6.13199, "mean": 1.20561}},
+          "validate_bad": {"id": 0, "piece_hex": "21", "us": {"n": 1000, "median": 0.42099, "min": 0.399994, "max": 3.927, "mean": 0.424288}}
+        },
+        {
+          "name": "mid",
+          "prefix_printable": "{\"title\": \"Day one\", \"text\": \"The park",
+          "prefix_hex": "7b227469746c65223a2022446179206f6e65222c202274657874223a2022546865207061726b",
+          "stacks": 3,
+          "allow_eog": false,
+          "allowed_tokens": 245466,
+          "fill_us": {"n": 200, "median": 25849.7, "min": 25224.7, "max": 28861.7, "mean": 25770.5},
+          "decode_only_us": {"n": 200, "median": 9083.06, "min": 8807.7, "max": 11211.1, "mean": 9121.89},
+          "reject_only_us": {"n": 200, "median": 14484.5, "min": 14280.1, "max": 16349.8, "mean": 14669.4},
+          "validate_good": {"id": 557, "piece_hex": "20776173", "accepted": true, "us": {"n": 1000, "median": 3.72701, "min": 3.67699, "max": 7.754, "mean": 3.74109}},
+          "validate_bad": {"id": 94, "piece_hex": "a1", "us": {"n": 1000, "median": 0.751007, "min": 0.730988, "max": 4.59801, "mean": 0.755616}}
+        },
+        {
+          "name": "near",
+          "prefix_printable": "{\"title\": \"Day one\", \"text\": \"ok\", \"facts\": [\"a\"], \"people\": [{\"name\": \"Ann\", \"when\": \"9am\"}]",
+          "prefix_hex": "7b227469746c65223a2022446179206f6e65222c202274657874223a20226f6b222c20226661637473223a205b2261225d2c202270656f706c65223a205b7b226e616d65223a2022416e6e222c20227768656e223a202239616d227d5d",
+          "stacks": 3,
+          "allow_eog": false,
+          "allowed_tokens": 5,
+          "fill_us": {"n": 200, "median": 13776.9, "min": 13702.1, "max": 14391.4, "mean": 13812.1},
+          "decode_only_us": {"n": 200, "median": 9096.63, "min": 8582.96, "max": 9654.89, "mean": 9115.08},
+          "reject_only_us": {"n": 200, "median": 2777.14, "min": 2753.37, "max": 2980.32, "mean": 2789.19},
+          "validate_good": {"id": 92, "piece_hex": "7d", "accepted": true, "us": {"n": 1000, "median": 0.580994, "min": 0.570999, "max": 0.802002, "mean": 0.581134}},
+          "validate_bad": {"id": 0, "piece_hex": "21", "us": {"n": 1000, "median": 0.570999, "min": 0.560989, "max": 4.869, "mean": 0.576824}}
+        }
+      ],
+      "accept": [
+        {
+          "state": "fresh",
+          "tokens": [
+            {"id": 4754, "piece_hex": "7b22", "bytes": 2, "us": {"n": 200, "median": 0.672005, "min": 0.630997, "max": 0.912003, "mean": 0.683986}},
+            {"id": 2034, "piece_hex": "7469746c65", "bytes": 5, "us": {"n": 200, "median": 0.520996, "min": 0.510986, "max": 0.602005, "mean": 0.523995}},
+            {"id": 763, "piece_hex": "223a", "bytes": 2, "us": {"n": 200, "median": 0.942001, "min": 0.891998, "max": 1.112, "mean": 0.951095}},
+            {"id": 328, "piece_hex": "2022", "bytes": 2, "us": {"n": 200, "median": 0.802002, "min": 0.751007, "max": 0.932007, "mean": 0.814525}},
+            {"id": 51, "piece_hex": "54", "bytes": 1, "us": {"n": 200, "median": 0.621002, "min": 0.570999, "max": 0.811005, "mean": 0.631415}},
+            {"id": 487, "piece_hex": "222c", "bytes": 2, "us": {"n": 200, "median": 0.69101, "min": 0.67099, "max": 0.821991, "mean": 0.697746}},
+            {"id": 328, "piece_hex": "2022", "bytes": 2, "us": {"n": 200, "median": 0.401001, "min": 0.389999, "max": 0.490997, "mean": 0.408485}},
+            {"id": 1272, "piece_hex": "74657874", "bytes": 4, "us": {"n": 200, "median": 0.431, "min": 0.419998, "max": 0.611008, "mean": 0.43749}},
+            {"id": 763, "piece_hex": "223a", "bytes": 2, "us": {"n": 200, "median": 0.890991, "min": 0.860992, "max": 1.112, "mean": 0.892615}},
+            {"id": 328, "piece_hex": "2022", "bytes": 2, "us": {"n": 200, "median": 0.731003, "min": 0.700989, "max": 0.921997, "mean": 0.73402}},
+            {"id": 87, "piece_hex": "78", "bytes": 1, "us": {"n": 200, "median": 0.55101, "min": 0.531006, "max": 0.771011, "mean": 0.562659}},
+            {"id": 487, "piece_hex": "222c", "bytes": 2, "us": {"n": 200, "median": 0.671005, "min": 0.651001, "max": 0.952011, "mean": 0.678555}},
+            {"id": 328, "piece_hex": "2022", "bytes": 2, "us": {"n": 200, "median": 0.401001, "min": 0.389999, "max": 0.541, "mean": 0.407585}},
+            {"id": 65756, "piece_hex": "6661637473", "bytes": 5, "us": {"n": 200, "median": 0.511002, "min": 0.490997, "max": 0.561996, "mean": 0.509825}},
+            {"id": 763, "piece_hex": "223a", "bytes": 2, "us": {"n": 200, "median": 0.882004, "min": 0.850998, "max": 1.162, "mean": 0.887885}},
+            {"id": 9774, "piece_hex": "205b5d2c", "bytes": 4, "us": {"n": 200, "median": 1.83301, "min": 1.733, "max": 5.591, "mean": 1.88366}},
+            {"id": 328, "piece_hex": "2022", "bytes": 2, "us": {"n": 200, "median": 0.411011, "min": 0.399994, "max": 0.490997, "mean": 0.41803}},
+            {"id": 15596, "piece_hex": "70656f706c65", "bytes": 6, "us": {"n": 200, "median": 0.591995, "min": 0.570999, "max": 4.528, "mean": 0.617165}},
+            {"id": 763, "piece_hex": "223a", "bytes": 2, "us": {"n": 200, "median": 0.880997, "min": 0.850998, "max": 1.021, "mean": 0.880435}},
+            {"id": 2958, "piece_hex": "205b5d", "bytes": 3, "us": {"n": 200, "median": 1.59299, "min": 1.543, "max": 2.02301, "mean": 1.60213}},
+            {"id": 92, "piece_hex": "7d", "bytes": 1, "us": {"n": 200, "median": 0.190994, "min": 0.180008, "max": 0.350006, "mean": 0.19454}}
+          ]
+        },
+        {
+          "state": "mid",
+          "tokens": [
+            {"id": 557, "piece_hex": "20776173", "bytes": 4, "us": {"n": 200, "median": 1.713, "min": 1.653, "max": 1.964, "mean": 1.71758}},
+            {"id": 11012, "piece_hex": "207175696574", "bytes": 6, "us": {"n": 200, "median": 2.114, "min": 2.08299, "max": 5.981, "mean": 2.13611}},
+            {"id": 1, "piece_hex": "22", "bytes": 1, "us": {"n": 200, "median": 0.241013, "min": 0.229996, "max": 0.350998, "mean": 0.249365}}
+          ]
+        },
+        {
+          "state": "near",
+          "tokens": [
+            {"id": 92, "piece_hex": "7d", "bytes": 1, "us": {"n": 200, "median": 0.220001, "min": 0.200989, "max": 0.571014, "mean": 0.225765}}
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,17 @@
+char ::= [^"\\\x7F\x00-\x1F] | [\\] (["\\bfnrt] | "u" [0-9a-fA-F]{4})
+facts ::= "[" space (facts-item ("," space facts-item){0,13})? space "]"
+facts-item ::= "\"" char{0,120} "\""
+facts-kv ::= "\"facts\"" space ":" space facts
+people ::= "[" space (people-item ("," space people-item){0,3})? space "]"
+people-item ::= "{" space people-item-name-kv "," space people-item-when-kv space "}"
+people-item-name ::= "\"" char{0,30} "\""
+people-item-name-kv ::= "\"name\"" space ":" space people-item-name
+people-item-when ::= "\"" char{0,5} "\""
+people-item-when-kv ::= "\"when\"" space ":" space people-item-when
+people-kv ::= "\"people\"" space ":" space people
+root ::= "{" space title-kv "," space text-kv "," space facts-kv "," space people-kv space "}"
+space ::= | " " | "\n"{1,2} [ \t]{0,20}
+text ::= "\"" char{0,2400} "\""
+text-kv ::= "\"text\"" space ":" space text
+title ::= "\"" char{0,60} "\""
+title-kv ::= "\"title\"" space ":" space title
