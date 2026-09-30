@@ -1,9 +1,13 @@
 # NInfer llama.cpp chat-parsing source base
 
 This maintained implementation originates from [llama.cpp](https://github.com/ggml-org/llama.cpp),
-commit [`95887577ab5fead779581a7030a83c7752ff3234`](https://github.com/ggml-org/llama.cpp/commit/95887577ab5fead779581a7030a83c7752ff3234)
-(`refs/heads/master`, 2026-09-26), source paths under `common/`, under the MIT license; see
-[LICENSE](LICENSE).
+source paths under `common/`, under the MIT license; see [LICENSE](LICENSE). The current recorded
+baseline is
+[`05af0d2b1398394cfa67e1918fee7feabccaa9bc`](https://github.com/ggml-org/llama.cpp/commit/05af0d2b1398394cfa67e1918fee7feabccaa9bc)
+(`refs/heads/master`, 2026-09-30) — every vendored file below is byte-identical to it (verified
+per file). The set was first vendored at
+[`95887577ab5fead779581a7030a83c7752ff3234`](https://github.com/ggml-org/llama.cpp/commit/95887577ab5fead779581a7030a83c7752ff3234)
+(2026-09-26); the 2026-09-30 baseline advance verified no vendored path had changed in between.
 
 It is the **minimal parser-only port** decided by wayfinder map
 [#25](https://github.com/kido5217/ninfer-yarn/issues/25) and design ticket
