@@ -2,7 +2,7 @@
 
 How this fork (`kido5217/ninfer-yarn`) stays current with upstream `Neroued/ninfer` while keeping
 its own patches. Every fact below was verified during the first sync (2026-09-26, upstream tip
-`e31bc99b`).
+`e31bc99b`) and re-confirmed during the second sync (2026-09-30, upstream tip `d44ab584`).
 
 ## Ground rules
 
