@@ -60,6 +60,7 @@ other references own narrower contracts:
 | [Linear tuning and reports](maintainer/linear-tuning.md) | tuning ranges, priority points, dispatch tradeoffs and final performance report format |
 | [Upstream sync](maintainer/upstream-sync.md) | fork patches vs upstream `Neroued/ninfer`: read-only rules, sync procedure, conflict policy, verification and drift alert |
 | [Vendored llama.cpp chat stack](maintainer/llama-chat-vendor.md) | `third_party/llama-chat`: recorded baseline, re-vendor procedure, drift alert and verification |
+| [Vendored llama.cpp grammar runtime](maintainer/llama-grammar-vendor.md) | `third_party/llama-grammar`: recorded baseline, patch set, re-vendor procedure, drift alert and verification |
 
 Model cards contain official artifact facts and source provenance. The
 [conversion guide](weight-conversion.md) is the entry point for making an artifact. Exact config
