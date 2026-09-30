@@ -325,7 +325,11 @@ StateKey make_state_key(const llama_grammar_stacks& stacks, const llama_partial_
                         const RuleAddressIndex& index,
                         const std::vector<std::uint32_t>& canonical_rule) {
     StateKey key;
-    key.partial_value  = partial.value;
+    // The engine keeps the last decoded codepoint in partial_utf8.value after a sequence
+    // completes, but reads that field only while n_remain != 0 (vendored decode_utf8 and
+    // match_partial_char), so with no pending sequence it is dead state: canonicalize it or
+    // every token that ends a multi-byte codepoint would mint a fresh cache key.
+    key.partial_value  = partial.n_remain == 0 ? 0U : partial.value;
     key.partial_remain = partial.n_remain;
 
     std::vector<std::vector<std::uint32_t>> encoded;
@@ -422,7 +426,10 @@ bool GrammarState::accept(int token_id) {
     if (token_id < 0 || token_id >= count) { return false; }
     if (self.backbone->vocabulary->is_eog(token_id)) { return can_end(); }
     const std::string& piece = VocabularyBridge::token_to_piece(&self.backbone->bridge, token_id);
-    if (piece.empty()) { return false; }
+    // The engine's decoder reads a piece as a NUL-terminated C string, so a NUL-leading
+    // piece decodes to nothing and accepting it would silently not move the state; the mask
+    // declares exactly these pieces (empty or NUL-leading) illegal, and so does accept.
+    if (piece.empty() || piece[0] == '\0') { return false; }
 
     // The engine assigns the rebuilt stack set before validating it, so a rejected token
     // would leave the state empty; restore the snapshot on the rejection path.

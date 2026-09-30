@@ -28,6 +28,7 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -203,8 +204,8 @@ bool decodes_cleanly(std::string_view piece) {
             if ((next & 0xC0U) != 0x80U) { return false; }
             code = (code << 6U) | (next & 0x3FU);
         }
-        if ((length == 3 && code < 0x800) || (length == 4 && code < 0x10000) ||
-            code > 0x10FFFF || (code >= 0xD800 && code <= 0xDFFF)) {
+        if ((length == 3 && code < 0x800) || (length == 4 && code < 0x10000) || code > 0x10FFFF ||
+            (code >= 0xD800 && code <= 0xDFFF)) {
             return false;
         }
         offset += length;
@@ -293,11 +294,17 @@ public:
     }
 
     [[nodiscard]] bool accept(int id) {
+        const llama_grammar_stacks saved_stacks = grammar_->stacks;
+        const llama_partial_utf8 saved_partial  = grammar_->partial_utf8;
         try {
             llama_grammar_accept_token(*grammar_, static_cast<llama_token>(id),
                                        std::string(vocabulary_.piece(id)));
             return true;
-        } catch (const std::exception&) { return false; }
+        } catch (const std::exception&) {
+            grammar_->stacks       = saved_stacks;
+            grammar_->partial_utf8 = saved_partial;
+            return false;
+        }
     }
 
 private:
@@ -692,9 +699,8 @@ DifferentialResult run_differential(const std::string& name, const std::string& 
             // non-EOG tokens carry text, and a pending partial UTF-8 sequence (or a piece the
             // mask declares illegal) is where the mask applies a look-ahead instead.
             const std::string_view piece = vocabulary->piece(id);
-            const bool legal_piece =
-                !vocabulary->is_eog(id) && !piece.empty() && piece[0] != '\0' &&
-                decodes_cleanly(piece);
+            const bool legal_piece       = !vocabulary->is_eog(id) && !piece.empty() &&
+                                     piece[0] != '\0' && decodes_cleanly(piece);
             const bool comparable = legal_piece && !oracle.partial_pending();
             const bool replay     = oracle.accept_replay(id);
             if (actual) {
@@ -705,8 +711,7 @@ DifferentialResult run_differential(const std::string& name, const std::string& 
             } else {
                 ++result.rejected;
                 if (comparable && replay) {
-                    check(false,
-                          "differential " + name + ": replay accepted a mask-rejected token",
+                    check(false, "differential " + name + ": replay accepted a mask-rejected token",
                           std::to_string(id));
                     return result;
                 }
@@ -755,10 +760,9 @@ void test_differential_oracle() {
     // A deterministic one-byte-per-step walk reaches the maxLength boundary exactly.
     const DifferentialResult g2_deep =
         run_differential("g2 deep walk", "root ::= [^\\n]{3,240}", 0x52u, 260, false, true);
-    check(g2_deep.advances == 240 && g2_deep.exhausted,
-          "g2 deep walk reached the 240 boundary",
-          std::to_string(g2_deep.advances) + " advances, exhausted=" +
-              std::to_string(static_cast<int>(g2_deep.exhausted)));
+    check(g2_deep.advances == 240 && g2_deep.exhausted, "g2 deep walk reached the 240 boundary",
+          std::to_string(g2_deep.advances) +
+              " advances, exhausted=" + std::to_string(static_cast<int>(g2_deep.exhausted)));
 
     const DifferentialResult g3 =
         run_differential("g3 key value record",
@@ -963,21 +967,17 @@ std::string byte_level_symbol(std::uint8_t target) {
 
 void test_tokenizer_vocabulary() {
     // A minimal byte-level BPE tokenizer fixture with two added tokens.
-    const auto added                  = [](int id, const std::string& content, bool special) {
-        return nlohmann::json{{"id", id},
-                              {"content", content},
-                              {"single_word", false},
-                              {"lstrip", false},
-                              {"rstrip", false},
-                              {"normalized", false},
+    const auto added = [](int id, const std::string& content, bool special) {
+        return nlohmann::json{{"id", id},          {"content", content}, {"single_word", false},
+                              {"lstrip", false},   {"rstrip", false},    {"normalized", false},
                               {"special", special}};
     };
     nlohmann::json vocab = nlohmann::json::object();
     for (int value = 0; value <= 255; ++value) {
         vocab[byte_level_symbol(static_cast<std::uint8_t>(value))] = value;
     }
-    nlohmann::json added_tokens = nlohmann::json::array(
-        {added(300, "<|endoftext|>", true), added(301, "hello", false)});
+    nlohmann::json added_tokens =
+        nlohmann::json::array({added(300, "<|endoftext|>", true), added(301, "hello", false)});
     const std::string tokenizer_json = nlohmann::json{
         {"model",
          {{"type", "BPE"}, {"vocab", std::move(vocab)}, {"merges", nlohmann::json::array()}}},
@@ -991,7 +991,8 @@ void test_tokenizer_vocabulary() {
     const std::string tokenizer_config_json = nlohmann::json{
         {"add_bos_token", false},
         {"add_prefix_space", false},
-        {"added_tokens_decoder", std::move(decoder)}}.dump();
+        {"added_tokens_decoder",
+         std::move(decoder)}}.dump();
     const std::string generation_config_json = R"({"eos_token_id":[300]})";
 
     const auto tokenizer = std::make_shared<const frontend::Tokenizer>(frontend::TokenizerResources{
@@ -1025,6 +1026,125 @@ void test_tokenizer_vocabulary() {
         check(state.accept(301), "tokenizer vocabulary state advances on the added token");
         check(state.can_end(), "tokenizer vocabulary grammar completes");
     }
+}
+
+// ---------------------------------------------------------------------------
+// Cache-key canonicalization, look-alike chains and accept/mask agreement
+// ---------------------------------------------------------------------------
+
+void test_partial_key_canonicalization() {
+    // A walk that feeds tokens ending in different multi-byte codepoints leaves a different
+    // dead `partial_utf8.value` after every accepted token (the engine keeps the last decoded
+    // codepoint there once n_remain reaches 0). With that field in the cache key, each of the
+    // twenty distinct trailing codepoints mints its own key even though every state sits far
+    // inside the same folded counter; canonicalized, the whole walk is one fill. The oracle
+    // comparison keeps the rows exact at every step.
+    {
+        std::vector<std::string> pieces;
+        for (int byte = 0; byte < 256; ++byte) { pieces.emplace_back(1, static_cast<char>(byte)); }
+        const char* extras[] = {"д", "е", "ж", "з", "и", "й", "к", "л", "м", "н",
+                                "о", "п", "р", "с", "т", "у", "ф", "х", "ц", "ч"};
+        for (const char* extra : extras) { pieces.emplace_back(extra); }
+        const auto vocabulary =
+            std::make_shared<const SyntheticVocabulary>(std::move(pieces), std::vector<int>{});
+        std::string error;
+        std::shared_ptr<const frontend::CompiledGrammar> grammar =
+            frontend::CompiledGrammar::compile("root ::= [^\"]{0,400}", vocabulary, &error);
+        check(grammar != nullptr, "partial-key grammar compiled", error);
+        if (grammar) {
+            EngineOracle oracle("root ::= [^\"]{0,400}", *vocabulary);
+            std::vector<int> cycle;
+            for (const char* extra : extras) { cycle.push_back(piece_id(*vocabulary, extra)); }
+            auto state        = grammar->initial_state();
+            std::size_t steps = 0;
+            while (steps < 200) {
+                const frontend::GrammarMaskRow row = grammar->row_for(state);
+                for (int id = 0; id < vocabulary->token_count(); ++id) {
+                    check(row_bit(row, id) == oracle.token_allowed(id),
+                          "partial-key row matches the oracle at step " + std::to_string(steps));
+                }
+                const int pick = cycle[steps % cycle.size()];
+                if (!state.accept(pick)) { break; }
+                check(oracle.accept(pick), "partial-key oracle advances");
+                ++steps;
+            }
+            const std::size_t fold_limit                 = vocabulary->max_piece_bytes() + 2;
+            const frontend::CompiledGrammar::Stats stats = grammar->stats();
+            check(steps == 200, "partial-key walk reached the step bound", std::to_string(steps));
+            check(stats.row_fills <= fold_limit + 3, "dead partial values do not mint cache keys",
+                  std::to_string(stats.row_fills) + " fills for " + std::to_string(steps) +
+                      " states (limit " + std::to_string(fold_limit + 3) + ")");
+        }
+    }
+
+    // Tokens the mask declares illegal (empty or NUL-leading pieces) are rejected by accept
+    // without moving the state, so the mask and accept cannot disagree on them; the standard
+    // vocabulary's id 0 is a single NUL byte.
+    {
+        const std::shared_ptr<const SyntheticVocabulary>& vocabulary = standard_vocabulary();
+        std::string error;
+        std::shared_ptr<const frontend::CompiledGrammar> grammar =
+            frontend::CompiledGrammar::compile("root ::= [^\"]+", vocabulary, &error);
+        check(grammar != nullptr, "nul-piece grammar compiled", error);
+        if (grammar) {
+            auto state = grammar->initial_state();
+            check(!row_bit(grammar->row_for(state), 0), "mask clears the NUL-leading piece");
+            check(!state.accept(0), "accept rejects the NUL-leading piece");
+            check(state.accept(120), "the state advances after the NUL rejection");
+            check(state.can_end(), "the state is consistent after the NUL rejection");
+        }
+    }
+}
+
+void test_lookalike_chain_guard() {
+    // The repetition normalizer accepts a candidate link only when its target is a frame with
+    // an identical body. This fixture makes the guard observable: `A` and `B` are hand-written
+    // frame look-alikes (their second alternative is the empty literal, which is how a source
+    // rule carries the frame shape) with the same body, each linking into a repetition of a
+    // different body. Without the guard both fold to the same saturated canonical position,
+    // the states after "1" and after "2" share one cached row, and the oracle comparison
+    // below detects it; the explicit "xy"/"xz" expectations show which row leaked.
+    const char* gbnf                = "root ::= \"1\" A | \"2\" B\n"
+                                      "A ::= \"x\" \"y\"{0,12} | \"\"\n"
+                                      "B ::= \"x\" \"z\"{0,12} | \"\"\n";
+    std::vector<std::string> pieces = {"1", "2", "x", "y", "z", "xy", "xz", "<eos>"};
+    const auto vocabulary           = std::make_shared<const SyntheticVocabulary>(
+        std::move(pieces), std::vector<int>{static_cast<int>(7)});
+    std::string error;
+    std::shared_ptr<const frontend::CompiledGrammar> grammar =
+        frontend::CompiledGrammar::compile(gbnf, vocabulary, &error);
+    check(grammar != nullptr, "look-alike chain grammar compiled", error);
+    if (!grammar) { return; }
+
+    const auto walk = [&](const std::string& prefix) {
+        EngineOracle oracle(gbnf, *vocabulary);
+        auto state = grammar->initial_state();
+        for (const int id : vocabulary->encode(prefix)) {
+            const frontend::GrammarMaskRow row = grammar->row_for(state);
+            for (int token = 0; token < vocabulary->token_count(); ++token) {
+                check(row_bit(row, token) == oracle.token_allowed(token),
+                      "look-alike chain row matches the oracle after " + prefix);
+            }
+            check(state.accept(id), "look-alike chain prefix advances: " + prefix);
+            check(oracle.accept(id), "look-alike chain oracle advances: " + prefix);
+        }
+        const frontend::GrammarMaskRow row = grammar->row_for(state);
+        for (int token = 0; token < vocabulary->token_count(); ++token) {
+            check(row_bit(row, token) == oracle.token_allowed(token),
+                  "look-alike chain final row matches the oracle after " + prefix);
+        }
+        return row;
+    };
+    const frontend::GrammarMaskRow row_one = walk("1");
+    const frontend::GrammarMaskRow row_two = walk("2");
+
+    const int xy = piece_id(*vocabulary, "xy");
+    const int xz = piece_id(*vocabulary, "xz");
+    check(row_bit(row_one, xy) && !row_bit(row_one, xz),
+          "the first look-alike accepts xy and rejects xz");
+    check(row_bit(row_two, xz) && !row_bit(row_two, xy),
+          "the second look-alike accepts xz and rejects xy");
+    check(!rows_equal(row_one, row_two), "the look-alike branches keep distinct rows");
 }
 
 // ---------------------------------------------------------------------------
@@ -1079,19 +1199,9 @@ void test_engine_structural_vector() {
     // compared against upstream's recorded expectations.
     llama_grammar_parser parsed;
     const std::vector<std::pair<std::string, uint32_t>> expected_symbols = {
-        {"expr", 2},
-        {"expr_6", 6},
-        {"expr_7", 7},
-        {"ident", 8},
-        {"ident_10", 10},
-        {"num", 9},
-        {"num_11", 11},
-        {"root", 0},
-        {"root_1", 1},
-        {"root_5", 5},
-        {"term", 4},
-        {"ws", 3},
-        {"ws_12", 12},
+        {"expr", 2}, {"expr_6", 6},  {"expr_7", 7}, {"ident", 8},  {"ident_10", 10},
+        {"num", 9},  {"num_11", 11}, {"root", 0},   {"root_1", 1}, {"root_5", 5},
+        {"term", 4}, {"ws", 3},      {"ws_12", 12},
     };
     const std::vector<std::vector<llama_grammar_element>> expected_rules = {
         {{LLAMA_GRETYPE_RULE_REF, 5}, {LLAMA_GRETYPE_END, 0}},
@@ -1117,7 +1227,11 @@ void test_engine_structural_vector() {
             {LLAMA_GRETYPE_RULE_REF, 3},
             {LLAMA_GRETYPE_END, 0},
         },
-        {{LLAMA_GRETYPE_RULE_REF, 1}, {LLAMA_GRETYPE_RULE_REF, 5}, {LLAMA_GRETYPE_ALT, 0}, {LLAMA_GRETYPE_RULE_REF, 1}, {LLAMA_GRETYPE_END, 0}},
+        {{LLAMA_GRETYPE_RULE_REF, 1},
+         {LLAMA_GRETYPE_RULE_REF, 5},
+         {LLAMA_GRETYPE_ALT, 0},
+         {LLAMA_GRETYPE_RULE_REF, 1},
+         {LLAMA_GRETYPE_END, 0}},
         {
             {LLAMA_GRETYPE_CHAR, 45},
             {LLAMA_GRETYPE_CHAR_ALT, 43},
@@ -1126,7 +1240,10 @@ void test_engine_structural_vector() {
             {LLAMA_GRETYPE_RULE_REF, 4},
             {LLAMA_GRETYPE_END, 0},
         },
-        {{LLAMA_GRETYPE_RULE_REF, 6}, {LLAMA_GRETYPE_RULE_REF, 7}, {LLAMA_GRETYPE_ALT, 0}, {LLAMA_GRETYPE_END, 0}},
+        {{LLAMA_GRETYPE_RULE_REF, 6},
+         {LLAMA_GRETYPE_RULE_REF, 7},
+         {LLAMA_GRETYPE_ALT, 0},
+         {LLAMA_GRETYPE_END, 0}},
         {
             {LLAMA_GRETYPE_CHAR, 97},
             {LLAMA_GRETYPE_CHAR_RNG_UPPER, 122},
@@ -1167,9 +1284,8 @@ void test_engine_structural_vector() {
     for (const auto& rule : expected_rules) { parsed.rules.push_back(rule); }
 
     std::vector<const llama_grammar_element*> grammar_rules = parsed.c_rules();
-    llama_grammar* grammar =
-        llama_grammar_init_impl(nullptr, grammar_rules.data(), grammar_rules.size(),
-                                parsed.symbol_ids.at("root"));
+    llama_grammar* grammar                                  = llama_grammar_init_impl(
+        nullptr, grammar_rules.data(), grammar_rules.size(), parsed.symbol_ids.at("root"));
     check(grammar != nullptr, "structural vector: grammar initialized");
     if (grammar == nullptr) { return; }
 
@@ -1226,9 +1342,9 @@ void test_engine_structural_vector() {
     check(stacks.size() == expected_stacks.size(), "structural vector: stack count",
           std::to_string(stacks.size()) + " vs " + std::to_string(expected_stacks.size()));
     for (std::size_t index = 0; index < stacks.size() && index < expected_stacks.size(); ++index) {
-        const llama_grammar_stack& stack                     = stacks[index];
-        const std::vector<llama_grammar_element>& expected    = expected_stacks[index];
-        bool ok = stack.size() == expected.size();
+        const llama_grammar_stack& stack                   = stacks[index];
+        const std::vector<llama_grammar_element>& expected = expected_stacks[index];
+        bool ok                                            = stack.size() == expected.size();
         if (ok) {
             for (std::size_t element = 0; element < stack.size(); ++element) {
                 ok = ok && stack[element]->type == expected[element].type &&
@@ -1246,29 +1362,9 @@ void test_engine_structural_vector() {
     }
     const std::vector<std::vector<std::pair<uint32_t, uint16_t>>> expected_rejects = {
         {
-            {0, 37},
-            {1, 38},
-            {2, 39},
-            {4, 41},
-            {5, 42},
-            {6, 43},
-            {7, 44},
-            {8, 45},
-            {9, 46},
-            {10, 47},
-            {11, 48},
-            {12, 49},
-            {13, 50},
-            {14, 51},
-            {15, 52},
-            {16, 53},
-            {17, 54},
-            {18, 55},
-            {19, 56},
-            {20, 57},
-            {21, 58},
-            {22, 59},
-            {23, 60},
+            {0, 37},  {1, 38},  {2, 39},  {4, 41},  {5, 42},  {6, 43},  {7, 44},  {8, 45},
+            {9, 46},  {10, 47}, {11, 48}, {12, 49}, {13, 50}, {14, 51}, {15, 52}, {16, 53},
+            {17, 54}, {18, 55}, {19, 56}, {20, 57}, {21, 58}, {22, 59}, {23, 60},
         },
         {
             {0, 37},
@@ -1303,54 +1399,14 @@ void test_engine_structural_vector() {
             {23, 60},
         },
         {
-            {0, 37},
-            {1, 38},
-            {2, 39},
-            {3, 40},
-            {4, 41},
-            {5, 42},
-            {6, 43},
-            {7, 44},
-            {8, 45},
-            {9, 46},
-            {10, 47},
-            {11, 48},
-            {12, 49},
-            {13, 50},
-            {14, 51},
-            {15, 52},
-            {16, 53},
-            {17, 54},
-            {18, 55},
-            {19, 56},
-            {20, 57},
-            {21, 58},
-            {22, 59},
+            {0, 37},  {1, 38},  {2, 39},  {3, 40},  {4, 41},  {5, 42},  {6, 43},  {7, 44},
+            {8, 45},  {9, 46},  {10, 47}, {11, 48}, {12, 49}, {13, 50}, {14, 51}, {15, 52},
+            {16, 53}, {17, 54}, {18, 55}, {19, 56}, {20, 57}, {21, 58}, {22, 59},
         },
         {
-            {0, 37},
-            {1, 38},
-            {2, 39},
-            {4, 41},
-            {5, 42},
-            {6, 43},
-            {7, 44},
-            {8, 45},
-            {9, 46},
-            {10, 47},
-            {11, 48},
-            {12, 49},
-            {13, 50},
-            {14, 51},
-            {15, 52},
-            {16, 53},
-            {17, 54},
-            {18, 55},
-            {19, 56},
-            {20, 57},
-            {21, 58},
-            {22, 59},
-            {23, 60},
+            {0, 37},  {1, 38},  {2, 39},  {4, 41},  {5, 42},  {6, 43},  {7, 44},  {8, 45},
+            {9, 46},  {10, 47}, {11, 48}, {12, 49}, {13, 50}, {14, 51}, {15, 52}, {16, 53},
+            {17, 54}, {18, 55}, {19, 56}, {20, 57}, {21, 58}, {22, 59}, {23, 60},
         },
         {
             {0, 37},
@@ -1385,29 +1441,9 @@ void test_engine_structural_vector() {
             {23, 60},
         },
         {
-            {0, 37},
-            {1, 38},
-            {2, 39},
-            {3, 40},
-            {4, 41},
-            {5, 42},
-            {6, 43},
-            {7, 44},
-            {8, 45},
-            {9, 46},
-            {10, 47},
-            {11, 48},
-            {12, 49},
-            {13, 50},
-            {14, 51},
-            {15, 52},
-            {16, 53},
-            {17, 54},
-            {18, 55},
-            {19, 56},
-            {20, 57},
-            {21, 58},
-            {22, 59},
+            {0, 37},  {1, 38},  {2, 39},  {3, 40},  {4, 41},  {5, 42},  {6, 43},  {7, 44},
+            {8, 45},  {9, 46},  {10, 47}, {11, 48}, {12, 49}, {13, 50}, {14, 51}, {15, 52},
+            {16, 53}, {17, 54}, {18, 55}, {19, 56}, {20, 57}, {21, 58}, {22, 59},
         },
     };
     for (std::size_t index = 0; index < stacks.size() && index < expected_rejects.size(); ++index) {
@@ -1432,6 +1468,8 @@ void test_engine_structural_vector() {
 } // namespace
 
 int main() {
+    test_partial_key_canonicalization();
+    test_lookalike_chain_guard();
     test_compile_errors();
     test_engine_structural_vector();
     test_language_cases();

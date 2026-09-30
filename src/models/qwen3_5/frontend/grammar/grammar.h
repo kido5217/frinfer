@@ -33,10 +33,12 @@ public:
     [[nodiscard]] const CompiledGrammar& grammar() const noexcept;
 
     // Advances the state by one sampled token. Returns false without advancing when the
-    // token cannot be consumed here (empty piece, a rejected token, or a token after the
-    // grammar already ended) so callers can fail closed on unconstrained-sampler input.
-    // End-of-generation ids are accepted exactly when can_end() holds and never move the
-    // state, matching the runtime's terminal semantics.
+    // token cannot be consumed here: an out-of-domain id, a token whose piece the mask
+    // declares illegal (empty or NUL-leading, which the engine's decoder reads as nothing),
+    // a token the grammar rejects, or a token after the grammar already ended. Callers
+    // sample against row_for(), so a rejection is fail-closed recovery for unconstrained
+    // input. End-of-generation ids are accepted exactly when can_end() holds and never move
+    // the state, matching the runtime's terminal semantics.
     [[nodiscard]] bool accept(int token_id);
 
     // True when the grammar can end at this state; end-of-generation ids are allowed at
