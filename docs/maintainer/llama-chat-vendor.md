@@ -27,17 +27,22 @@ A session-side smart note (`llama.cpp chat-stack drift`) surfaces when upstream 
 commits **after the recorded baseline that touch the vendored file set** — not when master merely
 moves, because the excluded subsystems are where upstream churns. Measured 2026-09-27 for the
 twelve months before: `peg-parser.cpp` 19 commits and `chat-peg-parser.cpp` 25, against
-`chat.cpp` ≥100 and `chat-auto-parser-generator.cpp` 32. Check at any time:
+`chat.cpp` ≥100 and `chat-auto-parser-generator.cpp` 32. Checked again 2026-09-30 with master at
+`05af0d2b`: 97 commits and 259 files past the baseline, **zero of them vendored** — every vendored
+path is byte-identical to `05af0d2b` (verified per file), and the recorded baseline was advanced
+to `05af0d2b`. Check at any time:
 
 ```bash
-BASELINE=95887577ab5fead779581a7030a83c7752ff3234   # keep in sync with the README
+BASELINE=05af0d2b1398394cfa67e1918fee7feabccaa9bc   # keep in sync with the README
 gh api "repos/ggml-org/llama.cpp/compare/$BASELINE...master?per_page=100" --jq '.files[].filename' \
-  | grep -E '^common/(peg-parser|chat-peg-parser|chat|json|json-schema|trie|unicode)(\.|/)|^common/parsers/'
+  | grep -E '^common/(peg-parser|chat-peg-parser|chat|chat-auto-parser|chat-auto-parser-helpers|json|json-schema|json-schema-to-grammar|trie|unicode)\.(h|cpp)$|^common/parsers/(parsers|qwen3-coder)\.(h|cpp)$|^LICENSE$'
 ```
 
-Non-empty output means drift (the compare API lists up to 300 files; for a very large gap,
-compare against the newest baseline first). When the note fires: run the procedure below, then
-re-arm the note with the new baseline.
+The filter must name the exact vendored paths: `common/parsers/` holds non-vendored sibling
+parsers, and on 2026-09-30 a broad `^common/parsers/` filter matched `muse-glimmer.cpp` — a false
+alarm; only the paths above count. Non-empty output means drift (the compare API lists up to 300
+files; for a very large gap, compare against the newest baseline first). When the note fires: run
+the procedure below, then re-arm the note with the new baseline.
 
 ## The re-vendor procedure
 
