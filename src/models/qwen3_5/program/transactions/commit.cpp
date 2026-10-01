@@ -426,9 +426,11 @@ void ProgramImpl::advance_grammar_state(std::span<const std::uint32_t> bases,
                                         std::span<const std::uint32_t> accepted) {
     for (std::size_t row = 0; row < lanes.size(); ++row) {
         RequestControl& request = requests[lanes[row]];
-        if (!request.grammar_runtime || request.pending_mask_plan.column_count == 0 ||
-            (request.pending_mask_plan.reasoning_mask & 1U) != 0U || decisions[row].cancelled ||
-            accepted[row] == 0) {
+        const MaskPlan plan = request.pending_mask_plan;
+        if (!request.grammar_runtime || plan.column_count == 0 ||
+            ((plan.reasoning_mask & static_cast<std::uint8_t>((1U << plan.column_count) - 1U)) ==
+             static_cast<std::uint8_t>((1U << plan.column_count) - 1U)) ||
+            decisions[row].cancelled || accepted[row] == 0) {
             continue;
         }
         const SequenceState& sequence = active_sequence(lanes[row]);
