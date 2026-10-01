@@ -314,6 +314,8 @@ ProgramImpl::ProgramImpl(const execution::Parameters& parameters_in, const Seque
     if (io.mask_rows.data != nullptr) {
         CUDA_CHECK(cudaMemsetAsync(io.mask_rows.data, 0xFF, io.mask_rows.bytes(), device.stream));
         CUDA_CHECK(cudaMemsetAsync(io.mask_active.data, 0, io.mask_active.bytes(), device.stream));
+        mask_staging_words = static_cast<std::size_t>(io.mask_rows.ne[0]);
+        mask_staging.assign(mask_staging_words * kMaskRowCapacity, 0xFFFFFFFFU);
     }
     device.synchronize();
     if (use_cuda_graph) {

@@ -260,10 +260,19 @@ struct OutputOptions {
     std::uint32_t tool_name_max_length = 128;
 };
 
+// Grammar-constrained generation: GBNF text whose root symbol is "root". The protocol adapter
+// converts JSON Schema documents before submitting; the engine compiles, validates and applies
+// the text itself. The tool-parser's own thinking region stays unconstrained - the grammar only
+// governs the published answer stream.
+struct GrammarConstraint {
+    std::string gbnf;
+};
+
 struct RequestOptions {
     ExecutionOptions execution;
     StopPolicy stop;
     OutputOptions output;
+    std::optional<GrammarConstraint> constraint;
 };
 
 enum class MediaKind : std::uint8_t {
@@ -497,6 +506,7 @@ enum class RequestErrorKind : std::uint8_t {
     ThinkingBudgetCapacityInsufficient,
     MediaBudgetExceeded,
     InvalidMedia,
+    InvalidConstraint,
     Overloaded,
     QueueTimeout,
     Cancelled,

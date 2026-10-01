@@ -152,9 +152,11 @@ StartResult ProgramImpl::start_request(MaterializationTransaction& transaction) 
 
 PendingBatch ProgramImpl::decode(std::span<const SequenceHandle> members,
                                  std::span<const runtime::RoundBudget> budgets,
+                                 std::span<const MaskPlan> mask_plans,
                                  runtime::ExecutionTiming* failed_timing) {
     if (pending_transaction_ || members.empty() || members.size() > max_concurrency ||
-        budgets.size() != members.size()) {
+        budgets.size() != members.size() ||
+        (!mask_plans.empty() && mask_plans.size() != members.size())) {
         throw std::invalid_argument("decode membership is invalid");
     }
     std::array<std::uint32_t, kMaximumConcurrency> lanes{};
@@ -171,6 +173,10 @@ PendingBatch ProgramImpl::decode(std::span<const SequenceHandle> members,
         lanes[row] = lane;
     }
     const auto lane_span = std::span<const std::uint32_t>(lanes.data(), members.size());
+    // Grammar mask rows are refreshed before the batch executes so every row of the round is
+    // either masked from its grammar or explicitly unconstrained; the upload stays off the GPU
+    // when nothing in the round is masked.
+    refresh_mask_rows(lane_span, mask_plans);
     try {
         runtime::BatchedGeneratedRound round = decode_raw(lane_span, budgets, failed_timing);
         if (failed_timing != nullptr) { *failed_timing += round.timing; }
@@ -414,6 +420,35 @@ runtime::ExecutionTiming ProgramImpl::append_forced_tokens(
     }
 }
 
+void ProgramImpl::advance_grammar_state(std::span<const std::uint32_t> bases,
+                                        std::span<const std::uint32_t> lanes,
+                                        std::span<const runtime::CommitDecision> decisions,
+                                        std::span<const std::uint32_t> accepted) {
+    for (std::size_t row = 0; row < lanes.size(); ++row) {
+        RequestControl& request = requests[lanes[row]];
+        if (!request.grammar_runtime || request.pending_mask_plan.column_count == 0 ||
+            (request.pending_mask_plan.reasoning_mask & 1U) != 0U || decisions[row].cancelled ||
+            accepted[row] == 0) {
+            continue;
+        }
+        const SequenceState& sequence = active_sequence(lanes[row]);
+        if (accepted[row] > kMaximumConcurrency ||
+            bases[row] + accepted[row] > sequence.ledger.size()) {
+            throw std::logic_error("constrained round produced an invalid accepted span");
+        }
+        std::array<int, kMaximumConcurrency> tokens{};
+        std::array<std::uint8_t, kMaximumConcurrency> regions{};
+        for (std::uint32_t index = 0; index < accepted[row]; ++index) {
+            tokens[index] = sequence.ledger[bases[row] + index];
+        }
+        if (!request.grammar_runtime->commit(
+                std::span<const int>(tokens.data(), accepted[row]),
+                std::span<const std::uint8_t>(regions.data(), accepted[row]))) {
+            throw std::logic_error("constrained generation diverged from its grammar");
+        }
+    }
+}
+
 CommitResult ProgramImpl::commit(PendingBatch&& pending,
                                  std::span<const runtime::CommitDecision> decisions,
                                  runtime::CommitObservation observation,
@@ -453,6 +488,7 @@ CommitResult ProgramImpl::commit(PendingBatch&& pending,
         std::array<std::uint8_t, kMaximumConcurrency> terminal{};
         std::array<std::uint8_t, kMaximumConcurrency> cancelled{};
         std::array<std::optional<std::uint32_t>, kMaximumConcurrency> prefix_execution_splits{};
+        std::array<std::uint32_t, kMaximumConcurrency> grammar_bases{};
         for (std::size_t row = 0; row < row_count; ++row) {
             const std::uint32_t lane                = ContractAccess::lane(members[row]).value;
             lanes[row]                              = lane;
@@ -473,6 +509,10 @@ CommitResult ProgramImpl::commit(PendingBatch&& pending,
                 throw std::logic_error("pending transaction decision is invalid");
             }
             accepted[row]                = decision.accepted_tokens;
+            // A Begin span starts at the prompt frontier; later rounds start at their own base.
+            grammar_bases[row]           = requests[lane].pending.kind == PendingKind::Begin
+                                               ? requests[lane].pending.prompt_tokens
+                                               : requests[lane].pending.base_S;
             terminal[row]                = decision.terminal ? 1U : 0U;
             cancelled[row]               = decision.cancelled ? 1U : 0U;
             prefix_execution_splits[row] = decision.prefix_execution_split_after;
@@ -493,6 +533,13 @@ CommitResult ProgramImpl::commit(PendingBatch&& pending,
                                 failed_timing));
         timing.resume_post();
         pending_transaction_.reset();
+
+        // Grammar constraints advance by the licensed tokens of masked columns. The mask makes an
+        // ungrammatical licensed token impossible, so a rejection is an invariant violation and
+        // fails closed.
+        advance_grammar_state(std::span<const std::uint32_t>(grammar_bases.data(), row_count),
+                              std::span<const std::uint32_t>(lanes.data(), row_count), decisions,
+                              std::span<const std::uint32_t>(accepted.data(), row_count));
 
         CommitResult out;
         out.row_count          = row_count;
