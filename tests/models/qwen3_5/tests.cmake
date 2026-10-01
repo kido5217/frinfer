@@ -23,6 +23,11 @@ ninfer_add_test(ninfer_grammar_test
   SOURCES "${CMAKE_CURRENT_LIST_DIR}/test_grammar.cpp"
   LIBRARIES ninfer_grammar ninfer_llama_grammar ninfer_llama_chat ninfer_model_loading ninfer::json)
 
+ninfer_add_test(ninfer_grammar_producer_test
+  SOURCES "${CMAKE_CURRENT_LIST_DIR}/test_grammar_producer.cpp"
+  NEEDS_SOURCE_DIR
+  LIBRARIES ninfer_grammar ninfer_llama_grammar ninfer_llama_chat ninfer_model_loading ninfer::json)
+
 ninfer_add_test(ninfer_qwen3_5_chat_parsing_corpus_test
   SOURCES "${CMAKE_CURRENT_LIST_DIR}/test_chat_parsing_corpus.cpp"
   NEEDS_SOURCE_DIR
