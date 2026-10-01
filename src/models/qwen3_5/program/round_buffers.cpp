@@ -45,6 +45,9 @@ void validate_spec(const RoundStateSpec& spec) {
     if (spec.batch_capacity == 0 || spec.batch_capacity > kMaximumConcurrency) {
         throw std::invalid_argument("RoundState batch capacity must be in [1,8]");
     }
+    if (spec.mask_token_domain < 0 || spec.mask_token_domain > spec.output_rows) {
+        throw std::invalid_argument("RoundState mask token domain is outside the logits rows");
+    }
     (void)checked_i32(static_cast<std::uint64_t>(spec.draft_window) + 1ULL,
                       "RoundState draft window exceeds int32");
 }
@@ -90,6 +93,15 @@ RoundStateLayout begin_round_state_layout(LayoutBuilder& builder, const RoundSta
                        "YaRN inverse frequency table");
         layout.yarn_inv_freq_values = spec.yarn_inv_freq;
         layout.yarn_mscale          = spec.yarn_mscale;
+    }
+    if (spec.mask_token_domain > 0) {
+        const std::int32_t words =
+            checked_i32((static_cast<std::uint64_t>(spec.mask_token_domain) + 31ULL) / 32ULL,
+                        "grammar mask words exceed int32");
+        layout.mask_rows =
+            add_tensor(builder, DType::I32, {words, static_cast<std::int32_t>(kMaskRowCapacity)},
+                       "grammar mask rows");
+        layout.mask_active = add_tensor(builder, DType::I32, {1}, "grammar mask active");
     }
     return layout;
 }
@@ -419,6 +431,8 @@ RoundState::RoundState(DeviceSpan backing, const RoundStateLayout& layout) {
     }
     if (layout.yarn_inv_freq) { yarn_inv_freq = layout.yarn_inv_freq->bind(backing); }
     yarn_mscale = layout.yarn_mscale;
+    if (layout.mask_rows) { mask_rows = layout.mask_rows->bind(backing); }
+    if (layout.mask_active) { mask_active = layout.mask_active->bind(backing); }
 }
 
 } // namespace ninfer::models::qwen3_5

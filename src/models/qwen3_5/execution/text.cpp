@@ -10,6 +10,7 @@
 #include "models/qwen3_5/execution/visual_scatter.h"
 #include "models/qwen3_5/execution/vision.h"
 #include "models/qwen3_5/program/vision_control.h"
+#include "ninfer/ops/apply_mask.h"
 #include "ninfer/ops/argmax.h"
 #include "ninfer/ops/attn_input_proj.h"
 #include "ninfer/ops/causal_conv1d_silu.h"
@@ -768,6 +769,13 @@ void TextContext::target_verify_batch_impl(const Tensor& ids, const Tensor& cach
         Tensor flat_tokens = target_tokens.view({columns});
         ops::rmsnorm(x, *final_norm_, config_.rms_norm_eps, true, flat_hidden, stream);
         project(flat_hidden, *lm_head_, flat_logits, work_, stream);
+        if (io_.mask_rows.data != nullptr) {
+            // The grammar mask lands before the raw-argmax fast path and before every
+            // speculative acceptance consumer, so no disallowed token can be licensed.
+            ops::apply_mask(logits, width, batch, io_.mask_rows, io_.mask_active,
+                            dimension(parameters_.model.resources().public_token_count),
+                            static_cast<std::int32_t>(kMaximumConcurrency), stream);
+        }
         ops::argmax(flat_logits, flat_tokens,
                     dimension(parameters_.model.resources().public_token_count), stream);
     }

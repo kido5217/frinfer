@@ -252,15 +252,17 @@ PersistentLayout persistent_layout(const SequencePlanImpl& plan) {
         yarn_mscale     = table.mscale;
     }
     out.round = qwen3_5::begin_round_state_layout(
-        builder, qwen3_5::RoundStateSpec{.hidden          = dimension(config.hidden_size),
-                                         .output_rows     = dimension(config.vocab_size),
-                                         .batch_capacity  = plan.max_concurrency,
-                                         .draft_window    = plan.draft_window,
-                                         .backend         = plan.speculative_backend,
-                                         .causal_scoring  = plan.causal_scoring,
-                                         .yarn_inv_freq   = std::move(yarn_inv_freq),
-                                         .yarn_rotary_dim = yarn_rotary_dim,
-                                         .yarn_mscale     = yarn_mscale});
+        builder, qwen3_5::RoundStateSpec{.hidden            = dimension(config.hidden_size),
+                                         .output_rows       = dimension(config.vocab_size),
+                                         .batch_capacity    = plan.max_concurrency,
+                                         .draft_window      = plan.draft_window,
+                                         .backend           = plan.speculative_backend,
+                                         .causal_scoring    = plan.causal_scoring,
+                                         .yarn_inv_freq     = std::move(yarn_inv_freq),
+                                         .yarn_rotary_dim   = yarn_rotary_dim,
+                                         .yarn_mscale       = yarn_mscale,
+                                         .mask_token_domain = dimension(
+                                             parameters.model.resources().public_token_count)});
     out.prefill_hidden =
         add_tensor(builder, DType::BF16, {dimension(config.hidden_size), effective_prefill_chunk},
                    "step prefill hidden");

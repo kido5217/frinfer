@@ -3,6 +3,7 @@
 #include "models/qwen3_5/program/context.h"
 #include "models/qwen3_5/execution/linear.h"
 #include "core/device.h"
+#include "ninfer/ops/apply_mask.h"
 #include "ninfer/ops/gdn_replay.h"
 #include "ninfer/ops/sampling.h"
 #include "ninfer/ops/scalar.h"
@@ -158,6 +159,14 @@ void sample_from_hidden(PrefillContext& state, const Tensor& hidden, std::int32_
     Tensor logits = state.execution.io.logits.slice(1, 0, 1);
     project(hidden, state.execution.parameters.text.output_head, logits, state.execution.work,
             state.execution.device.stream);
+    if (state.execution.io.mask_rows.data != nullptr) {
+        // Prefill samples its single row from the shared step logits, so it reads mask row 0.
+        ops::apply_mask(logits, /*columns=*/1, /*batch=*/1, state.execution.io.mask_rows,
+                        state.execution.io.mask_active,
+                        dimension(state.execution.parameters.model.resources().public_token_count),
+                        static_cast<std::int32_t>(kMaximumConcurrency),
+                        state.execution.device.stream);
+    }
     CUDA_CHECK(cudaMemcpyAsync(state.execution.io.pos.data, &absolute_position,
                                sizeof(absolute_position), cudaMemcpyHostToDevice,
                                state.execution.device.stream));

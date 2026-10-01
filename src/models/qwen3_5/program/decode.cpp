@@ -4,6 +4,7 @@
 #include "models/qwen3_5/program/graph_execution.h"
 #include "core/nvtx.h"
 #include "core/device.h"
+#include "ninfer/ops/apply_mask.h"
 #include "ninfer/ops/prepare_ragged_prefix.h"
 #include "ninfer/ops/sampling.h"
 #include "ninfer/ops/scatter.h"
@@ -52,6 +53,13 @@ auto ordinary_batch_body(OrdinaryBatchContext& state, std::int32_t batch_size,
                                    state_destinations, envelope, hidden, logits);
         ops::scatter(hidden, state_destinations, state.continuation_hidden_store,
                      state.execution.device.stream);
+        if (state.execution.io.mask_rows.data != nullptr) {
+            ops::apply_mask(
+                logits, /*columns=*/1, batch_size, state.execution.io.mask_rows,
+                state.execution.io.mask_active,
+                dimension(state.execution.parameters.model.resources().public_token_count),
+                static_cast<std::int32_t>(kMaximumConcurrency), state.execution.device.stream);
+        }
         ops::sample(logits, sampled,
                     dimension(state.execution.parameters.model.resources().public_token_count),
                     ordinary.sampling, cache_positions, ops::kSamplePurposeDecode,

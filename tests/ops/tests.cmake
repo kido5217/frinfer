@@ -1,5 +1,6 @@
 set(ninfer_op_tests
   add_bias
+  apply_mask
   gelu
   silu_mul
   residual_add
