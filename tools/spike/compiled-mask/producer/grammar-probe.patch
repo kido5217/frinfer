@@ -1,0 +1,33 @@
+diff --git a/src/models/qwen3_5/frontend/grammar/grammar.h b/src/models/qwen3_5/frontend/grammar/grammar.h
+index 70683a20..0ec9b0aa 100644
+--- a/src/models/qwen3_5/frontend/grammar/grammar.h
++++ b/src/models/qwen3_5/frontend/grammar/grammar.h
+@@ -44,7 +44,13 @@ public:
+     // True when the grammar can end at this state; end-of-generation ids are allowed at
+     // exactly those states and nowhere else.
+     [[nodiscard]] bool can_end() const noexcept;
+ 
++#ifdef NINFER_GRAMMAR_PROBE
++    // Temporary probe hook (ticket #57 trie-producer investigation): exposes the raw engine
++    // state to an external mask producer. Never built without the macro.
++    [[nodiscard]] const void* probe_engine() const noexcept;
++#endif
++
+ private:
+     friend class CompiledGrammar;
+     class Impl;
+diff --git a/src/models/qwen3_5/frontend/grammar/grammar.cpp b/src/models/qwen3_5/frontend/grammar/grammar.cpp
+index 517e16bd..3f8f4a11 100644
+--- a/src/models/qwen3_5/frontend/grammar/grammar.cpp
++++ b/src/models/qwen3_5/frontend/grammar/grammar.cpp
+@@ -622,4 +622,10 @@ GrammarMaskRow CompiledGrammar::row_for(const GrammarState& state) const {
+ 
+ CompiledGrammar::Stats CompiledGrammar::stats() const noexcept { return impl_->stats; }
+ 
++#ifdef NINFER_GRAMMAR_PROBE
++const void* GrammarState::probe_engine() const noexcept {
++    return impl_ ? static_cast<const void*>(impl_->engine.get()) : nullptr;
++}
++#endif
++
+ } // namespace ninfer::models::qwen3_5::frontend

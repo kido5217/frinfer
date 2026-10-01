@@ -1,0 +1,6 @@
+trie: token_count=248077 row_words=7753 nodes=429317 edges=429316 registered=247130 partial_ids=781 exceptions=163 build_ms=73.4 mem_mib=30.4
+run=1 mode=lowest steps=20000 module_fills=23 module_hits=19977 module_distinct=16 module_fill_ms=505.1 module_wall_ms=44116.5
+trie_fills=20000 trie_fill_ms=43508.19 mean_us=2175.4 min_us=615.1 p50_us=2150.1 p90_us=2221.8 max_us=31849.8 nodes(min=1 p50=1 p90=1 max=59) edges(p50=0 p90=0 max=9022) bulks(p50=1 p90=1 max=3)
+phases_cyc: visit=0 prepare=0 capacity=0 bulk_set=38805495060 tail=11800634252
+compare: states=20000 mismatches=0 partial_states=0 bulks=19988 bulk_ids=4937163543 bits_set=4946573318 nodes=20169 edges=183246 tail_judged=15620000 tail_steps=45513866 capacity_calls=79938 capacity_steps=19988 declined_cap=0 declined_class=40196 excl_judged=7811398 exceptions_judged=0
+fastpath: recog_attempts=20000 recog_ok=19979 fast_fills=0 fallback_fills=20000 table_builds=0 table_build_fail=19979 build_ms=0.00 table_mib=0.00 bucket_tokens=0 correction_tokens=0 shape_hits=0 shape_misses=0 shape_evict=0

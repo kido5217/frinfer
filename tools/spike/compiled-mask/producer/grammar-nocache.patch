@@ -1,0 +1,24 @@
+--- a/src/models/qwen3_5/frontend/grammar/grammar.cpp	2026-10-02 00:12:22.943119476 +0300
++++ b/src/models/qwen3_5/frontend/grammar/grammar.cpp	2026-10-01 23:49:32.136516723 +0300
+@@ -473,12 +473,17 @@
+     Stats stats;
+ 
+     [[nodiscard]] GrammarMaskRow row_for(const GrammarState::Impl& state) {
++        // SCRATCH (prototype verification): bypass the state-keyed row cache to check
++        // whether fresh applies at distinct counter positions differ (key-lossiness test).
++        const bool row_nocache = std::getenv("GRAMMAR_ROW_NOCACHE") != nullptr;
+         const StateKey key = make_state_key(state.engine->stacks, state.engine->partial_utf8,
+                                             state.address_index, backbone->canonical_rule);
+-        const auto cached  = rows_by_state.find(key);
+-        if (cached != rows_by_state.end()) {
+-            ++stats.row_hits;
+-            return rows[cached->second];
++        if (!row_nocache) {
++            const auto cached = rows_by_state.find(key);
++            if (cached != rows_by_state.end()) {
++                ++stats.row_hits;
++                return rows[cached->second];
++            }
+         }
+ 
+         const auto started = std::chrono::steady_clock::now();

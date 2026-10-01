@@ -1,0 +1,20 @@
+trie: token_count=248077 row_words=7753 nodes=429317 edges=429316 registered=247130 partial_ids=781 exceptions=163 build_ms=68.5 mem_mib=30.4
+MISMATCH step=113 trie_row_words=7753 ref_row_words=7753 differing_bits=1 id=55036(trie=1,vendored=0,piece=                                                                                                                                )
+  state partial=(33,0) stacks=2
+    stack n=0:
+    stack n=1: (4,10)
+MISMATCH step=114 trie_row_words=7753 ref_row_words=7753 differing_bits=1 id=55036(trie=1,vendored=0,piece=                                                                                                                                )
+  state partial=(33,0) stacks=2
+    stack n=0:
+    stack n=1: (4,10)
+MISMATCH step=115 trie_row_words=7753 ref_row_words=7753 differing_bits=1 id=55036(trie=1,vendored=0,piece=                                                                                                                                )
+  state partial=(33,0) stacks=2
+    stack n=0:
+    stack n=1: (4,10)
+MISMATCH step=116 trie_row_words=7753 ref_row_words=7753 differing_bits=1 id=55036(trie=1,vendored=0,piece=                                                                                                                                )
+MISMATCH step=117 trie_row_words=7753 ref_row_words=7753 differing_bits=1 id=55036(trie=1,vendored=0,piece=                                                                                                                                )
+run=1 mode=lowest steps=240 module_fills=134 module_hits=107 module_distinct=94 module_fill_ms=3452.1 module_wall_ms=3596.8
+trie_fills=241 trie_fill_ms=20.46 mean_us=84.9 min_us=0.9 p50_us=44.0 p90_us=49.8 max_us=7645.1 nodes(min=0 p50=0 p90=0 max=1) edges(p50=0 p90=0 max=8218) bulks(p50=0 p90=0 max=1)
+phases_cyc: visit=0 prepare=0 capacity=0 bulk_set=9442616 tail=2557378
+compare: states=241 mismatches=127 partial_states=0 bulks=5 bulk_ids=1235650 bits_set=1238551 nodes=6 edges=8218 tail_judged=4686 tail_steps=8806 capacity_calls=655 capacity_steps=650 declined_cap=0 declined_class=0 excl_judged=1000 exceptions_judged=0
+fastpath: recog_attempts=6 recog_ok=0 fast_fills=0 fallback_fills=6 table_builds=0 table_build_fail=0 build_ms=0.00 table_mib=0.00 bucket_tokens=0 correction_tokens=0 shape_hits=235 shape_misses=6 shape_evict=0
