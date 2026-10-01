@@ -13,8 +13,9 @@ namespace ninfer::models::qwen3_5::frontend {
 class CompiledGrammar;
 
 // A mask row is a dense bitmask over the whole token domain: bit i is set when token i is
-// allowed at the state the row was produced for. Rows are immutable and shared, so a row
-// only has to be transferred when a state has no cached row yet.
+// allowed at the state the row was produced for. Rows are produced by the compiled
+// token-trie producer (trie_producer.h) and shared from its bounded state-shape store;
+// a row only has to be transferred when the state shape has not been seen before.
 using GrammarMaskRow = std::span<const std::uint32_t>;
 
 // Mutable per-request grammar state: the committed position in a compiled grammar. Copies
@@ -47,19 +48,21 @@ public:
 
 private:
     friend class CompiledGrammar;
+    friend class GrammarTestAccess;
     class Impl;
     explicit GrammarState(std::unique_ptr<Impl> impl) noexcept;
     std::unique_ptr<Impl> impl_;
 };
 
-// An immutable compiled GBNF grammar plus its shared per-state mask-row cache. Compiled
-// grammars and rows are shared by grammar identity (the GBNF text); every state and row
-// references the same instance. Not internally synchronized: row production runs on the
-// serving worker.
+// An immutable compiled GBNF grammar plus its compiled mask producer. Compiled grammars
+// are shared by grammar identity (the GBNF text); every state references the same
+// instance. Not internally synchronized: row production runs on the serving worker.
 class CompiledGrammar {
 public:
     // Parses `gbnf` with root symbol "root". Returns nullptr and, when `error` is
-    // non-null, stores the parse diagnostic when the grammar is rejected.
+    // non-null, stores the parse diagnostic when the grammar is rejected. The one-time
+    // mask-producer build (the codepoint trie, the class structures, and the
+    // fresh-round counter tables) runs here, at compile time (D2a).
     [[nodiscard]] static std::shared_ptr<const CompiledGrammar>
     compile(std::string_view gbnf, std::shared_ptr<const GrammarVocabulary> vocabulary,
             std::string* error = nullptr);
@@ -81,24 +84,31 @@ public:
     // Token domain of every row (the vocabulary's token count).
     [[nodiscard]] int token_count() const noexcept;
 
-    // The allowed-token row of `state`: produced by a full-vocabulary walk on the first
-    // visit, served from the cache afterwards. The returned view stays valid for the
-    // lifetime of this grammar.
+    // The allowed-token row of `state`: produced by the compiled token-trie producer
+    // (the vendored engine's full-vocabulary walk is retained as the differential
+    // oracle, see GrammarTestAccess). The returned view is valid until the next row_for
+    // call on this grammar - the producer serves it from a bounded store or its scratch
+    // row - so the consumer must copy the row before the next fill (the serving runtime
+    // copies it into the round buffer immediately).
     [[nodiscard]] GrammarMaskRow row_for(const GrammarState& state) const;
 
-    // Row-cache counters. `row_fills` counts full-vocabulary walks, `row_hits` counts
-    // states served from the cache, `distinct_rows` counts rows actually stored after
-    // content dedup and `fill_micros` accumulates walk time.
+    // Producer counters. `row_fills` counts computed fills (fast path, fallback, or
+    // pending-UTF-8 states), `row_hits` counts fills served by the producer's shape
+    // cache, `distinct_rows` counts rows stored in the shape store, `fill_micros`
+    // accumulates fill compute time, and `compile_micros` accumulates the one-time
+    // compile-time producer build (D2a).
     struct Stats {
-        std::uint64_t row_fills     = 0;
-        std::uint64_t row_hits      = 0;
-        std::uint64_t distinct_rows = 0;
-        std::uint64_t fill_micros   = 0;
+        std::uint64_t row_fills      = 0;
+        std::uint64_t row_hits       = 0;
+        std::uint64_t distinct_rows  = 0;
+        std::uint64_t fill_micros    = 0;
+        std::uint64_t compile_micros = 0;
     };
 
     [[nodiscard]] Stats stats() const noexcept;
 
 private:
+    friend class GrammarTestAccess;
     class Impl;
     explicit CompiledGrammar(std::unique_ptr<Impl> impl) noexcept;
     std::unique_ptr<Impl> impl_;

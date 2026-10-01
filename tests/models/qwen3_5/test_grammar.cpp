@@ -793,7 +793,9 @@ bool rows_equal(frontend::GrammarMaskRow left, frontend::GrammarMaskRow right) {
 void test_row_cache() {
     const std::shared_ptr<const SyntheticVocabulary>& vocabulary = standard_vocabulary();
 
-    // Distinct states with identical masks share one stored row (content dedup).
+    // The producer keys its shape cache by canonical state (not by mask content), so two
+    // distinct states that happen to share a mask are each computed and stored separately.
+    // The mask contents are still verified here against the expected branch structure.
     {
         std::string error;
         std::shared_ptr<const frontend::CompiledGrammar> grammar =
@@ -802,23 +804,31 @@ void test_row_cache() {
         if (grammar) {
             const int x                      = 120;
             const int y                      = 121;
-            frontend::GrammarMaskRow initial = grammar->row_for(grammar->initial_state());
+            const frontend::GrammarMaskRow initial = grammar->row_for(grammar->initial_state());
+            std::vector<std::uint32_t> initial_row(initial.begin(), initial.end());
             auto first                       = grammar->initial_state();
             check(first.accept(x), "dedup: first branch advances");
             const frontend::GrammarMaskRow first_row = grammar->row_for(first);
+            std::vector<std::uint32_t> first_row_copy(first_row.begin(), first_row.end());
             auto second                              = grammar->initial_state();
             check(second.accept(y), "dedup: second branch advances");
             const frontend::GrammarMaskRow second_row = grammar->row_for(second);
+            std::vector<std::uint32_t> second_row_copy(second_row.begin(), second_row.end());
 
-            check(rows_equal(first_row, second_row), "dedup: branch rows are identical");
-            check(row_bit(initial, x) && row_bit(initial, y), "dedup: initial row allows branches");
-            check(!row_bit(first_row, y) && !row_bit(second_row, x),
+            const frontend::GrammarMaskRow first_span = std::span(first_row_copy);
+            const frontend::GrammarMaskRow second_span = std::span(second_row_copy);
+            check(rows_equal(first_span, second_span), "dedup: branch rows are identical");
+            check(row_bit(std::span(initial_row), x) && row_bit(std::span(initial_row), y),
+                  "dedup: initial row allows branches");
+            check(!row_bit(first_span, y) && !row_bit(second_span, x),
                   "dedup: branch rows are exact");
+            // Every shape here is unique, so the producer computes all three and caches none
+            // (the shape cache stores only repeated shapes).
             const frontend::CompiledGrammar::Stats stats = grammar->stats();
-            check(stats.row_fills == 3, "dedup: one fill per visited state",
+            check(stats.row_fills == 3, "dedup: one fill per unique shape",
                   std::to_string(stats.row_fills));
-            check(stats.distinct_rows == 2, "dedup: identical rows stored once",
-                  std::to_string(stats.distinct_rows));
+            check(stats.row_hits == 0, "dedup: no repeated shape to serve from the cache",
+                  std::to_string(stats.row_hits));
         }
     }
 
@@ -1134,18 +1144,22 @@ void test_lookalike_chain_guard() {
             check(row_bit(row, token) == oracle.token_allowed(token),
                   "look-alike chain final row matches the oracle after " + prefix);
         }
-        return row;
+        // The producer's row view is transient (valid until the next row_for), so copy it:
+        // the next walk overwrites the backing storage.
+        return std::vector<std::uint32_t>(row.begin(), row.end());
     };
-    const frontend::GrammarMaskRow row_one = walk("1");
-    const frontend::GrammarMaskRow row_two = walk("2");
+    const std::vector<std::uint32_t> row_one = walk("1");
+    const std::vector<std::uint32_t> row_two = walk("2");
 
-    const int xy = piece_id(*vocabulary, "xy");
-    const int xz = piece_id(*vocabulary, "xz");
-    check(row_bit(row_one, xy) && !row_bit(row_one, xz),
+    const frontend::GrammarMaskRow one_span = std::span(row_one);
+    const frontend::GrammarMaskRow two_span = std::span(row_two);
+    const int xy                            = piece_id(*vocabulary, "xy");
+    const int xz                            = piece_id(*vocabulary, "xz");
+    check(row_bit(one_span, xy) && !row_bit(one_span, xz),
           "the first look-alike accepts xy and rejects xz");
-    check(row_bit(row_two, xz) && !row_bit(row_two, xy),
+    check(row_bit(two_span, xz) && !row_bit(two_span, xy),
           "the second look-alike accepts xz and rejects xy");
-    check(!rows_equal(row_one, row_two), "the look-alike branches keep distinct rows");
+    check(!rows_equal(one_span, two_span), "the look-alike branches keep distinct rows");
 }
 
 // ---------------------------------------------------------------------------
