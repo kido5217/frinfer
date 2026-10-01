@@ -1,3 +1,4 @@
+#include "serve/constraint_contract.h"
 #include "serve/generation_service.h"
 #include "serve/openai_chat.h"
 #include "serve/openai_common.h"
@@ -60,6 +61,13 @@ ninfer::PromptInput prompt(const GenerationRequest& request) {
 
 ninfer::RequestOptions options(const GenerationRequest& request) {
     ServeOptions server;
+    return to_request_options(request, server, semantics(request), true);
+}
+
+ninfer::RequestOptions options_with_backend(const GenerationRequest& request,
+                                            ninfer::SpeculativeBackend backend) {
+    ServeOptions server;
+    server.speculative.backend = backend;
     return to_request_options(request, server, semantics(request), true);
 }
 
@@ -146,7 +154,7 @@ int test_standard_field_policy() {
     rejected("logit_bias", Json{{"12", 1}}, "logit_bias_not_supported");
     rejected("logprobs", true, "logprobs_not_supported");
     rejected("top_logprobs", 2, "logprobs_not_supported");
-    rejected("response_format", Json{{"type", "json_schema"}}, "response_format_not_supported");
+    rejected("response_format", Json{{"type", "yaml"}}, "response_format_not_supported");
     rejected("modalities", Json::array({"text", "audio"}), "modality_not_supported");
     rejected("web_search_options", Json::object(), "web_search_not_supported");
     rejected("moderation", Json::object(), "moderation_not_supported");
@@ -187,34 +195,317 @@ int test_standard_field_policy() {
 }
 
 int test_constrained_decoding_extensions() {
-    int failures                                           = 0;
-    const std::vector<std::pair<const char*, Json>> active = {
-        {"grammar", "root ::= \"yes\" | \"no\""},
+    int failures = 0;
+
+    // GBNF text is the supported constrained-decoding spelling and reaches the Engine contract.
+    Json grammar_body       = base_request();
+    grammar_body["grammar"] = "root ::= \"yes\" | \"no\"";
+    const OpenAIChatRequest constrained = parse(grammar_body);
+    failures += check(constrained.generation.grammar.has_value() &&
+                          *constrained.generation.grammar == "root ::= \"yes\" | \"no\"" &&
+                          constrained.generation.constraint_source == ConstraintSource::Grammar,
+                      "grammar GBNF text is parsed into the request");
+    const ninfer::RequestOptions constrained_options = options(constrained.generation);
+    failures += check(constrained_options.constraint.has_value() &&
+                          constrained_options.constraint->gbnf == "root ::= \"yes\" | \"no\"",
+                      "grammar GBNF text reaches the Engine constraint contract");
+
+    Json neutral                  = base_request();
+    neutral["grammar"]            = "";
+    neutral["structured_outputs"] = nullptr;
+    neutral["guided_json"]        = nullptr;
+    const OpenAIChatRequest plain = parse(neutral);
+    failures += check(!plain.generation.grammar.has_value() &&
+                          !options(plain.generation).constraint.has_value(),
+                      "an empty grammar constrains nothing");
+
+    Json typing_body       = base_request();
+    typing_body["grammar"] = 5;
+    const ApiError typing  = api_error([&] { (void)parse(typing_body); });
+    failures += check(typing.param == "grammar" && typing.status == 400 &&
+                          typing.code == "grammar_invalid",
+                      "a non-string grammar is rejected");
+
+    Json huge_grammar       = base_request();
+    huge_grammar["grammar"] = std::string(kConstraintPayloadLimit + 1, 'x');
+    const ApiError huge     = api_error([&] { (void)parse(huge_grammar); });
+    failures += check(huge.param == "grammar" && huge.code == "constraint_too_large",
+                      "an oversized grammar is rejected");
+
+    const std::vector<std::pair<const char*, Json>> unsupported = {
         {"structured_outputs", Json{{"json", Json{{"type", "object"}}}}},
         {"guided_json", Json{{"type", "object"}}},
         {"guided_regex", "[a-z]+"},
         {"guided_choice", Json::array({"yes", "no"})},
         {"guided_grammar", "root ::= \"yes\" | \"no\""},
     };
-    for (const auto& [field, value] : active) {
+    for (const auto& [field, value] : unsupported) {
         Json body            = base_request();
         body[field]          = value;
         const ApiError error = api_error([&] { (void)parse(body); });
         failures +=
             check(error.param == field && error.code == "constrained_decoding_not_supported" &&
                       error.message.find(field) != std::string::npos,
-                  std::string(field) + " constrained decoding is explicitly rejected");
+                  std::string(field) + " remains an explicit rejection");
     }
 
-    Json neutral                  = base_request();
-    neutral["grammar"]            = "";
-    neutral["structured_outputs"] = nullptr;
-    neutral["guided_json"]        = nullptr;
-    neutral["guided_regex"]       = nullptr;
-    neutral["guided_choice"]      = nullptr;
-    neutral["guided_grammar"]     = nullptr;
-    failures += check(parse(neutral).generation.messages.size() == 1,
-                      "neutral constrained-decoding extension values are accepted");
+    // response_format: text keeps no constraint; json_object and json_schema convert.
+    Json text_format                  = base_request();
+    text_format["response_format"]    = Json{{"type", "text"}};
+    const OpenAIChatRequest text_only = parse(text_format);
+    failures += check(!text_only.generation.grammar.has_value(),
+                      "response_format text constrains nothing");
+
+    Json object_format               = base_request();
+    object_format["response_format"] = Json{{"type", "json_object"}};
+    const OpenAIChatRequest object_json = parse(object_format);
+    failures += check(object_json.generation.grammar.has_value() &&
+                          object_json.generation.constraint_source == ConstraintSource::JsonSchema &&
+                          object_json.generation.grammar->find("root") != std::string::npos,
+                      "response_format json_object converts to a constraint");
+    // The llama.cpp quirk of reading an extra `schema` member under json_object is not adopted.
+    Json quirk_format               = base_request();
+    quirk_format["response_format"] = Json{{"type", "json_object"},
+                                           {"schema", Json{{"type", "array"}}}};
+    failures += check(parse(quirk_format).generation.grammar == object_json.generation.grammar,
+                      "json_object ignores an extra schema member");
+
+    const Json diary_schema = Json{
+        {"type", "object"},
+        {"additionalProperties", false},
+        {"required", Json::array({"title", "text"})},
+        {"properties",
+         Json{{"title", Json{{"type", "string"}, {"maxLength", 60}}},
+              {"text", Json{{"type", "string"}, {"maxLength", 2400}}},
+              {"facts", Json{{"type", "array"},
+                             {"maxItems", 14},
+                             {"items", Json{{"type", "string"}, {"maxLength", 120}}}}}}}};
+    Json wrapper_body               = base_request();
+    wrapper_body["response_format"] = Json{
+        {"type", "json_schema"},
+        {"json_schema", Json{{"name", "diary"}, {"strict", true}, {"schema", diary_schema}}}};
+    const OpenAIChatRequest wrapper = parse(wrapper_body);
+    failures += check(wrapper.generation.grammar.has_value() &&
+                          wrapper.generation.constraint_source == ConstraintSource::JsonSchema,
+                      "response_format json_schema wrapper converts");
+    const ninfer::RequestOptions wrapper_options = options(wrapper.generation);
+    failures += check(wrapper_options.constraint.has_value() &&
+                          wrapper_options.constraint->gbnf == *wrapper.generation.grammar,
+                      "the converted schema reaches the Engine constraint contract");
+
+    Json bare_body               = base_request();
+    bare_body["response_format"] = Json{{"type", "json_schema"}, {"json_schema", diary_schema}};
+    failures += check(parse(bare_body).generation.grammar.has_value(),
+                      "a bare schema under json_schema converts");
+
+    const std::vector<Json> malformed_formats = {
+        Json{{"type", "json_schema"}},
+        Json{{"type", "json_schema"}, {"json_schema", 5}},
+        Json{{"type", "json_schema"}, {"json_schema", Json{{"schema", 5}}}},
+        Json{{"type", "json_schema"},
+             {"json_schema", Json{{"schema", Json{{"type", "object"}}}, {"name", 5}}}},
+        Json{{"type", "json_schema"},
+             {"json_schema", Json{{"schema", Json{{"type", "object"}}}, {"strict", "yes"}}}},
+        Json{{"type", "json_schema"}, {"json_schema", Json{{"name", "x"}}}},
+        Json{{"type", 7}},
+    };
+    for (const Json& format : malformed_formats) {
+        Json body               = base_request();
+        body["response_format"] = format;
+        const ApiError error    = api_error([&] { (void)parse(body); });
+        failures += check(error.status == 400 && error.code == "json_schema_invalid",
+                          "malformed response_format is rejected: " + format.dump());
+    }
+
+    Json yaml_body               = base_request();
+    yaml_body["response_format"] = Json{{"type", "yaml"}};
+    const ApiError yaml          = api_error([&] { (void)parse(yaml_body); });
+    failures += check(yaml.param == "response_format" &&
+                          yaml.code == "response_format_not_supported",
+                      "an unknown response_format type is rejected");
+
+    // Keywords the converter would not genuinely enforce are rejected, not silently loosened:
+    // unknown keywords, patterns (degraded to "any string"), formats it ignores, combinators it
+    // drops, and keywords used in a context where the typed model does not read them.
+    const std::vector<Json> unenforced_schemas = {
+        Json{{"type", "string"}, {"pattern", "^[a-z]+$"}},
+        Json{{"type", "object"}, {"minProperties", 1}},
+        Json{{"type", "string"}, {"format", "email"}},
+        Json{{"type", "string"}, {"format", "uuid5"}},
+        Json{{"type", "number"}, {"minimum", 5}},
+        Json{{"minimum", 5}},
+        Json{{"type", "integer"}, {"minimum", 0}, {"exclusiveMinimum", 5}},
+        Json{{"type", "integer"}, {"maximum", 9}, {"exclusiveMaximum", 5}},
+        Json{{"type", "string"}, {"maxItems", 3}},
+        Json{{"type", "number"}, {"maxLength", 3}},
+        Json{{"type", "string"}, {"properties", Json{{"a", Json{{"type", "string"}}}}}},
+        Json{{"type", "object"},
+             {"properties", Json{{"a", Json{{"type", "string"}}}}},
+             {"allOf", Json::array({Json{{"required", Json::array({"a"})}}})}},
+        Json{{"allOf", Json::array({Json{{"type", "string"}}, Json{{"maxLength", 3}}})}},
+        Json{{"type", "object"},
+             {"properties", Json{{"a", Json{{"type", "string"}}}}},
+             {"oneOf", Json::array({Json{{"required", Json::array({"a"})}}})}},
+        Json{{"type", "array"}, {"items", Json::array({Json{{"type", "string"}}})}, {"minItems", 2}},
+        Json{{"type", "array"},
+             {"prefixItems", Json::array({Json{{"type", "string"}}})},
+             {"maxItems", 2}},
+        Json{{"type", "array"},
+             {"items", Json::array({Json{{"type", "number"}, {"minimum", 5}}})}},
+        Json{{"anyOf", Json::array({Json{{"type", "string"}}})}, {"maxLength", 3}},
+        Json{{"enum", Json::array({"a"})}, {"maxLength", 3}},
+        Json{{"$ref", "#/$defs/x"}, {"minLength", 3}},
+        Json{{"type", Json::array({"integer", "number"})}, {"minimum", 5}},
+        Json{{"type", "array"},
+             {"prefixItems", Json::array({Json{{"type", "string"}}})},
+             {"items", Json{{"type", "integer"}}}},
+    };
+    for (const Json& schema : unenforced_schemas) {
+        Json body               = base_request();
+        body["response_format"] =
+            Json{{"type", "json_schema"}, {"json_schema", Json{{"schema", schema}}}};
+        const ApiError error = api_error([&] { (void)parse(body); });
+        failures += check(error.status == 400 && error.code == "json_schema_unsupported",
+                          "an unenforced schema keyword is rejected: " + schema.dump());
+    }
+
+    // Malformed documents inside allowed keywords are rejected rather than ignored.
+    for (const Json& schema :
+         {Json{{"type", "object"}, {"properties", Json{{"a", Json{{"type", "string"}}}}},
+               {"required", "a"}},
+          Json{{"type", "object"}, {"properties", Json{{"a", Json{{"type", "string"}}}}},
+               {"required", Json::array({5})}},
+          Json{{"type", "string"}, {"enum", Json::array()}},
+          Json{{"type", "string"}, {"enum", Json::array({1})}},
+          Json{{"type", "string"}, {"const", 5}},
+          Json{{"type", Json::array({"string", "null"})}, {"enum", Json::array({"a", 5})}}}) {
+        Json body               = base_request();
+        body["response_format"] =
+            Json{{"type", "json_schema"}, {"json_schema", Json{{"schema", schema}}}};
+        const ApiError error = api_error([&] { (void)parse(body); });
+        failures += check(error.status == 400 && error.code == "json_schema_invalid",
+                          "a malformed schema document is rejected: " + schema.dump());
+    }
+
+    // The enforced subset still converts in every genuine context.
+    const std::vector<Json> supported_schemas = {
+        Json{{"type", "integer"}, {"minimum", 0}, {"maximum", 10}},
+        Json{{"type", "array"},
+             {"minItems", 1},
+             {"maxItems", 3},
+             {"items", Json{{"type", "string"}, {"maxLength", 4}}}},
+        Json{{"type", "string"}, {"format", "date-time"}},
+        Json{{"anyOf", Json::array({Json{{"type", "string"}},
+                                    Json{{"type", "integer"}, {"minimum", 0}}})}},
+        Json{{"type", "object"},
+             {"$defs", Json{{"item", Json{{"type", "string"}}}}},
+             {"properties", Json{{"a", Json{{"$ref", "#/$defs/item"}}}}}},
+        Json{{"properties", Json{{"a", Json{{"type", "string"}, {"maxLength", 4}}}}},
+             {"required", Json::array({"a"})},
+             {"additionalProperties", false}},
+        Json{{"items", Json{{"type", "string"}}}, {"maxItems", 2}},
+        Json{{"type", Json::array({"string", "null"})}, {"maxLength", 3}},
+        Json{{"type", Json::array({"integer", "null"})}, {"minimum", 5}},
+        Json{{"type", Json::array({"object", "null"})},
+             {"properties", Json{{"a", Json{{"type", "string"}}}}},
+             {"required", Json::array({"a"})}},
+        Json{{"type", "string"}, {"enum", Json::array({"a", "b"})}},
+        Json{{"type", "integer"}, {"const", 7}},
+        Json{{"type", Json::array({"string", "null"})}, {"enum", Json::array({"a", nullptr})}},
+        Json{{"type", Json::array({"string", "null"})}, {"const", "a"}},
+    };
+    for (const Json& schema : supported_schemas) {
+        Json body               = base_request();
+        body["response_format"] =
+            Json{{"type", "json_schema"}, {"json_schema", Json{{"schema", schema}}}};
+        const ApiError error = api_error([&] { (void)parse(body); });
+        failures += check(error.status == 0,
+                          "a supported schema converts: " + schema.dump() + " -> " + error.message);
+    }
+
+    Json big_schema_body               = base_request();
+    big_schema_body["response_format"] = Json{
+        {"type", "json_schema"},
+        {"json_schema",
+         Json{{"schema",
+               Json{{"type", "string"}, {"const", std::string(kConstraintPayloadLimit, 'x')}}}}}};
+    const ApiError big_schema = api_error([&] { (void)parse(big_schema_body); });
+    failures +=
+        check(big_schema.code == "constraint_too_large", "an oversized JSON Schema is rejected");
+
+    Json deep = Json{{"type", "string"}};
+    for (int level = 0; level < kConstraintNestingLimit + 2; ++level) {
+        deep = Json{{"type", "array"}, {"items", deep}};
+    }
+    Json deep_body               = base_request();
+    deep_body["response_format"] = Json{{"type", "json_schema"},
+                                        {"json_schema", Json{{"schema", deep}}}};
+    const ApiError deep_error    = api_error([&] { (void)parse(deep_body); });
+    failures +=
+        check(deep_error.code == "constraint_too_large", "an over-nested JSON Schema is rejected");
+
+    // Exactly one constraint kind; text is not a constraint.
+    Json conflict_body               = base_request();
+    conflict_body["grammar"]         = "root ::= \"x\"";
+    conflict_body["response_format"] = Json{{"type", "json_object"}};
+    const ApiError conflict          = api_error([&] { (void)parse(conflict_body); });
+    failures += check(conflict.param == "response_format" &&
+                          conflict.code == "constrained_decoding_conflict",
+                      "grammar with a constraining response_format is rejected");
+
+    Json text_pair_body               = base_request();
+    text_pair_body["grammar"]         = "root ::= \"x\"";
+    text_pair_body["response_format"] = Json{{"type", "text"}};
+    const GenerationRequest text_pair = parse(text_pair_body).generation;
+    failures += check(text_pair.grammar.has_value() && *text_pair.grammar == "root ::= \"x\"",
+                      "grammar with response_format text is allowed");
+
+    // Tools with structured output stay fail-closed.
+    const Json tool = Json{{"type", "function"},
+                           {"function", Json{{"name", "weather"},
+                                             {"description", "Get weather"},
+                                             {"parameters", Json{{"type", "object"}}},
+                                             {"strict", false}}}};
+    Json tools_grammar         = base_request();
+    tools_grammar["tools"]     = Json::array({tool});
+    tools_grammar["grammar"]   = "root ::= \"x\"";
+    const ApiError tools_grammar_error = api_error([&] { (void)parse(tools_grammar); });
+    failures += check(tools_grammar_error.status == 400 &&
+                          tools_grammar_error.code == "constrained_decoding_not_supported" &&
+                          tools_grammar_error.param == "grammar",
+                      "tools with a grammar constraint are rejected");
+    Json empty_tools            = base_request();
+    empty_tools["tools"]        = Json::array();
+    empty_tools["grammar"]      = "root ::= \"x\"";
+    const ApiError empty_tools_error = api_error([&] { (void)parse(empty_tools); });
+    failures += check(empty_tools_error.status == 400 &&
+                          empty_tools_error.code == "constrained_decoding_not_supported",
+                      "an empty tools field with a constraint is rejected");
+    Json tools_schema               = base_request();
+    tools_schema["tools"]           = Json::array({tool});
+    tools_schema["response_format"] = Json{{"type", "json_object"}};
+    const ApiError tools_schema_error = api_error([&] { (void)parse(tools_schema); });
+    failures += check(tools_schema_error.param == "response_format" &&
+                          tools_schema_error.code == "constrained_decoding_not_supported",
+                      "tools with a schema constraint are rejected");
+
+    // The serve contract rejects a constrained request on a backend that cannot carry one,
+    // naming the configured backend.
+    for (const ninfer::SpeculativeBackend backend :
+         {ninfer::SpeculativeBackend::DFlash, ninfer::SpeculativeBackend::DFlash2}) {
+        const ApiError backend_error =
+            api_error([&] { (void)options_with_backend(constrained.generation, backend); });
+        failures += check(backend_error.status == 400 &&
+                              backend_error.code == "constrained_decoding_not_supported" &&
+                              backend_error.message.find("constrained generation") !=
+                                  std::string::npos,
+                          "a constrained request on a DFlash backend is rejected");
+    }
+    const ninfer::RequestOptions mtp_options =
+        options_with_backend(constrained.generation, ninfer::SpeculativeBackend::Mtp);
+    failures += check(mtp_options.constraint.has_value(),
+                      "a constrained request on MTP stays supported");
+
     return failures;
 }
 

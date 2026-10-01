@@ -73,7 +73,10 @@ enum class GenerationConsumerMode : std::uint8_t {
 };
 
 // Translate Engine request failures into the shared protocol-neutral HTTP error contract.
-ApiError request_error_to_api_error(const ninfer::RequestError& exception);
+// `source` selects the contract code for a rejected constraint (grammar_invalid vs
+// json_schema_invalid); other kinds ignore it.
+ApiError request_error_to_api_error(const ninfer::RequestError& exception,
+                                    ConstraintSource source = ConstraintSource::None);
 
 // Preparation ends by synchronously submitting the owning prompt to the Engine FIFO. The returned
 // request keeps its ingress/response lifetime reservation until the HTTP response is released and

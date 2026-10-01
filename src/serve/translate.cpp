@@ -1,6 +1,8 @@
 #include "serve/translate.h"
 #include "serve/request_json.h"
 
+#include "product/speculative_options.h"
+
 #include <nlohmann/json.hpp>
 
 #include <cmath>
@@ -320,6 +322,25 @@ ninfer::RequestOptions to_request_options(const GenerationRequest& request,
             request.thinking_budget ? request.thinking_budget : server.default_thinking_budget;
     }
     options.execution.sampling             = resolve_sampling_overrides(request.sampling, server);
+    if (request.grammar) {
+        // The serve contract rejects a constrained request up front when the configured
+        // speculative backend cannot carry one (design #48), naming the backend.
+        const SpeculativeBackend backend = server.speculative.backend;
+        if (backend != SpeculativeBackend::None && backend != SpeculativeBackend::Mtp) {
+            ApiError error;
+            error.status = 400;
+            error.type   = "invalid_request_error";
+            error.param  = request.constraint_source == ConstraintSource::JsonSchema
+                               ? "response_format"
+                               : "grammar";
+            error.code   = "constrained_decoding_not_supported";
+            error.message = std::string("constrained generation is not supported with the ") +
+                            product::speculative_backend_name(backend) +
+                            " speculative backend; use the ordinary or MTP backend";
+            throw ApiException(std::move(error));
+        }
+        options.constraint.emplace(ninfer::GrammarConstraint{.gbnf = *request.grammar});
+    }
     options.output.raw                     = false;
     options.output.preserve_special_tokens = request.uses_tools() || request.has_tool_history();
     options.output.tool_name_max_length = static_cast<std::uint32_t>(request.tool_name_max_length);
