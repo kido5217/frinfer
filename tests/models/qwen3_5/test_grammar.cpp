@@ -18,6 +18,7 @@
 // terminals are exercised without a model artifact.
 
 #include "models/qwen3_5/frontend/grammar/grammar.h"
+#include "models/qwen3_5/frontend/grammar/grammar_runtime.h"
 #include "models/qwen3_5/frontend/grammar/tokenizer_vocabulary.h"
 #include "models/qwen3_5/frontend/tokenizer.h"
 
@@ -1465,6 +1466,91 @@ void test_engine_structural_vector() {
     llama_grammar_free_impl(grammar);
 }
 
+
+// The per-request constrained-generation runtime: region gating, the transition column, the
+// round advance and the atomic commit.
+void test_grammar_runtime() {
+    const std::shared_ptr<const frontend::CompiledGrammar> grammar =
+        frontend::CompiledGrammar::compile("root ::= \"ab\" (\"c\" | \"d\")",
+                                           standard_vocabulary(), nullptr);
+    check(grammar != nullptr, "grammar runtime fixture did not compile");
+    if (grammar == nullptr) { return; }
+    const frontend::GrammarVocabulary& vocab = *standard_vocabulary();
+    const int ab                             = vocab.encode("ab").front();
+    const int c                              = vocab.encode("c").front();
+    const int z                              = vocab.encode("z").front();
+    const std::size_t words = (static_cast<std::size_t>(grammar->token_count()) + 31U) / 32U;
+    const auto all_ones     = [](std::span<const std::uint32_t> row) {
+        return std::all_of(row.begin(), row.end(),
+                           [](std::uint32_t word) { return word == 0xFFFFFFFFU; });
+    };
+    const auto same = [](std::span<const std::uint32_t> left,
+                         std::span<const std::uint32_t> right) {
+        return std::equal(left.begin(), left.end(), right.begin());
+    };
+    const auto column = [words](const std::vector<std::uint32_t>& rows, std::size_t index) {
+        return std::span<const std::uint32_t>(rows).subspan(index * words, words);
+    };
+
+    std::vector<std::uint32_t> initial(words, 0);
+    std::vector<std::uint32_t> rows(3 * words, 0);
+    frontend::GrammarRuntime runtime(grammar);
+    {
+        const std::array<int, 1> tokens{frontend::kUnknownConstraintToken};
+        const std::array<std::uint8_t, 1> regions{0};
+        runtime.fill_round_rows(tokens, regions, rows, words);
+        std::copy(rows.begin(), rows.begin() + static_cast<std::ptrdiff_t>(words), initial.begin());
+        check(render_row(column(rows, 0), vocab) ==
+                  render_row(grammar->row_for(grammar->initial_state()), vocab),
+              "the committed-state row is not the fixture grammar's initial row",
+              render_row(column(rows, 0), vocab));
+    }
+
+    // Unconstrained columns are all-ones and their tokens never reach the grammar.
+    const std::array<int, 2> free_tokens{ab, ab};
+    const std::array<std::uint8_t, 2> free_regions{1, 1};
+    runtime.fill_round_rows(free_tokens, free_regions, rows, words);
+    check(all_ones(column(rows, 0)) && all_ones(column(rows, 1)),
+          "an unconstrained column was masked");
+    check(runtime.commit(free_tokens, free_regions), "committing unconstrained columns failed");
+
+    // The transition column is the first masked column: it uses the pre-boundary state row.
+    const std::array<int, 2> transition_tokens{ab, frontend::kUnknownConstraintToken};
+    const std::array<std::uint8_t, 2> transition_regions{1, 0};
+    runtime.fill_round_rows(transition_tokens, transition_regions, rows, words);
+    check(all_ones(column(rows, 0)), "a reasoning column was masked");
+    check(same(column(rows, 1), initial),
+          "the transition column did not use the pre-boundary state row");
+
+    // Answer columns advance the preview state: after "ab" only "c"/"d" remain.
+    const std::array<int, 2> answer_tokens{ab, frontend::kUnknownConstraintToken};
+    const std::array<std::uint8_t, 2> answer_regions{0, 0};
+    runtime.fill_round_rows(answer_tokens, answer_regions, rows, words);
+    check(same(column(rows, 0), initial), "the first answer column did not use the initial row");
+    frontend::GrammarState after_ab = grammar->initial_state();
+    check(after_ab.accept(ab), "the fixture's \"ab\" token did not advance a fresh state");
+    check(render_row(column(rows, 1), vocab) == render_row(grammar->row_for(after_ab), vocab),
+          "the second answer column did not advance by the first answer token",
+          render_row(column(rows, 1), vocab));
+
+    // An ungrammatical draft ends the reachable prefix; later masked columns keep all-ones.
+    const std::array<int, 2> rejected_tokens{z, frontend::kUnknownConstraintToken};
+    runtime.fill_round_rows(rejected_tokens, answer_regions, rows, words);
+    check(all_ones(column(rows, 1)), "a rejected draft did not end the reachable prefix");
+
+    // Commit is answer-aware and atomic; a token after the grammar ended is refused.
+    const std::array<int, 2> commit_tokens{ab, c};
+    check(runtime.commit(commit_tokens, answer_regions), "committing the answer tokens failed");
+    check(runtime.can_end(), "the grammar could not end after the complete answer");
+    const std::array<int, 1> late_tokens{ab};
+    const std::array<std::uint8_t, 1> late_regions{0};
+    check(!runtime.commit(late_tokens, late_regions),
+          "a token after the grammar ended was committed");
+    check(runtime.can_end(), "a failed commit moved the committed state");
+    check(!runtime.commit(std::array<int, 1>{frontend::kUnknownConstraintToken}, late_regions),
+          "an answer column without a token was committed");
+}
+
 } // namespace
 
 int main() {
@@ -1479,6 +1565,7 @@ int main() {
     test_row_cache();
     test_diary_schema();
     test_tokenizer_vocabulary();
+    test_grammar_runtime();
 
     if (g_failures != 0) {
         std::fprintf(stderr, "%d grammar test failure(s)\n", g_failures);
