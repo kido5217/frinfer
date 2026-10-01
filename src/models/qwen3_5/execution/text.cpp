@@ -1280,6 +1280,14 @@ TextContext::prefill_impl(std::span<const int> ids, const TextPrefill* text_pref
                 Tensor last_xf = xf.slice(1, len - 1, 1);
                 Tensor logits  = matrix_window(io_.logits, 1);
                 project(last_xf, *lm_head_, logits, work_, s);
+                if (io_.mask_rows.data != nullptr) {
+                    // The bonus-token pick is the first licensed token of the turn and reads the
+                    // single-row step logits, so it uses mask row 0 like the other prefill sample.
+                    ops::apply_mask(
+                        logits, /*columns=*/1, /*batch=*/1, io_.mask_rows, io_.mask_active,
+                        dimension(parameters_.model.resources().public_token_count),
+                        static_cast<std::int32_t>(kMaximumConcurrency), s);
+                }
                 // Set io_.pos to the bonus token's absolute position (base + T) before picking so
                 // the sampler RNG is keyed by it (prefill purpose keeps it distinct from the first
                 // decode step, which reuses the same io_.pos).
