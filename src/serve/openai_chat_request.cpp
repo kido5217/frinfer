@@ -201,22 +201,24 @@ void validate_standard_output_controls(const Json& body) {
     }
 }
 
-void validate_constrained_decoding_extensions(const Json& body) {
-    // llama.cpp exposes grammar; vLLM uses structured_outputs and previously exposed the
-    // guided_* spellings. Each promises constrained generation rather than an advisory hint.
+void parse_grammar(const Json& body, GenerationRequest& output) {
+    // llama.cpp-compatible GBNF text constrains the answer stream; the Engine compiles it at
+    // submit. The other constrained-decoding spellings (vLLM's structured_outputs and the retired
+    // guided_* family) still receive an explicit rejection rather than being treated as a hint.
+    if (body.contains("grammar") && !body.at("grammar").is_null()) {
+        const Json& value = body.at("grammar");
+        if (!value.is_string()) { bad_request("grammar must be GBNF text", "grammar"); }
+        std::string text = value.get<std::string>();
+        if (!text.empty()) { output.grammar = std::move(text); }
+    }
     static constexpr const char* fields[] = {
-        "grammar",      "structured_outputs", "guided_json",
-        "guided_regex", "guided_choice",      "guided_grammar",
+        "structured_outputs", "guided_json", "guided_regex", "guided_choice", "guided_grammar",
     };
     for (const char* field : fields) {
         if (!body.contains(field) || body.at(field).is_null()) { continue; }
-        const Json& value = body.at(field);
-        if (std::string_view(field) == "grammar" && value.is_string() &&
-            value.get_ref<const std::string&>().empty()) {
-            continue;
-        }
         bad_request(std::string(field) +
-                        " requests constrained decoding, which NInfer does not provide",
+                        " requests a constrained-decoding spelling that NInfer does not provide; "
+                        "use grammar with GBNF text",
                     field, "constrained_decoding_not_supported");
     }
 }
@@ -882,7 +884,6 @@ void parse_output_limit(const Json& body, const RequestLimits& limits, OpenAICha
 OpenAIChatRequest parse_chat_completion_request(const Json& body, const RequestLimits& limits) {
     require_object(body, "request body must be a JSON object");
     validate_standard_output_controls(body);
-    validate_constrained_decoding_extensions(body);
     validate_compatibility_hints(body);
 
     OpenAIChatRequest output;
@@ -900,6 +901,7 @@ OpenAIChatRequest parse_chat_completion_request(const Json& body, const RequestL
     parse_messages(body, output.generation);
     parse_stop(body, output.generation);
     parse_sampling(body, output.generation);
+    parse_grammar(body, output.generation);
     parse_stream_options(body, output);
     parse_response_observations(body, output);
     parse_output_limit(body, limits, output);

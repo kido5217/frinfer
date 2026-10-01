@@ -186,6 +186,9 @@ struct GenerationRequest {
     ninfer::PromptContinuationMode continuation = ninfer::PromptContinuationMode::NewAssistantTurn;
     bool allow_engine_automatic_shared_prefixes = true;
     SamplingParams sampling;
+    // llama.cpp-compatible GBNF grammar for the answer stream. The Engine compiles and validates
+    // it at submit; a rejection surfaces as RequestErrorKind::InvalidConstraint.
+    std::optional<std::string> grammar;
 
     [[nodiscard]] bool uses_tools() const noexcept {
         return !tools.empty() && tool_choice.mode != ToolChoiceMode::None;
