@@ -60,11 +60,6 @@ ApiError request_error_to_api_error(const ninfer::RequestError& exception) {
         error.status = 400;
         error.code   = "invalid_media";
         break;
-    case ninfer::RequestErrorKind::InvalidConstraint:
-        error.param.clear();
-        error.status = 400;
-        error.code   = "constrained_decoding_invalid";
-        break;
     case ninfer::RequestErrorKind::Overloaded:
         error.param.clear();
         error.status = 429;

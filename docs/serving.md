@@ -112,8 +112,6 @@ The endpoint supports:
 - the compatible `top_k` (`0..20`) and `min_p` (`0..1`) sampler extensions;
 - up to four non-empty stop strings, applied to both reasoning and answer output;
 - `n:1`, text-only `modalities`, and `response_format: {"type":"text"}`;
-- llama.cpp-compatible `grammar` GBNF text, which constrains the answer stream (the reasoning
-  region stays unconstrained; the MTP and ordinary backends are supported, DFlash is rejected);
 - non-streaming responses and server-sent event streams;
 - `stream_options.include_usage`;
 - llama.cpp-compatible terminal `timings`, plus opt-in `timings_per_token` and
@@ -127,16 +125,14 @@ The endpoint supports:
 - Assistant `reasoning_content` and `reasoning` history aliases.
 
 Options whose observable behavior the Engine cannot provide are rejected when they request that
-behavior. This includes JSON Schema `response_format` constrained output, nonzero `logit_bias`,
-requested log probabilities,
+behavior. This includes JSON constrained output, nonzero `logit_bias`, requested log probabilities,
 audio/file input or audio output, `strict:true`, required or named tool choice,
 `parallel_tool_calls:false` with enabled tools, explicit low/high image detail, web search,
 moderation, low/high verbosity, stored Chat Completions, and non-empty legacy `functions`.
 Each capability rejection identifies the affected field and the guarantee NInfer cannot provide.
-Known constrained-decoding aliases other than `grammar` (`structured_outputs`, `guided_json`,
-`guided_regex`, `guided_choice`, and `guided_grammar`) receive the same explicit rejection instead
-of being treated as unknown hints. A `grammar` that the Engine cannot compile is rejected with
-`constrained_decoding_invalid`.
+Known constrained-decoding aliases (`grammar`, `structured_outputs`, `guided_json`, `guided_regex`,
+`guided_choice`, and `guided_grammar`) receive the same explicit rejection instead of being treated
+as unknown hints.
 
 Semantically neutral fields do not make an otherwise executable request fail. All-zero
 `logit_bias`, `logprobs:false`, `top_logprobs:0`, `verbosity:"medium"`, empty legacy tool controls,
@@ -175,8 +171,7 @@ case-insensitive boolean text is normalized to `true` or `false`. A nonempty sch
 a structured call: valid JSON retains its represented type and other text becomes a JSON string so
 the tool consumer can report the validation error and continue the agent loop. Schemas without a
 supported explicit type retain untyped inference. NInfer does not apply defaults, enforce required
-properties, perform recursive JSON Schema validation, or honor JSON Schema constrained decoding
-(a `grammar` GBNF constraint is applied to the answer stream instead).
+properties, perform recursive JSON Schema validation, or use constrained decoding.
 
 String parameters preserve function/tool-call markers and balanced nested
 `<parameter=...>...</parameter>` text as value bytes. The Qwen wire format has no delimiter escape,
@@ -531,8 +526,7 @@ undeclared model output remains ordinary text. `allowed_tools` with mode `auto` 
 without changing declaration order, while `tool_choice:"none"` disables structured tool output even
 when the history contains earlier calls.
 
-NInfer does not execute functions or enforce JSON Schema through constrained decoding (only a
-caller-supplied `grammar` GBNF constraint is applied), so
+NInfer does not execute functions or enforce JSON Schema through constrained decoding, so
 `strict:true`, required or named tool choice, hosted tools, remote MCP tools, and custom free-form
 tools are rejected. Deferred loading, output schemas, and caller restrictions that exclude direct
 invocation are also rejected because their semantics cannot be honored.
@@ -1017,8 +1011,8 @@ a following compatible turn can reuse it. Output-limit and context-capacity fini
 `length`/ `max_tokens`; ordinary model or string stops map to `stop`/ `end_turn`.
 
 Function tools are rendered into the model prompt and generated calls are parsed into protocol
-responses. NInfer does not execute tools and does not enforce client JSON Schema through constrained decoding
-(only a caller-supplied `grammar` GBNF constraint is applied).
+responses. NInfer does not execute tools and does not enforce client JSON Schema through constrained
+decoding.
 
 Prompt-token usage includes chat-template and expanded media tokens. Generated-token usage comes
 from accepted output token IDs, including a stop token whose decoded text may be withheld.

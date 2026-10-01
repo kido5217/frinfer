@@ -187,52 +187,34 @@ int test_standard_field_policy() {
 }
 
 int test_constrained_decoding_extensions() {
-    int failures = 0;
-
-    // GBNF text is the supported constrained-decoding spelling and reaches the Engine contract.
-    Json grammar_body      = base_request();
-    grammar_body["grammar"] = "root ::= \"yes\" | \"no\"";
-    const OpenAIChatRequest constrained = parse(grammar_body);
-    failures += check(constrained.generation.grammar.has_value() &&
-                          *constrained.generation.grammar == "root ::= \"yes\" | \"no\"",
-                      "grammar GBNF text is parsed into the request");
-    const ninfer::RequestOptions constrained_options = options(constrained.generation);
-    failures += check(constrained_options.constraint.has_value() &&
-                          constrained_options.constraint->gbnf ==
-                              "root ::= \"yes\" | \"no\"",
-                      "grammar GBNF text reaches the Engine constraint contract");
-
-    Json neutral               = base_request();
-    neutral["grammar"]         = "";
-    neutral["structured_outputs"] = nullptr;
-    neutral["guided_json"]     = nullptr;
-    const OpenAIChatRequest plain = parse(neutral);
-    failures += check(!plain.generation.grammar.has_value() &&
-                          !options(plain.generation).constraint.has_value(),
-                      "an empty grammar constrains nothing");
-
-    Json malformed      = base_request();
-    malformed["grammar"] = 5;
-    const ApiError typing = api_error([&] { (void)parse(malformed); });
-    failures += check(typing.param == "grammar" && typing.status == 400,
-                      "a non-string grammar is rejected");
-
-    const std::vector<std::pair<const char*, Json>> unsupported = {
+    int failures                                           = 0;
+    const std::vector<std::pair<const char*, Json>> active = {
+        {"grammar", "root ::= \"yes\" | \"no\""},
         {"structured_outputs", Json{{"json", Json{{"type", "object"}}}}},
         {"guided_json", Json{{"type", "object"}}},
         {"guided_regex", "[a-z]+"},
         {"guided_choice", Json::array({"yes", "no"})},
         {"guided_grammar", "root ::= \"yes\" | \"no\""},
     };
-    for (const auto& [field, value] : unsupported) {
+    for (const auto& [field, value] : active) {
         Json body            = base_request();
         body[field]          = value;
         const ApiError error = api_error([&] { (void)parse(body); });
         failures +=
             check(error.param == field && error.code == "constrained_decoding_not_supported" &&
                       error.message.find(field) != std::string::npos,
-                  std::string(field) + " remains an explicit rejection");
+                  std::string(field) + " constrained decoding is explicitly rejected");
     }
+
+    Json neutral                  = base_request();
+    neutral["grammar"]            = "";
+    neutral["structured_outputs"] = nullptr;
+    neutral["guided_json"]        = nullptr;
+    neutral["guided_regex"]       = nullptr;
+    neutral["guided_choice"]      = nullptr;
+    neutral["guided_grammar"]     = nullptr;
+    failures += check(parse(neutral).generation.messages.size() == 1,
+                      "neutral constrained-decoding extension values are accepted");
     return failures;
 }
 
