@@ -446,7 +446,8 @@ OutputSession::preview_reasoning_flags(std::span<const TokenId> tokens) {
     }
     std::vector<std::uint8_t> flags(tokens.size() + 1, 0);
     impl_->core.begin_preview();
-    std::string pending;
+    // Continue the committed stream's incomplete UTF-8 sequence, exactly as the round path does.
+    std::string pending = impl_->state.utf8_pending;
     for (std::size_t index = 0; index < tokens.size(); ++index) {
         const fi::DecodedTokenView decoded = impl_->tokenizer->decoded_token(tokens[index]);
         const std::string_view bytes =
