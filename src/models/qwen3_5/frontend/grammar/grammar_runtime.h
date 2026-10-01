@@ -23,9 +23,10 @@ inline constexpr int kUnknownConstraintToken = -1;
 // Round semantics (wayfinder map #45, ticket #59):
 //  - a masked column uses the row of the state reached by the committed prefix plus the answer
 //    columns before it, and advances the state by that column's token;
-//  - the transition column that completes the reasoning close is itself an answer column (its
-//    bytes carry the first answer text), which is why callers pass the session's post-feed
-//    region flags rather than a pre-token region;
+//  - the transition column that completes the reasoning close is itself an answer column: the
+//    token carrying the deciding byte can also carry the first answer text, and when it carries
+//    none the column contributes nothing to the grammar. Callers therefore pass the session's
+//    post-feed region flags rather than a pre-token region;
 //  - every other column gets an all-ones row: nothing is forbidden outside the answer stream;
 //  - a token the grammar rejects ends the reachable prefix, so later masked columns also get
 //    all-ones rows - the runtime samples against the preceding row, so a rejected draft is

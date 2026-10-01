@@ -53,7 +53,8 @@ void GrammarRuntime::fill_round_rows(std::span<const int> tokens,
         }
         const GrammarMaskRow masked = grammar_->row_for(preview);
         std::copy(masked.begin(), masked.end(), row.begin());
-        // Bits past the token domain are not tokens: nothing is forbidden there.
+        // Words past the row width are padding: the consumer never inspects bits at or past the
+        // token domain, so intra-word tail bits are left as the row produced them.
         std::fill(row.begin() + static_cast<std::ptrdiff_t>(masked.size()), row.end(), 0xFFFFFFFFU);
         if (column + 1 == columns) { continue; }
         if (tokens[column] == kUnknownConstraintToken || !preview.accept(tokens[column])) {
