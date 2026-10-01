@@ -158,8 +158,12 @@ void test_round_layout() {
     expect(round.mtp_decode.has_value() && round.mtp_decode->alignment_ids.shape[0] == 6 &&
                round.mtp_decode->alignment_ids.shape[1] == 1,
            "MTP decode frame is explicit");
+    // Derived, not self-referential: the widest lane (DFlash's last column, batch 8) must fit.
+    constexpr std::int32_t widest_required_rows = (q36::kDFlashDecodeMaximumWidth - 1) *
+                                                      ninfer::kMaximumConcurrency +
+                                                  ninfer::kMaximumConcurrency;
     expect(round.mask_rows.has_value() && round.mask_rows->shape[0] == 4 &&
-               round.mask_rows->shape[1] == q36::kMaskRowCapacity &&
+               round.mask_rows->shape[1] >= widest_required_rows &&
                round.mask_active.has_value() && round.mask_active->shape[0] == 1,
            "round mask transport reserves the fixed row table and active flag");
 
@@ -179,8 +183,7 @@ void test_round_layout() {
            "K=15 DFlash storage is backend-owned");
     expect(!dflash.mtp.has_value() && !dflash.mtp_decode.has_value(),
            "DFlash layout does not allocate MTP storage");
-    expect(dflash.mask_rows.has_value() &&
-               dflash.mask_rows->shape[1] == q36::kMaskRowCapacity,
+    expect(dflash.mask_rows.has_value() && dflash.mask_rows->shape[1] >= widest_required_rows,
            "DFlash shares the widest mask row geometry");
 
     ninfer::LayoutBuilder scoring_builder;
