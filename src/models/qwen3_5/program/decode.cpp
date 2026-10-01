@@ -864,6 +864,7 @@ void ProgramImpl::refresh_mask_rows(std::span<const std::uint32_t> lanes,
     if (io.mask_rows.data == nullptr) { return; }
     const std::size_t row_count = std::min(lanes.size(), plans.size());
     bool any_masked             = false;
+    std::uint32_t columns_used  = 1;
     for (std::size_t row = 0; row < lanes.size(); ++row) {
         RequestControl& request = requests[lanes[row]];
         MaskPlan plan           = row < plans.size() ? plans[row] : MaskPlan{};
@@ -872,7 +873,12 @@ void ProgramImpl::refresh_mask_rows(std::span<const std::uint32_t> lanes,
             plan = MaskPlan{};
         }
         request.pending_mask_plan = plan;
-        any_masked = any_masked || (plan.column_count != 0 && (plan.reasoning_mask & 1U) == 0U);
+        if (plan.column_count != 0) {
+            const std::uint8_t all_reasoning =
+                static_cast<std::uint8_t>((1U << plan.column_count) - 1U);
+            any_masked = any_masked || (plan.reasoning_mask & all_reasoning) != all_reasoning;
+            columns_used = std::max<std::uint32_t>(columns_used, plan.column_count);
+        }
     }
     if (!any_masked) {
         // Rows are only read while the flag is raised, so an unconstrained round only has to put
@@ -889,16 +895,19 @@ void ProgramImpl::refresh_mask_rows(std::span<const std::uint32_t> lanes,
     // all-ones - so a row left masked by an earlier round can never leak into this one. The
     // grammar fills a contiguous [columns x words] block; the table stores column c of batch
     // position b at row c * kMaximumConcurrency + b.
-    for (std::size_t row = 0; row < row_count; ++row) {
-        std::span<std::uint32_t> staged(mask_staging.data() + row * mask_staging_words,
-                                        mask_staging_words);
-        const MaskPlan plan = requests[lanes[row]].pending_mask_plan;
-        if (plan.column_count == 0) {
-            // No column of this row is masked: still run the grammar's region plan so unconstrained
-            // reasoning columns do not advance the state.
+    for (std::uint32_t column = 0; column < columns_used; ++column) {
+        for (std::size_t position = 0; position < row_count; ++position) {
+            std::span<std::uint32_t> staged(
+                mask_staging.data() +
+                    (static_cast<std::size_t>(column) * kMaximumConcurrency + position) *
+                        mask_staging_words,
+                mask_staging_words);
             std::fill(staged.begin(), staged.end(), 0xFFFFFFFFU);
-            continue;
         }
+    }
+    for (std::size_t row = 0; row < row_count; ++row) {
+        const MaskPlan plan = requests[lanes[row]].pending_mask_plan;
+        if (plan.column_count == 0) { continue; }
         std::array<int, kMaskColumnCapacity> tokens{};
         std::array<std::uint8_t, kMaskColumnCapacity> regions{};
         tokens.fill(frontend::kUnknownConstraintToken);
@@ -924,9 +933,16 @@ void ProgramImpl::refresh_mask_rows(std::span<const std::uint32_t> lanes,
                                                  device_row * mask_staging_words);
         }
     }
-    CUDA_CHECK(cudaMemcpyAsync(io.mask_rows.data, mask_staging.data(),
-                               row_count * mask_staging_words * sizeof(std::uint32_t),
-                               cudaMemcpyHostToDevice, device.stream));
+    // One upload per column: within a column the used rows are contiguous, across columns they
+    // are kMaximumConcurrency rows apart.
+    for (std::uint32_t column = 0; column < columns_used; ++column) {
+        const std::size_t row_offset =
+            static_cast<std::size_t>(column) * kMaximumConcurrency * mask_staging_words;
+        CUDA_CHECK(cudaMemcpyAsync(
+            io.mask_rows.data + row_offset * sizeof(std::uint32_t),
+            mask_staging.data() + row_offset, row_count * mask_staging_words * sizeof(std::uint32_t),
+            cudaMemcpyHostToDevice, device.stream));
+    }
     if (mask_active_host != 1) {
         const std::int32_t active = 1;
         CUDA_CHECK(cudaMemcpyAsync(io.mask_active.data, &active, sizeof(active),
