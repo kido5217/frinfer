@@ -859,4 +859,85 @@ runtime::ExecutionTiming ProgramImpl::resolve_non_speculative_pending(
 }
 
 
+void ProgramImpl::refresh_mask_rows(std::span<const std::uint32_t> lanes,
+                                    std::span<const MaskPlan> plans) {
+    if (io.mask_rows.data == nullptr) { return; }
+    const std::size_t row_count = std::min(lanes.size(), plans.size());
+    bool any_masked             = false;
+    for (std::size_t row = 0; row < lanes.size(); ++row) {
+        RequestControl& request = requests[lanes[row]];
+        MaskPlan plan           = row < plans.size() ? plans[row] : MaskPlan{};
+        if (!request.grammar_runtime || plan.column_count > 1) { plan = MaskPlan{}; }
+        request.pending_mask_plan = plan;
+        any_masked = any_masked || (plan.column_count != 0 && (plan.reasoning_mask & 1U) == 0U);
+    }
+    if (!any_masked) {
+        // Rows are only read while the flag is raised, so an unconstrained round only has to put
+        // the flag back.
+        if (mask_active_host != 0) {
+            const std::int32_t inactive = 0;
+            CUDA_CHECK(cudaMemcpyAsync(io.mask_active.data, &inactive, sizeof(inactive),
+                                       cudaMemcpyHostToDevice, device.stream));
+            mask_active_host = 0;
+        }
+        return;
+    }
+    // Every row of the round is rewritten - masked columns from the grammar, everything else
+    // all-ones - so a row left masked by an earlier round can never leak into this one.
+    for (std::size_t row = 0; row < row_count; ++row) {
+        std::span<std::uint32_t> staged(mask_staging.data() + row * mask_staging_words,
+                                        mask_staging_words);
+        const MaskPlan plan = requests[lanes[row]].pending_mask_plan;
+        if (plan.column_count == 0 || (plan.reasoning_mask & 1U) != 0U) {
+            std::fill(staged.begin(), staged.end(), 0xFFFFFFFFU);
+            continue;
+        }
+        std::array<int, 1> tokens{frontend::kUnknownConstraintToken};
+        const std::array<std::uint8_t, 1> regions{0};
+        requests[lanes[row]].grammar_runtime->fill_round_rows(tokens, regions, staged,
+                                                              mask_staging_words);
+    }
+    CUDA_CHECK(cudaMemcpyAsync(io.mask_rows.data, mask_staging.data(),
+                               row_count * mask_staging_words * sizeof(std::uint32_t),
+                               cudaMemcpyHostToDevice, device.stream));
+    if (mask_active_host != 1) {
+        const std::int32_t active = 1;
+        CUDA_CHECK(cudaMemcpyAsync(io.mask_active.data, &active, sizeof(active),
+                                   cudaMemcpyHostToDevice, device.stream));
+        mask_active_host = 1;
+    }
+}
+
+void ProgramImpl::refresh_prefill_mask_row(std::uint32_t lane, MaskPlan plan) {
+    if (io.mask_rows.data == nullptr) { return; }
+    RequestControl& request = requests[lane];
+    if (!request.grammar_runtime || plan.column_count > 1) { plan = MaskPlan{}; }
+    request.pending_mask_plan = plan;
+    const bool masked = plan.column_count != 0 && (plan.reasoning_mask & 1U) == 0U;
+    if (masked) {
+        // A prefill step samples one row from the shared step logits, so its row is table row 0.
+        std::span<std::uint32_t> staged(mask_staging.data(), mask_staging_words);
+        std::array<int, 1> tokens{frontend::kUnknownConstraintToken};
+        const std::array<std::uint8_t, 1> regions{0};
+        request.grammar_runtime->fill_round_rows(tokens, regions, staged, mask_staging_words);
+        CUDA_CHECK(cudaMemcpyAsync(io.mask_rows.data, staged.data(),
+                                   mask_staging_words * sizeof(std::uint32_t),
+                                   cudaMemcpyHostToDevice, device.stream));
+        if (mask_active_host != 1) {
+            const std::int32_t active = 1;
+            CUDA_CHECK(cudaMemcpyAsync(io.mask_active.data, &active, sizeof(active),
+                                       cudaMemcpyHostToDevice, device.stream));
+            mask_active_host = 1;
+        }
+        return;
+    }
+    if (mask_active_host != 0) {
+        const std::int32_t inactive = 0;
+        CUDA_CHECK(cudaMemcpyAsync(io.mask_active.data, &inactive, sizeof(inactive),
+                                   cudaMemcpyHostToDevice, device.stream));
+        mask_active_host = 0;
+    }
+}
+
+
 } // namespace ninfer::models::qwen3_5::detail

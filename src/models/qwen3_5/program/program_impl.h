@@ -7,6 +7,7 @@
 #include "ninfer/ops/gdn_replay.h"
 #include "ninfer/ops/sampling.h"
 #include "core/decode_graph.h"
+#include "models/qwen3_5/frontend/grammar/grammar_runtime.h"
 #include "models/qwen3_5/frontend/prepared_prompt.h"
 
 #include "models/qwen3_5/program/planning/startup.h"
@@ -425,6 +426,13 @@ struct RequestControl {
     };
 
     std::optional<Prefill> prefill;
+
+    // Grammar constraint state: the compiled grammar stays alive with the request record, and the
+    // runtime owns the committed grammar state plus row production.
+    std::shared_ptr<const frontend::CompiledGrammar> grammar;
+    std::optional<frontend::GrammarRuntime> grammar_runtime;
+    // Mask plan of the round currently pending commit (which columns were masked).
+    MaskPlan pending_mask_plan;
 };
 
 class ProgramImpl {
@@ -498,8 +506,10 @@ public:
     progress_context_transaction(runtime::CancellationFlagView cancellation);
     void finalize_context_transaction() noexcept;
     [[nodiscard]] bool has_context_transaction() const noexcept;
-    [[nodiscard]] PrefillProgress advance_prefill(SequenceHandle sequence,
+    [[nodiscard]] PrefillProgress advance_prefill(SequenceHandle sequence, MaskPlan mask_plan,
                                                   runtime::ExecutionTiming* failed_timing);
+    void set_constraint(std::uint32_t lane,
+                        std::shared_ptr<const frontend::CompiledGrammar> grammar);
     [[nodiscard]] CaptureAssessment
     inspect_capture(const CaptureOffer& offer, const SharedPrefixHandle* exact_shared,
                     const SharedPrefixHandle* replacement,
@@ -527,6 +537,7 @@ public:
         CapturePressureCandidate&& pressure, runtime::CancellationFlagView cancellation);
     [[nodiscard]] PendingBatch decode(std::span<const SequenceHandle> sequences,
                                       std::span<const runtime::RoundBudget> budgets,
+                                      std::span<const MaskPlan> mask_plans,
                                       runtime::ExecutionTiming* failed_timing);
     [[nodiscard]] runtime::ExecutionTiming
     append_forced_tokens(std::span<const SequenceHandle> sequences,
@@ -608,6 +619,10 @@ public:
     std::vector<SharedPrefixSlot> shared_prefix_slots;
     std::array<std::uint32_t, kMaximumConcurrency> active_continuations{};
     std::array<RequestControl, kMaximumConcurrency> requests;
+    // Host staging for grammar mask rows, laid out like the device table ([words, rows]).
+    std::vector<std::uint32_t> mask_staging;
+    std::size_t mask_staging_words = 0;
+    std::int32_t mask_active_host  = 0;
     std::array<std::uint64_t, kMaximumConcurrency> lane_epochs{};
 
     DecodeGraphFamily ordinary_graphs;
@@ -1074,6 +1089,16 @@ private:
     [[nodiscard]] PendingBatch wrap_pending(std::span<const std::uint32_t> lanes,
                                             const runtime::BatchedGeneratedRound& round);
     void invalidate_lane(std::uint32_t lane) noexcept;
+    // Grammar mask rows: refresh the round's rows (all-ones for unconstrained columns) and upload
+    // them together with the device active flag. No-op on programs without mask regions.
+    void refresh_mask_rows(std::span<const std::uint32_t> lanes, std::span<const MaskPlan> plans);
+    // Prefill samples read mask row 0 (one request per prefill step).
+    void refresh_prefill_mask_row(std::uint32_t lane, MaskPlan plan);
+    void clear_constraint(RequestControl& request) noexcept;
+    void advance_grammar_state(std::span<const std::uint32_t> bases,
+                               std::span<const std::uint32_t> lanes,
+                               std::span<const runtime::CommitDecision> decisions,
+                               std::span<const std::uint32_t> accepted);
     [[nodiscard]] SequenceState& active_sequence(std::uint32_t lane);
     [[nodiscard]] const SequenceState& active_sequence(std::uint32_t lane) const;
     [[nodiscard]] std::optional<std::uint32_t> allocate_continuation_slot() noexcept;

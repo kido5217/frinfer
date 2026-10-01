@@ -56,6 +56,15 @@ ninfer_add_test(ninfer_qwen3_5_prefix_real_test
   SOURCES "${CMAKE_CURRENT_LIST_DIR}/test_engine_prefix_real.cpp"
   LIBRARIES ninfer_engine)
 
+ninfer_add_test(ninfer_qwen3_5_constrained_real_test
+  SOURCES "${CMAKE_CURRENT_LIST_DIR}/test_engine_constrained_real.cpp"
+  LIBRARIES ninfer_engine)
+
+set_tests_properties(
+  ninfer_qwen3_5_constrained_real_test
+  PROPERTIES SKIP_RETURN_CODE 77)
+
+
 set_tests_properties(
   ninfer_qwen3_5_prefix_real_test
   PROPERTIES SKIP_RETURN_CODE 77)

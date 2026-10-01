@@ -343,9 +343,18 @@ void Program::finalize_context_transaction() noexcept { impl_->finalize_context_
 
 bool Program::has_context_transaction() const noexcept { return impl_->has_context_transaction(); }
 
-PrefillProgress Program::advance_prefill(SequenceHandle sequence,
+PrefillProgress Program::advance_prefill(SequenceHandle sequence, MaskPlan mask_plan,
                                          runtime::ExecutionTiming* failed_timing) {
-    return impl_->advance_prefill(sequence, failed_timing);
+    return impl_->advance_prefill(sequence, mask_plan, failed_timing);
+}
+
+void Program::set_constraint(SequenceHandle sequence,
+                             std::shared_ptr<const frontend::CompiledGrammar> grammar) {
+    impl_->set_constraint(detail::RuntimeContractAccess::lane(sequence).value, std::move(grammar));
+}
+
+SpeculativeBackend Program::speculative_backend() const noexcept {
+    return impl_->speculative_backend;
 }
 
 CaptureAssessment
@@ -420,8 +429,9 @@ runtime::ContextTransactionReserveStatus Program::reserve_active_capture_with_pr
 
 PendingBatch Program::decode(std::span<const SequenceHandle> sequences,
                              std::span<const runtime::RoundBudget> budgets,
+                             std::span<const MaskPlan> mask_plans,
                              runtime::ExecutionTiming* failed_timing) {
-    return impl_->decode(sequences, budgets, failed_timing);
+    return impl_->decode(sequences, budgets, mask_plans, failed_timing);
 }
 
 runtime::ExecutionTiming

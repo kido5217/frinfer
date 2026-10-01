@@ -867,7 +867,7 @@ ProgramImpl::shared_prefix_summary(const SharedPrefixState& shared) const {
     };
 }
 
-PrefillProgress ProgramImpl::advance_prefill(SequenceHandle sequence,
+PrefillProgress ProgramImpl::advance_prefill(SequenceHandle sequence, MaskPlan mask_plan,
                                              runtime::ExecutionTiming* failed_timing) {
     if (pending_transaction_ || !valid_sequence(sequence)) {
         throw std::logic_error("prefill sequence capability is invalid");
@@ -876,6 +876,7 @@ PrefillProgress ProgramImpl::advance_prefill(SequenceHandle sequence,
     if (requests[lane].lifecycle != Lifecycle::Prefilling) {
         throw std::logic_error("prefill advance requires a prefilling sequence");
     }
+    refresh_prefill_mask_row(lane, mask_plan);
     try {
         runtime::PrefillStepResult step = advance_prefill_raw(lane, failed_timing);
         if (failed_timing != nullptr) { *failed_timing += step.timing; }
@@ -1033,8 +1034,31 @@ void ProgramImpl::clear_execution_failure_lanes(std::span<const std::uint32_t> l
     }
 }
 
+void ProgramImpl::set_constraint(std::uint32_t lane,
+                                 std::shared_ptr<const frontend::CompiledGrammar> grammar) {
+    if (lane >= max_concurrency) { throw std::out_of_range("constraint lane is out of range"); }
+    RequestControl& request   = requests[lane];
+    request.pending_mask_plan = {};
+    if (grammar == nullptr) {
+        request.grammar.reset();
+        request.grammar_runtime.reset();
+        return;
+    }
+    // Every admitted request starts from the grammar's initial state, even when an earlier request
+    // on this lane shared the same compiled grammar.
+    request.grammar = std::move(grammar);
+    request.grammar_runtime.emplace(request.grammar);
+}
+
+void ProgramImpl::clear_constraint(RequestControl& request) noexcept {
+    request.grammar.reset();
+    request.grammar_runtime.reset();
+    request.pending_mask_plan = {};
+}
+
 void ProgramImpl::clear_lane_best_effort(SequenceState& sequence,
                                          RequestControl& request) noexcept {
+    clear_constraint(request);
     request.prefill.reset();
     request.lifecycle            = Lifecycle::Empty;
     request.pending              = {};

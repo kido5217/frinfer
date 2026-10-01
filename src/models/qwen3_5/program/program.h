@@ -835,6 +835,15 @@ struct ReleaseResult {
     runtime::ConsumeStatus status = runtime::ConsumeStatus::InvariantMismatch;
 };
 
+// One decode row's grammar-mask plan. `column_count` is the number of decode columns the row
+// carries (0 leaves the row unconstrained); bit j of `reasoning_mask` marks column j as still
+// unconstrained because the parsing core is in its reasoning region there. Column j of the mask
+// table mirrors column j of the target logits, so the plan follows the batch layout.
+struct MaskPlan {
+    std::uint8_t column_count   = 0;
+    std::uint8_t reasoning_mask = 0;
+};
+
 class Program {
 public:
     ~Program() noexcept;
@@ -878,8 +887,14 @@ public:
     progress_context_transaction(runtime::CancellationFlagView cancellation);
     void finalize_context_transaction() noexcept;
     [[nodiscard]] bool has_context_transaction() const noexcept;
+    // Attaches (or, with a null grammar, clears) the sequence's grammar constraint. Called once
+    // when the sequence starts; the Program owns the per-request mask state until the lane is
+    // recycled.
+    void set_constraint(SequenceHandle sequence, std::shared_ptr<const frontend::CompiledGrammar> grammar);
+
     [[nodiscard]] PrefillProgress
-    advance_prefill(SequenceHandle sequence, runtime::ExecutionTiming* failed_timing = nullptr);
+    advance_prefill(SequenceHandle sequence, MaskPlan mask_plan = {},
+                    runtime::ExecutionTiming* failed_timing = nullptr);
     [[nodiscard]] CaptureAssessment
     inspect_capture(const CaptureOffer& offer, const SharedPrefixHandle* exact_shared,
                     const SharedPrefixHandle* replacement,
@@ -913,6 +928,7 @@ public:
         CapturePressurePlan&& pressure, runtime::CancellationFlagView cancellation);
     [[nodiscard]] PendingBatch decode(std::span<const SequenceHandle> sequences,
                                       std::span<const runtime::RoundBudget> budgets,
+                                      std::span<const MaskPlan> mask_plans      = {},
                                       runtime::ExecutionTiming* failed_timing = nullptr);
     // Advance each live sequence with its exact target-owned token row. This does not sample or
     // advance sampler RNG/occurrence state; callers own output publication and budget accounting.
@@ -926,6 +942,9 @@ public:
     commit(PendingBatch&& pending, std::span<const runtime::CommitDecision> decisions,
            runtime::CommitObservation observation  = runtime::CommitObservation::AllRows,
            runtime::ExecutionTiming* failed_timing = nullptr);
+    // The startup-fixed speculative backend this Program executes with.
+    [[nodiscard]] SpeculativeBackend speculative_backend() const noexcept;
+
     [[nodiscard]] DiscardResult abort_pending(PendingBatch&& pending) noexcept;
     [[nodiscard]] FinishResult finish(SequenceHandle sequence) noexcept;
     [[nodiscard]] AbortResult abort(SequenceHandle sequence) noexcept;

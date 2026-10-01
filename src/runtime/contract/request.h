@@ -20,6 +20,7 @@ struct ResolvedRequestOptions {
     ResolvedExecutionOptions execution;
     StopPolicy stop;
     OutputOptions output;
+    std::optional<GrammarConstraint> constraint;
 };
 
 enum class ContinuationAction : std::uint8_t {

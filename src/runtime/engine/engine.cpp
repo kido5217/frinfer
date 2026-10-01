@@ -40,6 +40,10 @@ runtime::ResolvedRequestOptions resolve_request_options(const ModelSamplingDefau
     resolved.execution.thinking                = options.execution.thinking;
     resolved.stop                              = std::move(options.stop);
     resolved.output                            = options.output;
+    if (options.constraint && options.constraint->gbnf.empty()) {
+        throw std::invalid_argument("grammar constraint text is empty");
+    }
+    resolved.constraint = std::move(options.constraint);
     return resolved;
 }
 

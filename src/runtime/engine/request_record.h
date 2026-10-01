@@ -110,6 +110,7 @@ struct RequestRecord {
     using OutputSession  = typename ModelContract::OutputSession;
     using BasePlan       = typename ModelContract::RequestBasePlan;
     using SequenceHandle = typename ModelContract::SequenceHandle;
+    using CompiledGrammar = typename ModelContract::CompiledGrammar;
     using StreamEvent    = std::variant<GenerationTimingObservation, OutputDelta>;
 
     RequestRecord(std::uint64_t request_identity, std::uint64_t publication_sequence,
@@ -160,6 +161,8 @@ struct RequestRecord {
     PromptSummary prompt_summary;
     double prepare_seconds = 0.0;
     ResolvedRequestOptions options;
+    // Compiled grammar constraint shared with the Program; null for an unconstrained request.
+    std::shared_ptr<const CompiledGrammar> grammar;
     const OutputConsumerMode consumer_mode;
     const GenerationObservationOptions observation;
     Clock::time_point deadline;

@@ -47,6 +47,8 @@ public:
     using SequenceHandle     = typename ModelContract::SequenceHandle;
     using CaptureOffer       = typename ModelContract::CaptureOffer;
     using PendingBatch       = typename ModelContract::PendingBatch;
+    using MaskPlan           = typename ModelContract::MaskPlan;
+    using CompiledGrammar    = typename ModelContract::CompiledGrammar;
     using PreparedPrompt     = typename ModelContract::PreparedPrompt;
     using OutputSession      = typename ModelContract::OutputSession;
     using PublishedOutput    = typename ModelContract::PublishedOutput;
@@ -197,6 +199,21 @@ public:
             publication_order = next_publication_order_++;
         }
 
+        std::shared_ptr<const CompiledGrammar> grammar;
+        if (options.constraint) {
+            if (instance_.program->speculative_backend() != SpeculativeBackend::None) {
+                throw RequestError(
+                    RequestErrorKind::InvalidConstraint,
+                    "grammar constraints need the non-speculative execution backend");
+            }
+            std::string diagnostic;
+            grammar = instance_.frontend.compile_grammar(options.constraint->gbnf, &diagnostic);
+            if (grammar == nullptr) {
+                throw RequestError(RequestErrorKind::InvalidConstraint,
+                                   "grammar constraint rejected: " + diagnostic);
+            }
+        }
+
         std::shared_ptr<Request> request;
         try {
             auto output = instance_.frontend.make_output_session(
@@ -214,6 +231,7 @@ public:
                                                 std::move(output), prompt_summary, prepare_seconds,
                                                 std::move(options), consumer_mode, observation,
                                                 pending_deadline, submitted);
+            request->grammar = std::move(grammar);
         } catch (...) {
             release_reserved_capacity();
             throw;
@@ -1393,8 +1411,14 @@ private:
         }
         setup.finish();
         ProgramCallScope program_call(*this);
-        auto progress =
-            instance_.program->advance_prefill(*request->sequence, &program_call.failed_timing());
+        MaskPlan plan{};
+        if (request->grammar) {
+            const std::vector<std::uint8_t> regions = request->output.preview_reasoning_flags({});
+            plan.column_count                       = 1;
+            plan.reasoning_mask                     = regions.empty() ? 1U : regions.front();
+        }
+        auto progress = instance_.program->advance_prefill(*request->sequence, plan,
+                                                           &program_call.failed_timing());
         program_call.finish(progress.timing);
         resolve_prefill_progress(request, std::move(progress), cancelled_at_unit_start);
         publish_runtime_stats();
@@ -1527,6 +1551,7 @@ private:
                     const SequenceHandle sequence = activation.sequence();
                     resources_.adopt(*instance_.program, std::move(activation));
                     request->sequence.emplace(sequence);
+                    instance_.program->set_constraint(sequence, request->grammar);
                     request->budget.emplace(std::move(control.budget));
                     request->lane.emplace(control.destination);
                     request->remaining_service_work      = control.summary.service_work_quanta;
@@ -1808,8 +1833,21 @@ private:
         nvtx::ScopedRange decode_range(nvtx::Name::Decode, nvtx::Category::Decode,
                                        static_cast<std::uint64_t>(membership.size));
         ProgramCallScope program_call(*this);
+        std::array<MaskPlan, kMaximumConcurrency> plans{};
+        for (std::size_t row = 0; row < membership.size; ++row) {
+            const auto& record = slots_[membership.lanes[row]];
+            if (record == nullptr || !record->grammar) { continue; }
+            // The mask governs the token a column produces, so the region is read from the
+            // committed parsing state after the columns before it: an empty draft span returns
+            // the committed region for the column about to be sampled.
+            const std::vector<std::uint8_t> regions = record->output.preview_reasoning_flags({});
+            plans[row].column_count                 = 1;
+            plans[row].reasoning_mask               = regions.empty() ? 1U : regions.front();
+        }
         auto pending = instance_.program->decode(
-            membership.sequence_span(), membership.budget_span(), &program_call.failed_timing());
+            membership.sequence_span(), membership.budget_span(),
+            std::span<const MaskPlan>(plans.data(), membership.size),
+            &program_call.failed_timing());
         program_call.finish(pending.execution_timing());
         commit_pending(std::move(pending), membership.lane_span(), true, cancelled_at_unit_start);
         publish_runtime_stats();
