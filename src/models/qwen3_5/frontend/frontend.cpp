@@ -9,6 +9,7 @@
 #include "models/qwen3_5/frontend/processor.h"
 #include "models/qwen3_5/frontend/test_access.h"
 #include "models/qwen3_5/frontend/tokenizer.h"
+#include "models/qwen3_5/frontend/grammar/tokenizer_vocabulary.h"
 #include "models/qwen3_5/frontend/tool_call_parser.h"
 #include "text/unicode.h"
 
@@ -28,6 +29,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -635,6 +637,12 @@ public:
     StopPolicy defaults;
     ModelSamplingDefaults sampling;
     std::shared_ptr<const std::vector<TokenId>> thinking_control_tokens;
+    // Lazily built grammar vocabulary and the compiled-grammar cache keyed by GBNF text. The
+    // cache holds weak references: a compiled grammar (and its row cache) lives exactly as long
+    // as a request keeps it alive. The frontend is a shared immutable value, so the caches are
+    // mutable; grammar work runs on the single serving worker.
+    mutable std::shared_ptr<const fi::GrammarVocabulary> grammar_vocabulary;
+    mutable std::unordered_map<std::string, std::weak_ptr<const fi::CompiledGrammar>> grammar_cache;
     bool vision_enabled       = true;
     std::uint32_t max_context = 0;
 };
@@ -917,5 +925,33 @@ OutputSession Frontend::make_output_session(const PreparedPrompt& prompt,
 }
 
 const StopPolicy& Frontend::default_stop_policy() const noexcept { return impl_->defaults; }
+
+std::shared_ptr<const frontend::GrammarVocabulary> Frontend::grammar_vocabulary() const {
+    if (impl_->grammar_vocabulary == nullptr) {
+        impl_->grammar_vocabulary = std::make_shared<const frontend::TokenizerVocabulary>(
+            impl_->tokenizer);
+    }
+    return impl_->grammar_vocabulary;
+}
+
+std::shared_ptr<const frontend::CompiledGrammar> Frontend::compile_grammar(std::string_view gbnf,
+                                                                           std::string* error) const {
+    if (error != nullptr) { error->clear(); }
+    const std::string key(gbnf);
+    if (const auto found = impl_->grammar_cache.find(key); found != impl_->grammar_cache.end()) {
+        if (std::shared_ptr<const frontend::CompiledGrammar> cached = found->second.lock()) {
+            return cached;
+        }
+    }
+    std::string diagnostic;
+    std::shared_ptr<const frontend::CompiledGrammar> grammar =
+        frontend::CompiledGrammar::compile(gbnf, grammar_vocabulary(), &diagnostic);
+    if (grammar == nullptr) {
+        if (error != nullptr) { *error = std::move(diagnostic); }
+        return nullptr;
+    }
+    impl_->grammar_cache[key] = grammar;
+    return grammar;
+}
 
 } // namespace ninfer::models::qwen3_5
