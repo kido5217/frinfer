@@ -1538,6 +1538,40 @@ void test_grammar_runtime() {
     runtime.fill_round_rows(rejected_tokens, answer_regions, rows, words);
     check(all_ones(column(rows, 1)), "a rejected draft did not end the reachable prefix");
 
+    // An unknown column token cannot advance the preview either: later masked columns keep
+    // all-ones rows while the column itself still uses the committed state's row.
+    const std::array<int, 2> unknown_tokens{frontend::kUnknownConstraintToken, ab};
+    runtime.fill_round_rows(unknown_tokens, answer_regions, rows, words);
+    check(same(column(rows, 0), initial),
+          "a masked column with an unknown token did not use the committed row");
+    check(all_ones(column(rows, 1)), "an unknown column token did not end the reachable prefix");
+
+    // Words past the grammar's row width are padding and must stay all-ones.
+    const std::size_t wide_words = words + 2;
+    std::vector<std::uint32_t> wide_rows(wide_words, 0);
+    const std::array<int, 1> wide_tokens{frontend::kUnknownConstraintToken};
+    const std::array<std::uint8_t, 1> wide_regions{0};
+    runtime.fill_round_rows(wide_tokens, wide_regions, wide_rows, wide_words);
+    bool wide_padding_ok = true;
+    for (std::size_t word = words; word < wide_words; ++word) {
+        if (wide_rows[word] != 0xFFFFFFFFU) { wide_padding_ok = false; }
+    }
+    check(wide_padding_ok, "mask row padding words were not all-ones");
+
+    // Commit is atomic: a later rejection leaves the committed state exactly where it was.
+    {
+        frontend::GrammarRuntime atomic_runtime(grammar);
+        const std::array<int, 2> partial_tokens{ab, z};
+        check(!atomic_runtime.commit(partial_tokens, answer_regions),
+              "a partially invalid answer round was committed");
+        std::vector<std::uint32_t> probe_rows(words, 0);
+        const std::array<int, 1> probe_tokens{frontend::kUnknownConstraintToken};
+        const std::array<std::uint8_t, 1> probe_regions{0};
+        atomic_runtime.fill_round_rows(probe_tokens, probe_regions, probe_rows, words);
+        check(same(std::span<const std::uint32_t>(probe_rows), initial),
+              "a failed commit moved the committed state");
+    }
+
     // Commit is answer-aware and atomic; a token after the grammar ended is refused.
     const std::array<int, 2> commit_tokens{ab, c};
     check(runtime.commit(commit_tokens, answer_regions), "committing the answer tokens failed");
