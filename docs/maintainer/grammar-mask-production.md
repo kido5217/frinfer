@@ -12,8 +12,9 @@ grammar runtime itself is covered by
 ## The budget
 
 The served configuration decodes at ≈ 250 tok/s, i.e. 4 ms/token; the mask work allowed per step
-is the 10 % line, **0.4 ms/step**. Device rows are a Program-owned persistent buffer of 48 rows ×
-31,012 B (the `[6, 8]` logits layout), each a dense bitmask over the exact 248,077-token domain;
+is the 10 % line, **0.4 ms/step**. Device rows are a Program-owned persistent buffer of 128 rows ×
+31,012 B (column-major over the widest decode layout, `[16, 8]`; MTP's `[6, 8]` slices it), each a
+dense bitmask over the exact 248,077-token domain;
 inactive rows are all-ones and constrained rows are refreshed per round
 ([#47](https://github.com/kido5217/ninfer-yarn/issues/47),
 [#49](https://github.com/kido5217/ninfer-yarn/issues/49)).
@@ -77,8 +78,9 @@ document fixes the requirements they must meet.
 
 1. **Same seam.** `CompiledGrammar` compile/`compile_from_schema`, `GrammarState` accept/can_end/
    cheap copies, and `row_for` returning a dense `uint32` bitmask over the exact token domain,
-   with EOG bits set exactly where the grammar can end. The 48-row device layout, per-column MTP
-   masks and committed-prefix advance from #49 are unchanged.
+   with EOG bits set exactly where the grammar can end. The fixed-shape device layout (128 rows,
+   sized by the widest target-verify column domain), per-column MTP masks and committed-prefix
+   advance from #49 are unchanged.
 2. **Budget, measured not projected.** The G1–G4 fixture walks — the diary's 4 226-step walk above
    all — must fit 0.4 ms/step (first walk included) on this host and vocabulary.
 3. **Bounded retention.** The row and state map must have an explicit bound and eviction policy,
