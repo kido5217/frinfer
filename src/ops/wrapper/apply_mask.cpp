@@ -2,6 +2,7 @@
 
 #include "ops/launcher/apply_mask.h"
 
+#include <limits>
 #include <stdexcept>
 
 namespace ninfer::ops {
@@ -39,11 +40,16 @@ void apply_mask(Tensor& logits, std::int32_t columns, std::int32_t batch, const 
     if (logits.nb[1] <= 0 || (columns > 1 && logits.nb[2] <= 0)) {
         throw std::invalid_argument("apply_mask: lane strides must be positive");
     }
+    if (token_domain > std::numeric_limits<std::int32_t>::max() - 31) {
+        throw std::invalid_argument("apply_mask: token domain overflows the mask word count");
+    }
     const std::int32_t words = (token_domain + 31) / 32;
     if (masks.ne[0] != words) {
         throw std::invalid_argument("apply_mask: mask rows must carry one word per 32 tokens");
     }
-    if (masks.ne[1] < (columns - 1) * mask_lane_stride + batch) {
+    const std::int64_t rows_required =
+        static_cast<std::int64_t>(columns - 1) * mask_lane_stride + batch;
+    if (static_cast<std::int64_t>(masks.ne[1]) < rows_required) {
         throw std::invalid_argument("apply_mask: mask row table is too short");
     }
     if (masks.nb[1] !=

@@ -98,14 +98,9 @@ int run_2d_case(const char* label, std::int32_t vocab, std::int32_t token_domain
     return failures;
 }
 
-int run_3d_case(const char* label, std::uint32_t seed) {
-    constexpr std::int32_t vocab     = 129;
-    constexpr std::int32_t domain    = 125;
-    constexpr std::int32_t words     = (domain + 31) / 32;
-    constexpr std::int32_t columns   = 6;
-    constexpr std::int32_t batch_cap = 4;
-    constexpr std::int32_t batch     = 2;
-    constexpr std::int32_t rows      = 48;
+int run_3d_case(const char* label, std::int32_t vocab, std::int32_t domain, std::int32_t columns,
+                std::int32_t batch_cap, std::int32_t batch, std::int32_t rows, std::uint32_t seed) {
+    const std::int32_t words = (domain + 31) / 32;
     const std::vector<std::uint16_t> input =
         make_logits(static_cast<std::size_t>(vocab) * columns * batch_cap, seed);
     const std::vector<std::uint32_t> masks = make_mask_rows(rows, words, domain, false, seed + 3);
@@ -192,7 +187,11 @@ int main() {
                             make_mask_rows(rows, words, domain, false, 0x1234u), false, 0x52u);
     failures += run_2d_case("apply_mask 2d all-ones", vocab, domain, batch,
                             make_mask_rows(rows, words, domain, true, 0x1234u), true, 0x53u);
-    failures += run_3d_case("apply_mask 3d strided", 0x61u);
+    failures += run_3d_case("apply_mask 3d strided", 129, 125, 6, 4, 2, 48, 0x61u);
+    // The widest decode layout any backend can present (DFlash target verify) with the full
+    // batch domain and a token domain that is not a multiple of 32.
+    failures +=
+        run_3d_case("apply_mask 3d wide production geometry", 257, 250, 16, 8, 8, 128, 0x62u);
 
     failures += run_validation_case("apply_mask rejects non-BF16 logits", [] {
         GuardedDeviceBuffer logits_buffer(16 * 2);
