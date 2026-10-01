@@ -308,6 +308,13 @@ ProgramImpl::ProgramImpl(const execution::Parameters& parameters_in, const Seque
                                    io.yarn_inv_freq.bytes(), cudaMemcpyHostToDevice,
                                    device.stream));
     }
+    // Mask rows start all-ones (every token allowed) with the active flag cleared, so an
+    // unconstrained program behaves exactly like one without the mask transport; a constrained
+    // round rewrites its lanes' rows and raises the flag. Written once, before graph capture.
+    if (io.mask_rows.data != nullptr) {
+        CUDA_CHECK(cudaMemsetAsync(io.mask_rows.data, 0xFF, io.mask_rows.bytes(), device.stream));
+        CUDA_CHECK(cudaMemsetAsync(io.mask_active.data, 0, io.mask_active.bytes(), device.stream));
+    }
     device.synchronize();
     if (use_cuda_graph) {
         StartupPhaseScope graph_phase(startup_observer, StartupPhase::CudaGraphPrepare);
