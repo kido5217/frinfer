@@ -1,0 +1,3 @@
+token_count=248077 row_words=7753
+max_piece_bytes=128 over16=6882 over32=360 over64=85 over128=0
+run=1 mode=lowest steps=4226 fills=1957 hits=2270 distinct=409 fill_ms=67108.6 wall_ms=67198.4 per_call_us(min=0.3 p50=0.4 p90=35902.5 max=60830.6) row_bytes=31012 distinct_row_mib=12.1

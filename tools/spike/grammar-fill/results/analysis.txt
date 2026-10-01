@@ -1,0 +1,72 @@
+== stack_stats
+calls: 4227
+distinct states (stack sets): 1957
+distinct stacks: 3888
+total stack instances: 12610
+stacks appearing once: 3867
+top stacks:
+  n=2401 pairs=[(190, 6), (214, 2)]
+  n=2271 pairs=[(190, 6), (214, 2), (2844, 1), (0, 0)]
+  n=2271 pairs=[(190, 6), (214, 2), (2844, 1), (0, 6)]
+  n=121 pairs=[(190, 9), (2, 3), (4, 1), (5, 2)]
+  n=121 pairs=[(190, 9), (2, 3), (2688, 1), (5, 2)]
+
+if cached per stack: distinct stack masks to compute = 3888
+stacks-per-state histogram: {1: 45, 3: 4167, 6: 2, 4: 13}
+
+== simulate_fold
+class-run histogram (max 200):
+  run 0 -> 1692
+  run 1 -> 9339
+  run 2 -> 40858
+  run 3 -> 35001
+  run 4 -> 35255
+  run 5 -> 29476
+  run 6 -> 25751
+  run 7 -> 21094
+  run 8 -> 16372
+  run 9 -> 11858
+  ...
+  run 78 -> 4
+  run 79 -> 1
+  run 80 -> 6
+  run 81 -> 4
+  run 82 -> 3
+  run 83 -> 1
+  run 87 -> 1
+  run 91 -> 1
+  run 95 -> 1
+  run 96 -> 2
+  run 97 -> 2
+  run 98 -> 1
+  run 113 -> 1
+  run 114 -> 1
+  run 128 -> 1
+max class run: 128
+item-traversal histogram: {0: 248077}
+max item traversals: 0
+
+baseline calls: 4227
+with per-body thresholds: distinct folded keys = 602  fills = 602  hits = 3625
+distinct masks (unchanged): 317
+current global fold: distinct keys = 1957 fills = 1957
+
+== check_fold3
+BODY ((2, 6),) element idx 1 positions [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
+   pos 2 mask 6170f697f26177ff call 4088
+   pos 3 mask 719bc5c67f7577f3 call 3965
+   pos 4 mask 719bc5c67f7577f3 call 3842
+   pos 5 mask 719bc5c67f7577f3 call 3719
+   pos 6 mask 719bc5c67f7577f3 call 3596
+   pos 7 mask 719bc5c67f7577f3 call 3473
+   pos 8 mask 719bc5c67f7577f3 call 3350
+   pos 9 mask 719bc5c67f7577f3 call 3227
+   pos 10 mask 719bc5c67f7577f3 call 3104
+   pos 11 mask 719bc5c67f7577f3 call 2981
+   pos 12 mask 719bc5c67f7577f3 call 2858
+   pos 13 mask 719bc5c67f7577f3 call 2735
+context (non-item atoms):
+    ('R', 2, 3, None)
+    ('R', 5, 2, None)
+    ('R', 190, 9, None)
+

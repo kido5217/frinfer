@@ -1,0 +1,7 @@
+root  ::= "act=" act rest ";say=" said ";tone=" text
+act   ::= "none" | "gesture" | "arm_task" | "base" | "approach" | "power" | "view" | "delegate"
+rest  ::= (";" pair)*
+pair  ::= key "=" text
+key   ::= "presay" | "power" | "emote" | "gesture" | "delegate" | "arm_task" | "approach" | "base" | "base_amount" | "needs_view" | "recall" | "look" | "halt"
+text  ::= [^;\x0A]*
+said  ::= [^;\x0A]+

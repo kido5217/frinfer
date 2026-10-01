@@ -1,0 +1,256 @@
+diff --git a/src/models/qwen3_5/frontend/grammar/grammar.cpp b/src/models/qwen3_5/frontend/grammar/grammar.cpp
+index 517e16bd..19cc4a6f 100644
+--- a/src/models/qwen3_5/frontend/grammar/grammar.cpp
++++ b/src/models/qwen3_5/frontend/grammar/grammar.cpp
+@@ -10,6 +10,7 @@
+ #include <cmath>
+ #include <cstddef>
+ #include <cstdint>
++#include <cstdio>
+ #include <limits>
+ #include <memory>
+ #include <stdexcept>
+@@ -129,6 +130,15 @@ private:
+ struct RepetitionNormalization {
+     std::vector<std::uint32_t> canonical_rule; // per rule id; frames share clamped-position ids
+     std::uint32_t fold_limit = 0;
++#ifdef NINFER_GRAMMAR_DIAG
++    struct DiagRep {
++        std::uint32_t id       = 0;
++        std::uint32_t rule     = 0;
++        std::uint32_t position = 0;
++    };
++
++    std::vector<DiagRep> diag_reps;
++#endif
+ };
+ 
+ constexpr std::uint64_t kInfinitePosition = std::numeric_limits<std::uint64_t>::max();
+@@ -276,7 +286,13 @@ RepetitionNormalization normalize_repetitions(const llama_grammar_rules& rules,
+             key.push_back(static_cast<char>((clamped >> shift) & 0xff));
+         }
+         const auto [found, inserted] = representatives.try_emplace(std::move(key), next_id);
+-        if (inserted) { ++next_id; }
++        if (inserted) {
++            ++next_id;
++#ifdef NINFER_GRAMMAR_DIAG
++            result.diag_reps.push_back(RepetitionNormalization::DiagRep{
++                found->second, static_cast<std::uint32_t>(rule), clamped});
++#endif
++        }
+         result.canonical_rule[rule] = found->second;
+     }
+     return result;
+@@ -369,6 +385,9 @@ struct GrammarBackbone {
+     GrammarOwner master{nullptr, &free_grammar};
+     std::vector<std::uint32_t> canonical_rule;
+     std::uint32_t fold_limit = 0;
++#ifdef NINFER_GRAMMAR_DIAG
++    std::vector<RepetitionNormalization::DiagRep> diag_reps;
++#endif
+ };
+ 
+ std::uint64_t content_hash(const std::vector<std::uint32_t>& words) noexcept {
+@@ -472,24 +491,76 @@ public:
+     std::unordered_map<std::uint64_t, std::vector<std::uint32_t>> rows_by_hash;
+     Stats stats;
+ 
++#ifdef NINFER_GRAMMAR_DIAG
++    struct DiagCall {
++        int kind                    = 0; // 0 hit, 1 new row, 2 dedup fill
++        std::uint32_t row_id        = 0;
++        std::uint64_t mask_hash     = 0;
++        std::uint32_t partial_value = 0;
++        std::int32_t partial_remain = 0;
++        std::vector<std::uint32_t> stacks;
++    };
++
++    std::vector<DiagCall> diag_calls;
++    std::vector<std::uint64_t> row_hashes;
++    // Phase accumulators (microseconds).
++    std::uint64_t t_key = 0, t_reset = 0, t_apply = 0, t_row = 0, t_dedup = 0, t_total = 0;
++
++    static std::uint64_t micros(std::chrono::steady_clock::time_point from,
++                                std::chrono::steady_clock::time_point to) {
++        return static_cast<std::uint64_t>(
++            std::chrono::duration_cast<std::chrono::microseconds>(to - from).count());
++    }
++#endif
++
+     [[nodiscard]] GrammarMaskRow row_for(const GrammarState::Impl& state) {
++#ifdef NINFER_GRAMMAR_DIAG
++        const auto t0 = std::chrono::steady_clock::now();
++#endif
+         const StateKey key = make_state_key(state.engine->stacks, state.engine->partial_utf8,
+                                             state.address_index, backbone->canonical_rule);
+-        const auto cached  = rows_by_state.find(key);
++#ifdef NINFER_GRAMMAR_DIAG
++        const auto t1 = std::chrono::steady_clock::now();
++        t_key += micros(t0, t1);
++        DiagCall call;
++        call.partial_value  = key.partial_value;
++        call.partial_remain = key.partial_remain;
++        call.stacks         = key.stacks;
++#endif
++        const auto cached = rows_by_state.find(key);
+         if (cached != rows_by_state.end()) {
+             ++stats.row_hits;
++#ifdef NINFER_GRAMMAR_DIAG
++            call.kind      = 0;
++            call.row_id    = cached->second;
++            call.mask_hash = row_hashes[cached->second];
++            diag_calls.push_back(std::move(call));
++            t_total += micros(t0, std::chrono::steady_clock::now());
++#endif
+             return rows[cached->second];
+         }
+ 
+         const auto started = std::chrono::steady_clock::now();
+         std::vector<std::uint32_t> row(row_words, 0);
+         for (llama_token_data& candidate : candidates) { candidate.logit = 0.0f; }
++#ifdef NINFER_GRAMMAR_DIAG
++        const auto t2 = std::chrono::steady_clock::now();
++        t_reset += micros(started, t2);
++#endif
+         llama_token_data_array array{candidates.data(), candidates.size(), -1, false};
+         llama_grammar_apply_impl(*state.engine, &array);
++#ifdef NINFER_GRAMMAR_DIAG
++        const auto t3 = std::chrono::steady_clock::now();
++        t_apply += micros(t2, t3);
++#endif
+         for (std::size_t index = 0; index < candidates.size(); ++index) {
+             const float logit = candidates[index].logit;
+             if (!(std::isinf(logit) && logit < 0.0f)) { row[index >> 5U] |= 1U << (index & 31U); }
+         }
++#ifdef NINFER_GRAMMAR_DIAG
++        const auto t4 = std::chrono::steady_clock::now();
++        t_row += micros(t3, t4);
++#endif
+         const auto finished = std::chrono::steady_clock::now();
+         ++stats.row_fills;
+         stats.fill_micros += static_cast<std::uint64_t>(
+@@ -501,16 +572,83 @@ public:
+         for (const std::uint32_t row_id : rows_by_hash[hash]) {
+             if (rows[row_id] == row) {
+                 rows_by_state.emplace(key, row_id);
++#ifdef NINFER_GRAMMAR_DIAG
++                const auto t5 = std::chrono::steady_clock::now();
++                t_dedup += micros(t4, t5);
++                t_total += micros(t0, t5);
++                call.kind      = 2;
++                call.row_id    = row_id;
++                call.mask_hash = row_hashes[row_id];
++                diag_calls.push_back(std::move(call));
++#endif
+                 return rows[row_id];
+             }
+         }
+         rows.push_back(std::move(row));
+         const std::uint32_t row_id = static_cast<std::uint32_t>(rows.size() - 1);
+         rows_by_hash[hash].push_back(row_id);
++#ifdef NINFER_GRAMMAR_DIAG
++        {
++            const auto t5 = std::chrono::steady_clock::now();
++            t_dedup += micros(t4, t5);
++            t_total += micros(t0, t5);
++        }
++        row_hashes.push_back(hash);
++        call.kind      = 1;
++        call.row_id    = row_id;
++        call.mask_hash = hash;
++        diag_calls.push_back(std::move(call));
++#endif
+         ++stats.distinct_rows;
+         rows_by_state.emplace(key, row_id);
+         return rows[row_id];
+     }
++
++#ifdef NINFER_GRAMMAR_DIAG
++    void diag_write(const std::string& path) const {
++        std::FILE* out = std::fopen(path.c_str(), "w");
++        if (!out) { return; }
++        for (const DiagCall& call : diag_calls) {
++            std::fprintf(out, "{\"k\":%d,\"id\":%u,\"m\":\"%016llx\",\"p\":%u,\"r\":%d,\"s\":[",
++                         call.kind, call.row_id, static_cast<unsigned long long>(call.mask_hash),
++                         call.partial_value, call.partial_remain);
++            for (std::size_t index = 0; index < call.stacks.size(); ++index) {
++                std::fprintf(out, "%s%u", index == 0 ? "" : ",", call.stacks[index]);
++            }
++            std::fprintf(out, "]}\n");
++        }
++        std::fclose(out);
++
++        std::FILE* rules_out = std::fopen((path + ".rules").c_str(), "w");
++        if (!rules_out) { return; }
++        const llama_grammar_rules& rules = llama_grammar_get_rules(backbone->master.get());
++        std::fprintf(rules_out, "rules=%zu\n", rules.size());
++        for (std::size_t index = 0; index < rules.size(); ++index) {
++            std::fprintf(rules_out, "rule %zu:", index);
++            for (const llama_grammar_element& element : rules[index]) {
++                std::fprintf(rules_out, " (%d,%u)", static_cast<int>(element.type), element.value);
++            }
++            std::fprintf(rules_out, "\n");
++        }
++        std::fprintf(rules_out, "reps=%zu\n", backbone->diag_reps.size());
++        for (const RepetitionNormalization::DiagRep& rep : backbone->diag_reps) {
++            std::fprintf(rules_out, "rep %u rule=%u pos=%u\n", rep.id, rep.rule, rep.position);
++        }
++        std::fclose(rules_out);
++
++        std::FILE* phases = std::fopen((path + ".phases").c_str(), "w");
++        if (phases) {
++            std::fprintf(
++                phases,
++                "key_us=%llu reset_us=%llu apply_us=%llu row_us=%llu dedup_us=%llu "
++                "total_us=%llu\n",
++                static_cast<unsigned long long>(t_key), static_cast<unsigned long long>(t_reset),
++                static_cast<unsigned long long>(t_apply), static_cast<unsigned long long>(t_row),
++                static_cast<unsigned long long>(t_dedup), static_cast<unsigned long long>(t_total));
++            std::fclose(phases);
++        }
++    }
++#endif
+ };
+ 
+ CompiledGrammar::CompiledGrammar(std::unique_ptr<Impl> impl) noexcept : impl_(std::move(impl)) {}
+@@ -569,8 +707,12 @@ CompiledGrammar::compile(std::string_view gbnf, std::shared_ptr<const GrammarVoc
+         max_piece_bytes = std::max(max_piece_bytes, backbone->vocabulary->piece(id).size());
+     }
+     backbone->fold_limit = static_cast<std::uint32_t>(max_piece_bytes) + 2;
+-    backbone->canonical_rule =
+-        normalize_repetitions(backbone->master->rules, backbone->fold_limit).canonical_rule;
++    const RepetitionNormalization normalization =
++        normalize_repetitions(backbone->master->rules, backbone->fold_limit);
++    backbone->canonical_rule = normalization.canonical_rule;
++#ifdef NINFER_GRAMMAR_DIAG
++    backbone->diag_reps = normalization.diag_reps;
++#endif
+ 
+     auto impl       = std::make_unique<Impl>();
+     impl->backbone  = std::move(backbone);
+@@ -622,4 +764,8 @@ GrammarMaskRow CompiledGrammar::row_for(const GrammarState& state) const {
+ 
+ CompiledGrammar::Stats CompiledGrammar::stats() const noexcept { return impl_->stats; }
+ 
++#ifdef NINFER_GRAMMAR_DIAG
++void CompiledGrammar::diag_write(const std::string& path) const { impl_->diag_write(path); }
++#endif
++
+ } // namespace ninfer::models::qwen3_5::frontend
+diff --git a/src/models/qwen3_5/frontend/grammar/grammar.h b/src/models/qwen3_5/frontend/grammar/grammar.h
+index 70683a20..013a2627 100644
+--- a/src/models/qwen3_5/frontend/grammar/grammar.h
++++ b/src/models/qwen3_5/frontend/grammar/grammar.h
+@@ -98,6 +98,12 @@ public:
+ 
+     [[nodiscard]] Stats stats() const noexcept;
+ 
++#ifdef NINFER_GRAMMAR_DIAG
++    // Temporary diagnostic hook (ticket #57 investigation, never built without the macro):
++    // dumps one JSON line per row_for call with the state key and the served row.
++    void diag_write(const std::string& path) const;
++#endif
++
+ private:
+     class Impl;
+     explicit CompiledGrammar(std::unique_ptr<Impl> impl) noexcept;
