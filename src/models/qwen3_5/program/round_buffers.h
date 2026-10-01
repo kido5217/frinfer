@@ -18,10 +18,12 @@ inline constexpr std::uint32_t kMtpDecodeMaximumWidth     = kMtpDecodeMaximumDra
 inline constexpr std::uint32_t kDFlashDecodeMaximumDrafts = 15;
 inline constexpr std::uint32_t kDFlashDecodeMaximumWidth  = kDFlashDecodeMaximumDrafts + 1;
 
-// Mask rows mirror the decode batch layout: column-major over (kMtpDecodeMaximumWidth columns,
+// Mask rows mirror the decode batch layout: column-major over (kMaskColumnCapacity columns,
 // kMaximumConcurrency batches), so a decode lane (column c, batch b) addresses row
-// c * kMaximumConcurrency + b.
-inline constexpr std::uint32_t kMaskRowCapacity = kMtpDecodeMaximumWidth * kMaximumConcurrency;
+// c * kMaximumConcurrency + b. The column capacity covers the widest decode layout any backend
+// can present (DFlash target verify); MTP and ordinary layouts are prefixes of it.
+inline constexpr std::uint32_t kMaskColumnCapacity = kDFlashDecodeMaximumWidth;
+inline constexpr std::uint32_t kMaskRowCapacity    = kMaskColumnCapacity * kMaximumConcurrency;
 
 struct RoundStateSpec {
     std::int32_t hidden          = 0;

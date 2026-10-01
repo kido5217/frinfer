@@ -136,10 +136,11 @@ void test_decoder_layout() {
 void test_round_layout() {
     ninfer::LayoutBuilder builder;
     q36::RoundStateLayout round = q36::begin_round_state_layout(
-        builder, q36::RoundStateSpec{.hidden       = 32,
-                                     .output_rows  = 128,
-                                     .draft_window = 5,
-                                     .backend      = ninfer::SpeculativeBackend::Mtp});
+        builder, q36::RoundStateSpec{.hidden            = 32,
+                                     .output_rows       = 128,
+                                     .draft_window      = 5,
+                                     .backend           = ninfer::SpeculativeBackend::Mtp,
+                                     .mask_token_domain = 128});
     const ninfer::TensorRegion exact_prefill =
         builder.add_tensor(ninfer::DType::BF16, {32, 16}, 256, "exact prefill hidden");
     q36::complete_round_state_layout(builder, round);
@@ -157,13 +158,18 @@ void test_round_layout() {
     expect(round.mtp_decode.has_value() && round.mtp_decode->alignment_ids.shape[0] == 6 &&
                round.mtp_decode->alignment_ids.shape[1] == 1,
            "MTP decode frame is explicit");
+    expect(round.mask_rows.has_value() && round.mask_rows->shape[0] == 4 &&
+               round.mask_rows->shape[1] == q36::kMaskRowCapacity &&
+               round.mask_active.has_value() && round.mask_active->shape[0] == 1,
+           "round mask transport reserves the fixed row table and active flag");
 
     ninfer::LayoutBuilder speculative_builder;
     q36::RoundStateLayout dflash = q36::begin_round_state_layout(
-        speculative_builder, q36::RoundStateSpec{.hidden       = 32,
-                                                 .output_rows  = 128,
-                                                 .draft_window = 15,
-                                                 .backend = ninfer::SpeculativeBackend::DFlash});
+        speculative_builder, q36::RoundStateSpec{.hidden            = 32,
+                                                 .output_rows       = 128,
+                                                 .draft_window      = 15,
+                                                 .backend           = ninfer::SpeculativeBackend::DFlash,
+                                                 .mask_token_domain = 128});
     q36::complete_round_state_layout(speculative_builder, dflash);
     (void)speculative_builder.finish(256);
     expect(dflash.logits.shape[1] == 1 && dflash.dflash_prefill.has_value() &&
@@ -173,6 +179,9 @@ void test_round_layout() {
            "K=15 DFlash storage is backend-owned");
     expect(!dflash.mtp.has_value() && !dflash.mtp_decode.has_value(),
            "DFlash layout does not allocate MTP storage");
+    expect(dflash.mask_rows.has_value() &&
+               dflash.mask_rows->shape[1] == q36::kMaskRowCapacity,
+           "DFlash shares the widest mask row geometry");
 
     ninfer::LayoutBuilder scoring_builder;
     auto scoring = q36::begin_round_state_layout(
@@ -183,6 +192,8 @@ void test_round_layout() {
     expect(!scoring.ordinary && !scoring.mtp_decode && !scoring.dflash_decode &&
                scoring.token.region.bytes == 0 && scoring.logits.region.bytes == 0,
            "scoring does not reserve generation frames or sampled output");
+    expect(!scoring.mask_rows.has_value() && !scoring.mask_active.has_value(),
+           "a mask-less spec reserves no mask regions");
 }
 
 void test_mtp_alignment() {
