@@ -85,6 +85,9 @@ public:
     // caches are shared by grammar identity for as long as a caller holds them; compiling invalid
     // text returns nullptr and, when `error` is non-null, stores the parse diagnostic. The
     // protocol adapter converts JSON Schema documents before calling here.
+    //
+    // Safe to call from concurrent request threads: the lazy caches are serialized. Row
+    // production against a compiled grammar still belongs to the single serving worker.
     [[nodiscard]] std::shared_ptr<const frontend::GrammarVocabulary> grammar_vocabulary() const;
     [[nodiscard]] std::shared_ptr<const frontend::CompiledGrammar>
     compile_grammar(std::string_view gbnf, std::string* error = nullptr) const;

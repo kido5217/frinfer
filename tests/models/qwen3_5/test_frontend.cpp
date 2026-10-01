@@ -2031,6 +2031,37 @@ int test_grammar_constraints(const Frontend& frontend) {
     const auto invalid = frontend.compile_grammar("root ::= [", &error);
     failures += check(invalid == nullptr && !error.empty(),
                       "an invalid grammar compiled without a diagnostic");
+
+    // The cache is weak by contract: once every holder drops its reference, the next compile of
+    // the same text is fresh - the row cache is rebuilt rather than retained forever.
+    {
+        std::weak_ptr<const ninfer::models::qwen3_5::frontend::CompiledGrammar> released;
+        {
+            const auto scoped = frontend.compile_grammar("root ::= \"ab\" \"ab\"");
+            failures += check(scoped != nullptr, "the weak-cache fixture grammar did not compile");
+            released = scoped;
+        }
+        failures += check(released.expired(), "a compiled grammar outlived every reference");
+        const auto recompiled = frontend.compile_grammar("root ::= \"ab\" \"ab\"");
+        failures += check(recompiled != nullptr && recompiled->stats().row_fills == 0 &&
+                              recompiled->stats().row_hits == 0,
+                          "a recompiled grammar reused a released grammar's row cache");
+    }
+
+    // Bounded retention: more distinct live grammars than the key bound keep compiling, and a
+    // live grammar keeps its identity across a prune.
+    {
+        std::vector<std::shared_ptr<const ninfer::models::qwen3_5::frontend::CompiledGrammar>> live;
+        for (int index = 0; index < 70; ++index) {
+            live.push_back(frontend.compile_grammar("root ::= \"ab\" [ ]{" +
+                                                    std::to_string(index + 1) + "}"));
+        }
+        bool all_compiled = true;
+        for (const auto& entry : live) { all_compiled = all_compiled && entry != nullptr; }
+        failures += check(all_compiled, "bounded grammar retention dropped a live compilation");
+        failures += check(frontend.compile_grammar("root ::= \"ab\" [ ]{70}") == live.back(),
+                          "a live grammar lost its identity across a cache prune");
+    }
     return failures;
 }
 
