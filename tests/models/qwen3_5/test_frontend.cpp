@@ -1866,6 +1866,57 @@ int test_thinking_budget_control(const Frontend& frontend) {
     return failures;
 }
 
+int test_reasoning_regions(const Frontend& frontend) {
+    // The fixture's token 3 is the canonical reasoning close serialization and token 4 is an
+    // answer token, so a span over {3, 4} crosses the boundary deterministically.
+    const std::vector<ninfer::TokenId> close_then_answer{3, 4};
+    const std::vector<ninfer::TokenId> answer_only{4};
+    const std::vector<ninfer::TokenId> none;
+
+    auto session = frontend.make_output_session(thinking_prompt(frontend), {});
+    int failures = 0;
+    auto flags   = session.preview_reasoning_flags(none);
+    failures += check(flags.size() == 1 && flags[0] == 1,
+                      "a fresh thinking session does not start in the reasoning region");
+
+    flags = session.preview_reasoning_flags(close_then_answer);
+    failures += check(flags.size() == 3 && flags[0] == 1 && flags[1] == 0 && flags[2] == 0,
+                      "the reasoning close did not mask the transition and bonus columns");
+
+    // A pending preview owns the core cursor: the query must refuse to clobber it, and after the
+    // commit the committed region must be the answer region.
+    const auto pending = session.preview_model(close_then_answer, 3,
+                                               ninfer::FinishReason::OutputLimit);
+    failures += check(pending.accepted_tokens == close_then_answer.size() && !pending.finished(),
+                      "the region queries changed how the round licensed tokens");
+    bool refused = false;
+    try {
+        (void)session.preview_reasoning_flags(answer_only);
+    } catch (const std::logic_error&) { refused = true; }
+    failures += check(refused, "the region query did not refuse a pending preview");
+    const auto output = session.commit_preview();
+    failures += check(channel_text(output, ninfer::OutputChannel::Reasoning) == "thought" &&
+                          channel_text(output, ninfer::OutputChannel::Content) == "answer",
+                      "the region queries changed the committed channels");
+    flags = session.preview_reasoning_flags(none);
+    failures += check(flags.size() == 1 && flags[0] == 0,
+                      "the committed region did not stay in the answer region after the close");
+    flags = session.preview_reasoning_flags(answer_only);
+    failures += check(flags.size() == 2 && flags[0] == 0 && flags[1] == 0,
+                      "an answer span did not stay in the answer region");
+
+    // A session that never asks still commits the same channels: the query is pure.
+    auto control = frontend.make_output_session(thinking_prompt(frontend), {});
+    (void)control.preview_model(close_then_answer, 3, ninfer::FinishReason::OutputLimit);
+    const auto control_output = control.commit_preview();
+    failures += check(channel_text(control_output, ninfer::OutputChannel::Reasoning) ==
+                              channel_text(output, ninfer::OutputChannel::Reasoning) &&
+                          channel_text(control_output, ninfer::OutputChannel::Content) ==
+                              channel_text(output, ninfer::OutputChannel::Content),
+                      "the region query changed a later commit");
+    return failures;
+}
+
 // Drives the chat-parsing oracle corpus (tests/fixtures/chat_parsing/corpus.json) through the real
 // session seam: prompt with the vector's tools, per-round token license, commit, terminal flush.
 // The corpus pins the parsing core's wire bytes; the session additionally applies the B1 framing
@@ -2480,6 +2531,7 @@ int main() {
     failures += test_structured_tool_output();
     failures += test_reasoning_split(frontend);
     failures += test_thinking_budget_control(frontend);
+    failures += test_reasoning_regions(frontend);
     failures += test_chat_parsing_corpus_sessions(frontend);
     failures += test_utf8_and_hidden_eos(frontend);
     failures += test_media_cache_reuses_immutable_payload();
