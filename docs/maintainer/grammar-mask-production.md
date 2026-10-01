@@ -24,7 +24,8 @@ inactive rows are all-ones and constrained rows are refreshed per round
 full-vocabulary walk (`llama_grammar_apply_impl`) over all 248,077 candidates, caching the row by
 counter-normalized state key with content dedup, shared by grammar identity. Cached lookups are
 sub-microsecond; everything rests on the fill cost. The acceptance fixtures are the G1–G4 walks
-(the diary JSON schema from ticket #33's subset, and the mask-cost spike's G1–G3 grammars).
+(the diary JSON schema from upstream `Neroued/ninfer` #33's subset, and the mask-cost spike's
+G1–G3 grammars).
 
 ## Measured (2026-10-01, real vocabulary, lowest-allowed-token walks)
 
@@ -36,25 +37,24 @@ sub-microsecond; everything rests on the fill cost. The acceptance fixtures are 
 | G4 diary schema | 4 226 | 1 957 | 409 | 67.1 s | **15.9** |
 
 Against the 1.69 s budget (0.4 ms × 4 226), the diary first walk is 40× over. Phase attribution
-over that walk: the engine walk is **98.5 %** of the fill (34.1 ms/fill), the module's own work
-(state keys 1.2 µs, candidate reset 134 µs, row packing 341 µs, dedup 31 µs) is 1.5 %. Inside the
-engine walk the mask-cost spike's attribution holds (`decode_utf8` + one allocation per candidate:
-8.85–9.21 ms; reject walk 0.64–14.48 ms), so removing the decode stage entirely still leaves
-≈ 21 ms per fill.
+over that walk: the engine walk is **98.5 %** of the fill (34.1 ms/fill), the module's own work is
+1.5 % (per fill: candidate reset 134 µs, row packing 341 µs, dedup 31 µs; state keys 0.56 µs per
+call). Inside the engine walk the mask-cost spike's attribution holds (`decode_utf8` + one
+allocation per candidate: 8.85–9.21 ms; reject walk 0.64–14.48 ms), so removing the decode stage
+entirely still leaves ≈ 25 ms per fill.
 
 ## Why the levers cannot close the gap
 
 - **Folding.** 1 957 fills produce only 409 distinct rows — 1 548 fills recompute content that
   exists — but the repeated states are context-dependent equivalences, not canonicalizable ones.
-  The dominant shape is a nested-counter product (one group: 11 item-chain positions × 14 char-chain
-  positions — 154 combinations, 180 keys in the captured walk — share one mask). The same position
-  pair is *observable* in one context and not in
-  another (item position 2 vs 3–13 differ at the walk's last step), and a partially consumed round
-  is observable too, so no context-free key can fold them without returning a wrong row; the only
-  provably safe context-free fold is the physical bound already used (no token consumes more rounds
-  than its piece has codepoints; limit = max piece bytes + 2 = 130).
-- **Precomputed codepoints.** Eliminating the per-candidate decode/alloc leaves ≈ 21 ms/fill; the
-  diary floor is then 409 × 21 ms ≈ 8.6 s even with perfect (unattainable) folding.
+  The dominant shape is a nested-counter product: one group of 180 keys — a complete 12 item-state
+  × 15 char-position Cartesian grid — shares one mask. The same position pair is *observable* in one
+  context and not in another (item position 2 vs 3–13 differ at the walk's last step), and a
+  partially consumed round is observable too, so no context-free key can fold them without returning
+  a wrong row; the only provably safe context-free fold is the physical bound already used (no token
+  consumes more rounds than its piece has codepoints; limit = max piece bytes + 2 = 130).
+- **Precomputed codepoints.** Eliminating the per-candidate decode/alloc leaves ≈ 25 ms/fill; the
+  diary floor is then ≈ 409 × 25 ms ≈ 10.2 s even with perfect (unattainable) folding.
 - **Per-stack caching.** The walk's 1 957 states contain 3 888 distinct stacks — worse than
   per-state caching.
 - **Retention** is required for safety (409 rows = 12.1 MiB; the state→row map grows one entry per
