@@ -24,6 +24,7 @@
 #include <limits>
 #include <fstream>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <span>
 #include <stdexcept>
@@ -639,8 +640,12 @@ public:
     std::shared_ptr<const std::vector<TokenId>> thinking_control_tokens;
     // Lazily built grammar vocabulary and the compiled-grammar cache keyed by GBNF text. The
     // cache holds weak references: a compiled grammar (and its row cache) lives exactly as long
-    // as a request keeps it alive. The frontend is a shared immutable value, so the caches are
-    // mutable; grammar work runs on the single serving worker.
+    // as a request keeps it alive, and expired keys are pruned once the key table grows past
+    // `kGrammarCacheKeys`. The frontend is a shared immutable value used by concurrent request
+    // threads, so the caches are mutable and guarded by `grammar_mutex` (compilation is rare;
+    // row production against a compiled grammar stays on the single serving worker).
+    static constexpr std::size_t kGrammarCacheKeys = 64;
+    mutable std::mutex grammar_mutex;
     mutable std::shared_ptr<const fi::GrammarVocabulary> grammar_vocabulary;
     mutable std::unordered_map<std::string, std::weak_ptr<const fi::CompiledGrammar>> grammar_cache;
     bool vision_enabled       = true;
@@ -927,6 +932,7 @@ OutputSession Frontend::make_output_session(const PreparedPrompt& prompt,
 const StopPolicy& Frontend::default_stop_policy() const noexcept { return impl_->defaults; }
 
 std::shared_ptr<const frontend::GrammarVocabulary> Frontend::grammar_vocabulary() const {
+    std::lock_guard lock(impl_->grammar_mutex);
     if (impl_->grammar_vocabulary == nullptr) {
         impl_->grammar_vocabulary = std::make_shared<const frontend::TokenizerVocabulary>(
             impl_->tokenizer);
@@ -937,7 +943,9 @@ std::shared_ptr<const frontend::GrammarVocabulary> Frontend::grammar_vocabulary(
 std::shared_ptr<const frontend::CompiledGrammar> Frontend::compile_grammar(std::string_view gbnf,
                                                                            std::string* error) const {
     if (error != nullptr) { error->clear(); }
+    const std::shared_ptr<const frontend::GrammarVocabulary> vocabulary = grammar_vocabulary();
     const std::string key(gbnf);
+    std::lock_guard lock(impl_->grammar_mutex);
     if (const auto found = impl_->grammar_cache.find(key); found != impl_->grammar_cache.end()) {
         if (std::shared_ptr<const frontend::CompiledGrammar> cached = found->second.lock()) {
             return cached;
@@ -945,10 +953,21 @@ std::shared_ptr<const frontend::CompiledGrammar> Frontend::compile_grammar(std::
     }
     std::string diagnostic;
     std::shared_ptr<const frontend::CompiledGrammar> grammar =
-        frontend::CompiledGrammar::compile(gbnf, grammar_vocabulary(), &diagnostic);
+        frontend::CompiledGrammar::compile(gbnf, vocabulary, &diagnostic);
     if (grammar == nullptr) {
         if (error != nullptr) { *error = std::move(diagnostic); }
         return nullptr;
+    }
+    if (impl_->grammar_cache.size() >= Impl::kGrammarCacheKeys) {
+        for (auto entry = impl_->grammar_cache.begin(); entry != impl_->grammar_cache.end();) {
+            entry = entry->second.expired() ? impl_->grammar_cache.erase(entry)
+                                            : std::next(entry);
+        }
+    }
+    if (impl_->grammar_cache.size() >= Impl::kGrammarCacheKeys) {
+        // Every key is still live: the table is retired rather than grown without bound. A
+        // recompile on the next request is cheap relative to retaining their row caches.
+        impl_->grammar_cache.clear();
     }
     impl_->grammar_cache[key] = grammar;
     return grammar;
