@@ -357,6 +357,10 @@ SpeculativeBackend Program::speculative_backend() const noexcept {
     return impl_->speculative_backend;
 }
 
+std::span<const TokenId> Program::draft_tokens(SequenceHandle sequence) const {
+    return impl_->draft_tokens(sequence);
+}
+
 CaptureAssessment
 Program::inspect_capture(const CaptureOffer& offer, const SharedPrefixHandle* exact_shared,
                          const SharedPrefixHandle* replacement,

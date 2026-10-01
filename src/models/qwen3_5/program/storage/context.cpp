@@ -1050,6 +1050,14 @@ void ProgramImpl::set_constraint(std::uint32_t lane,
     request.grammar_runtime.emplace(request.grammar);
 }
 
+std::span<const TokenId> ProgramImpl::draft_tokens(SequenceHandle sequence) const {
+    if (!valid_sequence(sequence)) {
+        throw std::logic_error("draft-token sequence capability is invalid");
+    }
+    const SequenceState& state = active_sequence(ContractAccess::lane(sequence).value);
+    return std::span<const TokenId>(state.mtp_drafts.data(), state.mtp_draft_count);
+}
+
 void ProgramImpl::clear_constraint(RequestControl& request) noexcept {
     request.grammar.reset();
     request.grammar_runtime.reset();

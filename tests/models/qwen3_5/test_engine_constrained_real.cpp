@@ -53,7 +53,10 @@ bool is_exact_digits(const std::string& text, std::size_t count) {
 }
 
 int exercise(const char* artifact) {
-    ninfer::Engine engine(constrained_engine_options(artifact));
+    std::string forced_text;
+    std::string digits_text;
+    {
+        ninfer::Engine engine(constrained_engine_options(artifact));
     const auto run = [&engine](std::uint32_t max_tokens, std::string grammar = {}) {
         return engine.generate(
             engine.prepare_tokens(engine.tokenize_text("Complete the sequence: ")),
@@ -83,20 +86,57 @@ int exercise(const char* artifact) {
         return 1;
     }
 
-    // An invalid grammar fails the request synchronously instead of running unconstrained.
-    bool rejected = false;
-    try {
-        (void)run(8, "root ::= [");
-    } catch (const ninfer::RequestError& error) {
-        rejected = error.kind() == ninfer::RequestErrorKind::InvalidConstraint;
-    }
-    if (!rejected) {
-        std::cerr << "an invalid grammar was not rejected\n";
-        return 1;
+
+        forced_text = forced.content;
+        digits_text = digits.content;
+
+        // An invalid grammar fails the request synchronously instead of running unconstrained.
+        bool rejected = false;
+        try {
+            (void)run(8, "root ::= [");
+        } catch (const ninfer::RequestError& error) {
+            rejected = error.kind() == ninfer::RequestErrorKind::InvalidConstraint;
+        }
+        if (!rejected) {
+            std::cerr << "an invalid grammar was not rejected\n";
+            return 1;
+        }
     }
 
-    std::cout << "ok constrained" << " forced=\"" << forced.content << "\" digits=\""
-              << digits.content << "\"\n";
+    // The MTP backend masks every verify column: the same grammars must hold under speculation,
+    // where the accepted prefix also has to be fed back into the grammar state.
+    {
+        ninfer::EngineOptions options          = constrained_engine_options(artifact);
+        options.speculative.backend            = ninfer::SpeculativeBackend::Mtp;
+        options.speculative.draft_tokens       = 3;
+        options.speculative.proposal_head      = ninfer::ProposalHead::Optimized;
+        ninfer::Engine mtp_engine(std::move(options));
+        const auto run_mtp = [&mtp_engine](std::string grammar) {
+            return mtp_engine.generate(
+                mtp_engine.prepare_tokens(mtp_engine.tokenize_text("Complete the sequence: ")),
+                greedy_request(32, std::move(grammar)));
+        };
+        const ninfer::GenerationResult forced_mtp = run_mtp("root ::= \"9999\"");
+        if (forced_mtp.content != "9999") {
+            std::cerr << "MTP forced grammar did not force the text: \"" << forced_mtp.content
+                      << "\"\n";
+            return 1;
+        }
+        if (forced_mtp.finish_reason != ninfer::FinishReason::StopToken) {
+            std::cerr << "the MTP forced run did not stop through the grammar's end\n";
+            return 1;
+        }
+        const ninfer::GenerationResult digits_mtp = run_mtp("root ::= [0-9]{4}");
+        if (!is_exact_digits(digits_mtp.content, 4)) {
+            std::cerr << "the MTP digit grammar did not constrain the text: \""
+                      << digits_mtp.content << "\"\n";
+            return 1;
+        }
+        std::cout << "mtp forced=\"" << forced_mtp.content << "\" digits=\"" << digits_mtp.content
+                  << "\"\n";
+    }
+    std::cout << "ok constrained" << " forced=\"" << forced_text << "\" digits=\"" << digits_text
+              << "\"\n";
     return 0;
 }
 

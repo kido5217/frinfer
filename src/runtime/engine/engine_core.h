@@ -182,10 +182,10 @@ public:
 
         std::shared_ptr<const CompiledGrammar> grammar;
         if (options.constraint) {
-            if (instance_.program->speculative_backend() != SpeculativeBackend::None) {
-                throw RequestError(
-                    RequestErrorKind::InvalidConstraint,
-                    "grammar constraints need the non-speculative execution backend");
+            const SpeculativeBackend backend = instance_.program->speculative_backend();
+            if (backend != SpeculativeBackend::None && backend != SpeculativeBackend::Mtp) {
+                throw RequestError(RequestErrorKind::InvalidConstraint,
+                                   "grammar constraints need the ordinary or MTP backend");
             }
             std::string diagnostic;
             grammar = instance_.frontend.compile_grammar(options.constraint->gbnf, &diagnostic);
@@ -1837,12 +1837,18 @@ private:
         for (std::size_t row = 0; row < membership.size; ++row) {
             const auto& record = slots_[membership.lanes[row]];
             if (record == nullptr || !record->grammar) { continue; }
-            // The mask governs the token a column produces, so the region is read from the
-            // committed parsing state after the columns before it: an empty draft span returns
-            // the committed region for the column about to be sampled.
-            const std::vector<std::uint8_t> regions = record->output.preview_reasoning_flags({});
-            plans[row].column_count                 = 1;
-            plans[row].reasoning_mask               = regions.empty() ? 1U : regions.front();
+            // The mask governs the token a column produces, so each column's region is read after
+            // the columns before it: the session feeds the round's draft span and returns one flag
+            // per column plus the bonus column's tail flag.
+            const std::span<const TokenId> drafts = instance_.program->draft_tokens(*record->sequence);
+            const std::vector<std::uint8_t> regions =
+                record->output.preview_reasoning_flags(drafts);
+            plans[row].column_count = static_cast<std::uint8_t>(regions.size());
+            for (std::size_t column = 0; column < plans[row].column_count; ++column) {
+                if (regions[column] != 0) {
+                    plans[row].reasoning_mask |= static_cast<std::uint8_t>(1U << column);
+                }
+            }
         }
         auto pending = instance_.program->decode(
             membership.sequence_span(), membership.budget_span(),
