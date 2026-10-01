@@ -440,6 +440,11 @@ void ProgramImpl::advance_grammar_state(std::span<const std::uint32_t> bases,
         std::array<std::uint8_t, kMaximumConcurrency> regions{};
         for (std::uint32_t index = 0; index < accepted[row]; ++index) {
             tokens[index] = sequence.ledger[bases[row] + index];
+            // The plan marks each column's region; a column past the plan is answer-region data.
+            regions[index] = index < request.pending_mask_plan.column_count
+                                 ? static_cast<std::uint8_t>(
+                                       (request.pending_mask_plan.reasoning_mask >> index) & 1U)
+                                 : 0;
         }
         if (!request.grammar_runtime->commit(
                 std::span<const int>(tokens.data(), accepted[row]),

@@ -510,6 +510,7 @@ public:
                                                   runtime::ExecutionTiming* failed_timing);
     void set_constraint(std::uint32_t lane,
                         std::shared_ptr<const frontend::CompiledGrammar> grammar);
+    [[nodiscard]] std::span<const TokenId> draft_tokens(SequenceHandle sequence) const;
     [[nodiscard]] CaptureAssessment
     inspect_capture(const CaptureOffer& offer, const SharedPrefixHandle* exact_shared,
                     const SharedPrefixHandle* replacement,
@@ -621,6 +622,8 @@ public:
     std::array<RequestControl, kMaximumConcurrency> requests;
     // Host staging for grammar mask rows, laid out like the device table ([words, rows]).
     std::vector<std::uint32_t> mask_staging;
+    // Contiguous [columns x words] block the grammar fills before the scatter into mask_staging.
+    std::vector<std::uint32_t> mask_columns_staging;
     std::size_t mask_staging_words = 0;
     std::int32_t mask_active_host  = 0;
     std::array<std::uint64_t, kMaximumConcurrency> lane_epochs{};

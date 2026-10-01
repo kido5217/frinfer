@@ -945,6 +945,11 @@ public:
     // The startup-fixed speculative backend this Program executes with.
     [[nodiscard]] SpeculativeBackend speculative_backend() const noexcept;
 
+    // The sequence's current speculative draft tokens, in column order. Empty when the backend
+    // proposes nothing for the next round (ordinary decode); the span stays valid until the next
+    // decode or commit of that sequence.
+    [[nodiscard]] std::span<const TokenId> draft_tokens(SequenceHandle sequence) const;
+
     [[nodiscard]] DiscardResult abort_pending(PendingBatch&& pending) noexcept;
     [[nodiscard]] FinishResult finish(SequenceHandle sequence) noexcept;
     [[nodiscard]] AbortResult abort(SequenceHandle sequence) noexcept;

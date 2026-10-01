@@ -867,7 +867,10 @@ void ProgramImpl::refresh_mask_rows(std::span<const std::uint32_t> lanes,
     for (std::size_t row = 0; row < lanes.size(); ++row) {
         RequestControl& request = requests[lanes[row]];
         MaskPlan plan           = row < plans.size() ? plans[row] : MaskPlan{};
-        if (!request.grammar_runtime || plan.column_count > 1) { plan = MaskPlan{}; }
+        if (!request.grammar_runtime || plan.column_count == 0 ||
+            plan.column_count > kMaskColumnCapacity) {
+            plan = MaskPlan{};
+        }
         request.pending_mask_plan = plan;
         any_masked = any_masked || (plan.column_count != 0 && (plan.reasoning_mask & 1U) == 0U);
     }
@@ -883,19 +886,43 @@ void ProgramImpl::refresh_mask_rows(std::span<const std::uint32_t> lanes,
         return;
     }
     // Every row of the round is rewritten - masked columns from the grammar, everything else
-    // all-ones - so a row left masked by an earlier round can never leak into this one.
+    // all-ones - so a row left masked by an earlier round can never leak into this one. The
+    // grammar fills a contiguous [columns x words] block; the table stores column c of batch
+    // position b at row c * kMaximumConcurrency + b.
     for (std::size_t row = 0; row < row_count; ++row) {
         std::span<std::uint32_t> staged(mask_staging.data() + row * mask_staging_words,
                                         mask_staging_words);
         const MaskPlan plan = requests[lanes[row]].pending_mask_plan;
-        if (plan.column_count == 0 || (plan.reasoning_mask & 1U) != 0U) {
+        if (plan.column_count == 0) {
+            // No column of this row is masked: still run the grammar's region plan so unconstrained
+            // reasoning columns do not advance the state.
             std::fill(staged.begin(), staged.end(), 0xFFFFFFFFU);
             continue;
         }
-        std::array<int, 1> tokens{frontend::kUnknownConstraintToken};
-        const std::array<std::uint8_t, 1> regions{0};
-        requests[lanes[row]].grammar_runtime->fill_round_rows(tokens, regions, staged,
-                                                              mask_staging_words);
+        std::array<int, kMaskColumnCapacity> tokens{};
+        std::array<std::uint8_t, kMaskColumnCapacity> regions{};
+        tokens.fill(frontend::kUnknownConstraintToken);
+        for (std::uint32_t index = 0; index + 1 < plan.column_count; ++index) {
+            tokens[index] = active_sequence(lanes[row]).mtp_drafts[index];
+        }
+        for (std::uint32_t column = 0; column < plan.column_count; ++column) {
+            regions[column] = static_cast<std::uint8_t>((plan.reasoning_mask >> column) & 1U);
+        }
+        const std::span<const int> column_tokens(tokens.data(), plan.column_count);
+        const std::span<const std::uint8_t> column_regions(regions.data(), plan.column_count);
+        std::span<std::uint32_t> filled(mask_columns_staging.data(),
+                                        static_cast<std::size_t>(plan.column_count) *
+                                            mask_staging_words);
+        requests[lanes[row]].grammar_runtime->fill_round_rows(column_tokens, column_regions,
+                                                             filled, mask_staging_words);
+        for (std::uint32_t column = 0; column < plan.column_count; ++column) {
+            const std::size_t device_row =
+                static_cast<std::size_t>(column) * kMaximumConcurrency + row;
+            std::copy_n(mask_columns_staging.data() +
+                            static_cast<std::size_t>(column) * mask_staging_words,
+                        mask_staging_words, mask_staging.data() +
+                                                 device_row * mask_staging_words);
+        }
     }
     CUDA_CHECK(cudaMemcpyAsync(io.mask_rows.data, mask_staging.data(),
                                row_count * mask_staging_words * sizeof(std::uint32_t),
