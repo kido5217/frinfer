@@ -41,7 +41,7 @@ runtime::ResolvedRequestOptions resolve_request_options(const ModelSamplingDefau
     resolved.stop                              = std::move(options.stop);
     resolved.output                            = options.output;
     if (options.constraint && options.constraint->gbnf.empty()) {
-        throw std::invalid_argument("grammar constraint text is empty");
+        throw RequestError(RequestErrorKind::InvalidConstraint, "grammar constraint text is empty");
     }
     resolved.constraint = std::move(options.constraint);
     return resolved;

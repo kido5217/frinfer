@@ -180,6 +180,21 @@ public:
                                "inference request expired before submission");
         }
 
+        std::shared_ptr<const CompiledGrammar> grammar;
+        if (options.constraint) {
+            if (instance_.program->speculative_backend() != SpeculativeBackend::None) {
+                throw RequestError(
+                    RequestErrorKind::InvalidConstraint,
+                    "grammar constraints need the non-speculative execution backend");
+            }
+            std::string diagnostic;
+            grammar = instance_.frontend.compile_grammar(options.constraint->gbnf, &diagnostic);
+            if (grammar == nullptr) {
+                throw RequestError(RequestErrorKind::InvalidConstraint,
+                                   "grammar constraint rejected: " + diagnostic);
+            }
+        }
+
         std::uint64_t request_id        = 0;
         std::uint64_t publication_order = 0;
         {
@@ -197,21 +212,6 @@ public:
             ++outstanding_;
             request_id        = next_request_id_++;
             publication_order = next_publication_order_++;
-        }
-
-        std::shared_ptr<const CompiledGrammar> grammar;
-        if (options.constraint) {
-            if (instance_.program->speculative_backend() != SpeculativeBackend::None) {
-                throw RequestError(
-                    RequestErrorKind::InvalidConstraint,
-                    "grammar constraints need the non-speculative execution backend");
-            }
-            std::string diagnostic;
-            grammar = instance_.frontend.compile_grammar(options.constraint->gbnf, &diagnostic);
-            if (grammar == nullptr) {
-                throw RequestError(RequestErrorKind::InvalidConstraint,
-                                   "grammar constraint rejected: " + diagnostic);
-            }
         }
 
         std::shared_ptr<Request> request;
