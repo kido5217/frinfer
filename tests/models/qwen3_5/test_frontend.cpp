@@ -1970,6 +1970,14 @@ int test_reasoning_regions(const Frontend& frontend) {
     std::vector<ninfer::TokenId> opener = fixture_tokenizer().encode("thought ");
     const std::vector<ninfer::TokenId> tool_open = fixture_tokenizer().encode("<tool_call>");
     opener.insert(opener.end(), tool_open.begin(), tool_open.end());
+    const auto opener_flags = tool_session.preview_reasoning_flags(opener);
+    bool opener_monotone    = true;
+    for (std::size_t index = 1; index < opener_flags.size(); ++index) {
+        if (opener_flags[index] > opener_flags[index - 1]) { opener_monotone = false; }
+    }
+    failures += check(opener_flags.size() == opener.size() + 1 && opener_flags.front() == 1 &&
+                          opener_flags.back() == 0 && opener_monotone,
+                      "a tool-call opener span did not cross out of the reasoning phase");
     (void)tool_session.preview_model(opener, 200, ninfer::FinishReason::OutputLimit);
     (void)tool_session.commit_preview();
     const auto tool_flags = tool_session.preview_reasoning_flags({});
