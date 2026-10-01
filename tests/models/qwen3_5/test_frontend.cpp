@@ -1993,6 +1993,47 @@ int test_reasoning_regions(const Frontend& frontend) {
     return failures;
 }
 
+int test_grammar_constraints(const Frontend& frontend) {
+    int failures          = 0;
+    const auto vocabulary = frontend.grammar_vocabulary();
+    failures += check(vocabulary != nullptr && vocabulary->token_count() > 0,
+                      "the frontend did not expose a grammar vocabulary");
+    if (vocabulary == nullptr) { return failures; }
+    failures += check(frontend.grammar_vocabulary() == vocabulary,
+                      "the grammar vocabulary is not shared across calls");
+    const std::vector<int> encoded = vocabulary->encode("hello");
+    failures += check(encoded == fixture_tokenizer().encode("hello") && !encoded.empty(),
+                      "the grammar vocabulary did not share the frontend tokenizer's encoder");
+
+    std::string error;
+    const auto grammar = frontend.compile_grammar("root ::= \"ab\"", &error);
+    failures += check(grammar != nullptr && error.empty(),
+                      "a literal GBNF grammar did not compile");
+    if (grammar != nullptr) {
+        failures += check(grammar->token_count() == vocabulary->token_count(),
+                          "a compiled grammar diverged from the vocabulary token domain");
+        failures += check(frontend.compile_grammar("root ::= \"ab\"") == grammar,
+                          "compiled grammars are not shared by grammar identity");
+        const auto row = grammar->row_for(grammar->initial_state());
+        failures += check(!row.empty(), "the compiled grammar produced no mask row");
+    }
+
+    // The fixture piece table is the row domain: a grammar over one of its own pieces allows that
+    // piece id at the initial state.
+    const std::vector<ninfer::TokenId> hello = fixture_tokenizer().encode("hello");
+    const auto hello_grammar = frontend.compile_grammar("root ::= \"hello\"", &error);
+    failures += check(hello_grammar != nullptr && !hello.empty() &&
+                          hello_grammar->row_for(hello_grammar->initial_state())
+                                  [static_cast<std::size_t>(hello.front()) >> 5U] &
+                              (1U << (static_cast<unsigned>(hello.front()) & 31U)),
+                      "the compiled row did not allow the vocabulary's own piece");
+
+    const auto invalid = frontend.compile_grammar("root ::= [", &error);
+    failures += check(invalid == nullptr && !error.empty(),
+                      "an invalid grammar compiled without a diagnostic");
+    return failures;
+}
+
 // Drives the chat-parsing oracle corpus (tests/fixtures/chat_parsing/corpus.json) through the real
 // session seam: prompt with the vector's tools, per-round token license, commit, terminal flush.
 // The corpus pins the parsing core's wire bytes; the session additionally applies the B1 framing
@@ -2608,6 +2649,7 @@ int main() {
     failures += test_reasoning_split(frontend);
     failures += test_thinking_budget_control(frontend);
     failures += test_reasoning_regions(frontend);
+    failures += test_grammar_constraints(frontend);
     failures += test_chat_parsing_corpus_sessions(frontend);
     failures += test_utf8_and_hidden_eos(frontend);
     failures += test_media_cache_reuses_immutable_payload();

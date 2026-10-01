@@ -2,6 +2,7 @@
 
 #include "ninfer/types.h"
 #include "models/qwen3_5/frontend/output_session.h"
+#include "models/qwen3_5/frontend/grammar/grammar.h"
 #include "models/registry.h"
 #include "runtime/contract/request.h"
 
@@ -78,6 +79,15 @@ public:
                         const ThinkingControlOptions& thinking = {}) const;
     [[nodiscard]] const StopPolicy& default_stop_policy() const noexcept;
     [[nodiscard]] const ModelSamplingDefaults& sampling_defaults() const noexcept;
+
+    // Grammar constraints: the shared grammar vocabulary over this frontend's tokenizer (built on
+    // first use) and the compiled grammars keyed by GBNF text. Compiled grammars and their row
+    // caches are shared by grammar identity for as long as a caller holds them; compiling invalid
+    // text returns nullptr and, when `error` is non-null, stores the parse diagnostic. The
+    // protocol adapter converts JSON Schema documents before calling here.
+    [[nodiscard]] std::shared_ptr<const frontend::GrammarVocabulary> grammar_vocabulary() const;
+    [[nodiscard]] std::shared_ptr<const frontend::CompiledGrammar>
+    compile_grammar(std::string_view gbnf, std::string* error = nullptr) const;
 
 private:
     class Impl;
