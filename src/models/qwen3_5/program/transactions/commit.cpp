@@ -153,11 +153,9 @@ StartResult ProgramImpl::start_request(MaterializationTransaction& transaction) 
 
 PendingBatch ProgramImpl::decode(std::span<const SequenceHandle> members,
                                  std::span<const runtime::RoundBudget> budgets,
-                                 std::span<const MaskPlan> mask_plans,
                                  runtime::ExecutionTiming* failed_timing) {
     if (pending_transaction_ || members.empty() || members.size() > max_concurrency ||
-        budgets.size() != members.size() ||
-        (!mask_plans.empty() && mask_plans.size() != members.size())) {
+        budgets.size() != members.size()) {
         throw std::invalid_argument("decode membership is invalid");
     }
     std::array<std::uint32_t, kMaximumConcurrency> lanes{};
@@ -177,7 +175,7 @@ PendingBatch ProgramImpl::decode(std::span<const SequenceHandle> members,
     // Grammar mask rows are refreshed before the batch executes so every row of the round is
     // either masked from its grammar or explicitly unconstrained; the upload stays off the GPU
     // when nothing in the round is masked.
-    refresh_mask_rows(lane_span, mask_plans);
+    refresh_mask_rows(lane_span);
     try {
         runtime::BatchedGeneratedRound round = decode_raw(lane_span, budgets, failed_timing);
         if (failed_timing != nullptr) { *failed_timing += round.timing; }
@@ -393,15 +391,12 @@ runtime::ExecutionTiming ProgramImpl::append_forced_tokens(
 
             commit_generated_prefix_identity(sequence, base_ledger_frontier, forced,
                                              prefix_execution_splits[row]);
-            if (request.grammar_runtime && request.grammar_carries_reasoning) {
-                // A wrapped grammar covers the forced thinking-control span too (its reasoning
-                // body, the close and format whitespace): advance the grammar state so the next
-                // round's rows start at the answer grammar. All-or-nothing; a rejection is a
-                // fail-closed generation error.
-                if (!request.grammar_runtime->commit(forced)) {
-                    throw std::logic_error(
-                        "forced thinking-control span diverged from its grammar");
-                }
+            // A wrapped grammar covers the forced thinking-control span too (its reasoning body,
+            // the close and format whitespace): advance the grammar state so the next round's rows
+            // start at the answer grammar. All-or-nothing; a rejection is a fail-closed generation
+            // error.
+            if (!request.constraint.commit_forced(forced)) {
+                throw std::logic_error("forced thinking-control span diverged from its grammar");
             }
             advance_rebuild_work(sequence, end, prefill_chunk);
             sequence.execution_frontier = end;
@@ -437,9 +432,8 @@ void ProgramImpl::advance_grammar_state(std::span<const std::uint32_t> bases,
                                         std::span<const std::uint32_t> accepted) {
     for (std::size_t row = 0; row < lanes.size(); ++row) {
         RequestControl& request = requests[lanes[row]];
-        const MaskPlan plan = request.pending_mask_plan;
-        if (!request.grammar_runtime || plan.column_count == 0 || decisions[row].cancelled ||
-            accepted[row] == 0) {
+        if (!request.constraint.constrained() || request.constraint.planned_columns() == 0 ||
+            decisions[row].cancelled || accepted[row] == 0) {
             continue;
         }
         const SequenceState& sequence = active_sequence(lanes[row]);
@@ -451,7 +445,7 @@ void ProgramImpl::advance_grammar_state(std::span<const std::uint32_t> bases,
         for (std::uint32_t index = 0; index < accepted[row]; ++index) {
             tokens[index] = sequence.ledger[bases[row] + index];
         }
-        if (!request.grammar_runtime->commit(std::span<const int>(tokens.data(), accepted[row]))) {
+        if (!request.constraint.commit(std::span<const int>(tokens.data(), accepted[row]))) {
             throw std::logic_error("constrained generation diverged from its grammar");
         }
     }

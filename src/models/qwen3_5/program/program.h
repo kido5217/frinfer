@@ -835,14 +835,6 @@ struct ReleaseResult {
     runtime::ConsumeStatus status = runtime::ConsumeStatus::InvariantMismatch;
 };
 
-// One decode row's grammar-mask plan: the number of masked decode columns the row carries
-// (0 leaves the row unconstrained). Every masked column is an answer column - the thinking
-// wrapper admits the reasoning bytes itself - and column j of the mask table mirrors column j of
-// the target logits, so the plan follows the batch layout.
-struct MaskPlan {
-    std::uint8_t column_count = 0;
-};
-
 class Program {
 public:
     ~Program() noexcept;
@@ -895,8 +887,7 @@ public:
                         bool carries_reasoning);
 
     [[nodiscard]] PrefillProgress
-    advance_prefill(SequenceHandle sequence, MaskPlan mask_plan = {},
-                    runtime::ExecutionTiming* failed_timing = nullptr);
+    advance_prefill(SequenceHandle sequence, runtime::ExecutionTiming* failed_timing = nullptr);
     [[nodiscard]] CaptureAssessment
     inspect_capture(const CaptureOffer& offer, const SharedPrefixHandle* exact_shared,
                     const SharedPrefixHandle* replacement,
@@ -930,7 +921,6 @@ public:
         CapturePressurePlan&& pressure, runtime::CancellationFlagView cancellation);
     [[nodiscard]] PendingBatch decode(std::span<const SequenceHandle> sequences,
                                       std::span<const runtime::RoundBudget> budgets,
-                                      std::span<const MaskPlan> mask_plans      = {},
                                       runtime::ExecutionTiming* failed_timing = nullptr);
     // Advance each live sequence with its exact target-owned token row. This does not sample or
     // advance sampler RNG/occurrence state; callers own output publication and budget accounting.
@@ -946,11 +936,6 @@ public:
            runtime::ExecutionTiming* failed_timing = nullptr);
     // The startup-fixed speculative backend this Program executes with.
     [[nodiscard]] SpeculativeBackend speculative_backend() const noexcept;
-
-    // The sequence's current speculative draft tokens, in column order. Empty when the backend
-    // proposes nothing for the next round (ordinary decode); the span stays valid until the next
-    // decode or commit of that sequence.
-    [[nodiscard]] std::span<const TokenId> draft_tokens(SequenceHandle sequence) const;
 
     [[nodiscard]] DiscardResult abort_pending(PendingBatch&& pending) noexcept;
     [[nodiscard]] FinishResult finish(SequenceHandle sequence) noexcept;

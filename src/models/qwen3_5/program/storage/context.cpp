@@ -867,7 +867,7 @@ ProgramImpl::shared_prefix_summary(const SharedPrefixState& shared) const {
     };
 }
 
-PrefillProgress ProgramImpl::advance_prefill(SequenceHandle sequence, MaskPlan mask_plan,
+PrefillProgress ProgramImpl::advance_prefill(SequenceHandle sequence,
                                              runtime::ExecutionTiming* failed_timing) {
     if (pending_transaction_ || !valid_sequence(sequence)) {
         throw std::logic_error("prefill sequence capability is invalid");
@@ -876,7 +876,7 @@ PrefillProgress ProgramImpl::advance_prefill(SequenceHandle sequence, MaskPlan m
     if (requests[lane].lifecycle != Lifecycle::Prefilling) {
         throw std::logic_error("prefill advance requires a prefilling sequence");
     }
-    refresh_prefill_mask_row(lane, mask_plan);
+    refresh_prefill_mask_row(lane);
     try {
         runtime::PrefillStepResult step = advance_prefill_raw(lane, failed_timing);
         if (failed_timing != nullptr) { *failed_timing += step.timing; }
@@ -1012,6 +1012,7 @@ bool ProgramImpl::clear_lane_strict(SequenceState& sequence, RequestControl& req
     release_active_sequence_kv_strict(sequence);
     release_active_sequence_state_strict(sequence);
     retire_continuation_slot(continuation);
+    request.constraint.clear();
     request.prefill.reset();
     request.lifecycle            = Lifecycle::Empty;
     request.pending              = {};
@@ -1038,39 +1039,12 @@ void ProgramImpl::set_constraint(std::uint32_t lane,
                                  std::shared_ptr<const frontend::CompiledGrammar> grammar,
                                  bool carries_reasoning) {
     if (lane >= max_concurrency) { throw std::out_of_range("constraint lane is out of range"); }
-    RequestControl& request   = requests[lane];
-    request.pending_mask_plan = {};
-    if (grammar == nullptr) {
-        request.grammar.reset();
-        request.grammar_runtime.reset();
-        request.grammar_carries_reasoning = false;
-        return;
-    }
-    request.grammar_carries_reasoning = carries_reasoning;
-    // Every admitted request starts from the grammar's initial state, even when an earlier request
-    // on this lane shared the same compiled grammar.
-    request.grammar = std::move(grammar);
-    request.grammar_runtime.emplace(request.grammar);
-}
-
-std::span<const TokenId> ProgramImpl::draft_tokens(SequenceHandle sequence) const {
-    if (!valid_sequence(sequence)) {
-        throw std::logic_error("draft-token sequence capability is invalid");
-    }
-    const SequenceState& state = active_sequence(ContractAccess::lane(sequence).value);
-    return std::span<const TokenId>(state.mtp_drafts.data(), state.mtp_draft_count);
-}
-
-void ProgramImpl::clear_constraint(RequestControl& request) noexcept {
-    request.grammar.reset();
-    request.grammar_runtime.reset();
-    request.grammar_carries_reasoning = false;
-    request.pending_mask_plan = {};
+    requests[lane].constraint.attach(std::move(grammar), carries_reasoning);
 }
 
 void ProgramImpl::clear_lane_best_effort(SequenceState& sequence,
                                          RequestControl& request) noexcept {
-    clear_constraint(request);
+    request.constraint.clear();
     request.prefill.reset();
     request.lifecycle            = Lifecycle::Empty;
     request.pending              = {};

@@ -32,7 +32,6 @@ struct RuntimeTypes {
     using CaptureAssessment          = qwen3_5::CaptureAssessment;
     using ActiveCaptureResult        = qwen3_5::ActiveCaptureResult;
     using PendingBatch               = qwen3_5::PendingBatch;
-    using MaskPlan                   = qwen3_5::MaskPlan;
     using CompiledGrammar            = qwen3_5::frontend::CompiledGrammar;
     using StartResult                = qwen3_5::StartResult;
     using PrefillProgress            = qwen3_5::PrefillProgress;

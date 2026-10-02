@@ -48,7 +48,6 @@ public:
     using SequenceHandle     = typename ModelContract::SequenceHandle;
     using CaptureOffer       = typename ModelContract::CaptureOffer;
     using PendingBatch       = typename ModelContract::PendingBatch;
-    using MaskPlan           = typename ModelContract::MaskPlan;
     using CompiledGrammar    = typename ModelContract::CompiledGrammar;
     using Frontend           = typename ModelContract::Frontend;
     using ConstraintScope    = typename Frontend::ConstraintScope;
@@ -197,10 +196,10 @@ public:
             //
             // Configuration corner: when thinking resolves off while the template still renders
             // into reasoning (not reachable through the supported serve routes, which only start
-            // in reasoning with thinking on), the request compiles the plain answer grammar and
-            // engages it from token 0 (constraint_mask_engagement), so the reasoning stream must
-            // satisfy the answer grammar. That is deliberate: the old reasoning-region deferral
-            // no longer exists for constrained requests.
+            // in reasoning with thinking on), the request compiles the plain answer grammar, which
+            // the Program engages from token 0, so the reasoning stream must satisfy the answer
+            // grammar. That is deliberate: the old reasoning-region deferral no longer exists for
+            // constrained requests.
             grammar_carries_reasoning =
                 constraint_carries_reasoning(options.constraint, prompt_summary.starts_in_reasoning);
             std::string diagnostic;
@@ -1431,10 +1430,8 @@ private:
         }
         setup.finish();
         ProgramCallScope program_call(*this);
-        MaskPlan plan{};
-        if (request->grammar) { plan.column_count = constraint_mask_engagement(1); }
-        auto progress = instance_.program->advance_prefill(*request->sequence, plan,
-                                                           &program_call.failed_timing());
+        auto progress =
+            instance_.program->advance_prefill(*request->sequence, &program_call.failed_timing());
         program_call.finish(progress.timing);
         resolve_prefill_progress(request, std::move(progress), cancelled_at_unit_start);
         publish_runtime_stats();
@@ -1850,21 +1847,8 @@ private:
         nvtx::ScopedRange decode_range(nvtx::Name::Decode, nvtx::Category::Decode,
                                        static_cast<std::uint64_t>(membership.size));
         ProgramCallScope program_call(*this);
-        std::array<MaskPlan, kMaximumConcurrency> plans{};
-        for (std::size_t row = 0; row < membership.size; ++row) {
-            const auto& record = slots_[membership.lanes[row]];
-            if (record == nullptr || !record->grammar) { continue; }
-            // A constrained request's grammar governs every column of the round from token 0
-            // (reasoning stream included under the thinking wrapper), and the round's columns
-            // are the draft span plus the bonus column.
-            const std::span<const TokenId> drafts =
-                instance_.program->draft_tokens(*record->sequence);
-            plans[row].column_count = constraint_mask_engagement(drafts.size() + 1U);
-        }
         auto pending = instance_.program->decode(
-            membership.sequence_span(), membership.budget_span(),
-            std::span<const MaskPlan>(plans.data(), membership.size),
-            &program_call.failed_timing());
+            membership.sequence_span(), membership.budget_span(), &program_call.failed_timing());
         program_call.finish(pending.execution_timing());
         commit_pending(std::move(pending), membership.lane_span(), true, cancelled_at_unit_start);
         publish_runtime_stats();
