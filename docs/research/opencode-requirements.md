@@ -113,7 +113,7 @@ add more (`packages/schema/src/config/provider.ts:31-41`).
 ### 1.5 Timeouts
 
 `packages/ai/src/route/transport/http.ts:100-143`,
-`packages/ai/src/schema/options.ts:53`:
+`packages/ai/src/schema/options.ts:56`:
 
 - `headerTimeout`: default **300 s** — time until response headers; failure is a
   transport `Timeout` (operation `request`).
