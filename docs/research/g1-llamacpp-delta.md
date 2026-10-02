@@ -62,7 +62,8 @@ Commands (in the clone): `git log --oneline 05af0d2b...bed0a85660` → 68 commit
 changes are a template sniff (`src.find("chat_format=llm-jp-harmony-v1")`) and a declaration —
 nothing to do with qwen3-xml. `tools/server/server-task.{cpp,h}`, `server.cpp`,
 `docs/function-calling.md`, `docs/autoparser.md` in the range carry no other parse-behavior change
-(the two server commits are an unrelated `/v1/systemone` API and an embedding 400).
+(the two commits touching `server-task.{cpp,h}`/`server.cpp` are an unrelated `/v1/systemone` API
+and an embedding 400; six commits touch `tools/server/` overall).
 
 Two corrections to the map notes, both load-bearing:
 
@@ -92,14 +93,15 @@ Each mechanism: what it does → source @ `bed0a85660` → failure shapes it cov
 
 **What.** Upstream parses every chat turn with `COMMON_PEG_PARSE_FLAG_LENIENT`
 (`common/chat.cpp:1471`) and the engine distinguishes three outcomes: success; `need_more_input`
-(a construct ran out of input — `common/peg-parser.h:162-166`, sites `common/peg-parser.cpp:280-284`
+(a construct ran out of input — result constant `common/peg-parser.h:70`, method `:158`; sites `common/peg-parser.cpp:280-284`
 literal, `:456-461` repeat, `:505-509` any, `:727-730` until); and `fail` (a definite mismatch). On
 `fail` after some progress (`result.end > 0`) during streaming, upstream maps the AST captured so
 far instead of discarding it — "return partial results if any AST nodes were captured"
 (`common/chat.cpp:1479-1501`) — and the mapper flushes a started call once its name is known,
 including partial argument bytes (`common/chat-peg-parser.cpp:287-298`; name-triggered push at
-`:358-373`; a cut schema-string argument gets its closing quote appended at `:293-295`). Only a
-failure with **no** progress throws (`common/chat.cpp:1502-1504`), which the server turns into a 500
+`:358-373`; a cut schema-string argument gets its closing quote appended at `:293-295`). The salvage condition is `is_partial && result.end > 0` (`common/chat.cpp:1479-1505`) — a
+**partial** parse that made progress; every other failure, including **any** failure of the final
+parse, throws (`common/chat.cpp:1502-1504`), which the server turns into a 500
 (`tools/server/server.cpp:54-90`); the per-chunk streaming entry point is
 `tools/server/server-task.cpp:988-993` (`is_partial=true`) while the final one is
 `server-task.h:392-394` (`is_partial=false`). The upstream test contract for this lives in
@@ -153,8 +155,10 @@ value early and the turn fails (`chat-parsing-oracle.md` row 21).
 inside its own argument text. Under NInfer's B4 the value grammar admits `<parameter=`/`</parameter>`
 only as **balanced nested markup** (`chat_parse_core.cpp:90-97`, comment `:74-76`), so an inline
 fragment is unrepresentable and the whole region demotes (`malformed_structure`); under upstream's
-rule the same call parses with the fragment as value bytes. Family (b) with newline-framed
-fragments still fails under both.
+rule the same call parses with the fragment as value bytes. Framing still divides the two rules: a
+**balanced** newline-framed nested pair inside a value is accepted by NInfer (corpus
+`tool-call-nested-parameter-newline-framed`, `tool_calls: 1`, markup preserved) and fails under
+llama.cpp (oracle row 21); only the **unbalanced** newline-framed case fails under both.
 
 **NInfer's current coverage / conflict.** B4 is deliberate and corpus-pinned:
 `tool-call-unmatched-nested-parameter` and `tool-call-standalone-parameter-close` both expect
