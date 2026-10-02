@@ -30,6 +30,9 @@
     {
       devShells.${system}.default = pkgs.mkShell {
         name = "ninfer-dev";
+        # Workstation-local HF-hub cache holding the converted .ninfer artifacts used by the real
+        # Engine tests (see tests/README.md): $NINFER_ARTIFACT_HUB/models--<repo>/snapshots/<rev>/.
+        env.NINFER_ARTIFACT_HUB = "/home/kido/trash/ai/models/hf/hub";
         packages = [
           pkgs.cmake
           pkgs.ninja

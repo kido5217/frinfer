@@ -149,6 +149,18 @@ tests serially. `NINFER_PREFIX_REAL_SCENARIO` selects a focused prefix scenario 
 `pressure-resume` or `concurrent`; the default is `all`. These integration checks
 use behavior and state accounting rather than another numerical path's generated tokens as a golden.
 
+On this workstation the converted `.ninfer` artifacts live in the local HF-hub cache outside the
+repository; the devShell exports `NINFER_ARTIFACT_HUB` pointing at it. Compose an explicit artifact
+path as `$NINFER_ARTIFACT_HUB/models--<repo>/snapshots/<rev>/<name>.ninfer`:
+
+```bash
+NINFER_TEST_ARTIFACT=$NINFER_ARTIFACT_HUB/models--neroued--Qwen3.8-27B-nvfp4-NInfer/snapshots/<rev>/qwen3_8_27b_nvfp4.ninfer \
+  ctest --test-dir build -R ninfer_qwen3_5_constrained_real_test --output-on-failure
+```
+
+`<rev>` is the hub snapshot revision; select the artifact file explicitly, never by glob or
+modification time. The `models--neroued--Qwen3.8-*` repositories hold the NInfer conversions.
+
 The `attention` scenario checks the selected KV type, chunked prefill, concurrent Graph decode
 across a resource tier, prefix continuation, and workspace bounds:
 
