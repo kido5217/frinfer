@@ -437,31 +437,6 @@ OutputSession::OutputSession(
           std::move(tokenizer), std::move(policy), output, starts_in_reasoning, thinking,
           std::move(thinking_control_tokens), std::move(tool_call_output))) {}
 
-std::vector<std::uint8_t>
-OutputSession::preview_reasoning_flags(std::span<const TokenId> tokens) {
-    if (impl_ == nullptr) { throw std::logic_error("output session is empty"); }
-    if (impl_->state.terminal) { throw std::logic_error("output session is already terminal"); }
-    if (impl_->preview_ready) {
-        throw std::logic_error("reasoning regions cannot be inspected while a preview is pending");
-    }
-    std::vector<std::uint8_t> flags(tokens.size() + 1, 0);
-    impl_->core.begin_preview();
-    // Continue the committed stream's incomplete UTF-8 sequence, exactly as the round path does.
-    std::string pending = impl_->state.utf8_pending;
-    for (std::size_t index = 0; index < tokens.size(); ++index) {
-        const fi::DecodedTokenView decoded = impl_->tokenizer->decoded_token(tokens[index]);
-        const std::string_view bytes =
-            !impl_->preserve_special && decoded.special ? std::string_view{} : decoded.bytes;
-        pending.append(bytes);
-        const std::string text = consume_generated_utf8(pending);
-        if (!text.empty()) { (void)impl_->core.preview_feed(text); }
-        // Read after the feed: the token that completes the close is itself an answer column.
-        flags[index] = static_cast<std::uint8_t>(impl_->core.preview_in_reasoning());
-    }
-    flags[tokens.size()] = static_cast<std::uint8_t>(impl_->core.preview_in_reasoning());
-    return flags;
-}
-
 runtime::OutputDecision OutputSession::preview_model(std::span<const TokenId> tokens,
                                                      std::uint32_t total_budget_remaining,
                                                      FinishReason limit_reason) {

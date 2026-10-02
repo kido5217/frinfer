@@ -15,7 +15,8 @@ target_link_libraries(ninfer_chat_parsing PUBLIC ninfer_llama_chat ninfer::json)
 # as its differential oracle. See grammar/grammar.h.
 add_library(ninfer_grammar STATIC qwen3_5/frontend/grammar/grammar.cpp
                                   qwen3_5/frontend/grammar/trie_producer.cpp
-                                  qwen3_5/frontend/grammar/grammar_runtime.cpp)
+                                  qwen3_5/frontend/grammar/grammar_runtime.cpp
+                                  qwen3_5/frontend/grammar/thinking_wrapper.cpp)
 ninfer_internal_includes(ninfer_grammar)
 target_link_libraries(ninfer_grammar PRIVATE ninfer_llama_grammar ninfer_llama_chat)
 

@@ -163,6 +163,9 @@ struct RequestRecord {
     ResolvedRequestOptions options;
     // Compiled grammar constraint shared with the Program; null for an unconstrained request.
     std::shared_ptr<const CompiledGrammar> grammar;
+    // True when the compiled grammar carries the reasoning stream (the thinking wrapper): the
+    // mask engages from token 0 and the forced thinking-control span advances the grammar.
+    bool grammar_carries_reasoning = false;
     const OutputConsumerMode consumer_mode;
     const GenerationObservationOptions observation;
     Clock::time_point deadline;

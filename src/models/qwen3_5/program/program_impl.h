@@ -428,9 +428,11 @@ struct RequestControl {
     std::optional<Prefill> prefill;
 
     // Grammar constraint state: the compiled grammar stays alive with the request record, and the
-    // runtime owns the committed grammar state plus row production.
+    // runtime owns the committed grammar state plus row production. `grammar_carries_reasoning`
+    // marks the thinking wrapper (the grammar covers the reasoning stream too).
     std::shared_ptr<const frontend::CompiledGrammar> grammar;
     std::optional<frontend::GrammarRuntime> grammar_runtime;
+    bool grammar_carries_reasoning = false;
     // Mask plan of the round currently pending commit (which columns were masked).
     MaskPlan pending_mask_plan;
 };
@@ -509,7 +511,8 @@ public:
     [[nodiscard]] PrefillProgress advance_prefill(SequenceHandle sequence, MaskPlan mask_plan,
                                                   runtime::ExecutionTiming* failed_timing);
     void set_constraint(std::uint32_t lane,
-                        std::shared_ptr<const frontend::CompiledGrammar> grammar);
+                        std::shared_ptr<const frontend::CompiledGrammar> grammar,
+                        bool carries_reasoning);
     [[nodiscard]] std::span<const TokenId> draft_tokens(SequenceHandle sequence) const;
     [[nodiscard]] CaptureAssessment
     inspect_capture(const CaptureOffer& offer, const SharedPrefixHandle* exact_shared,

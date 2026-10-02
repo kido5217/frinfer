@@ -15,6 +15,7 @@
 #include <stdexcept>
 #include <utility>
 #include <variant>
+#include <vector>
 
 namespace ninfer::models::qwen3_5::detail {
 
@@ -392,6 +393,17 @@ runtime::ExecutionTiming ProgramImpl::append_forced_tokens(
 
             commit_generated_prefix_identity(sequence, base_ledger_frontier, forced,
                                              prefix_execution_splits[row]);
+            if (request.grammar_runtime && request.grammar_carries_reasoning) {
+                // A wrapped grammar covers the forced thinking-control span too (its reasoning
+                // body, the close and format whitespace): advance the grammar state so the next
+                // round's rows start at the answer grammar. All-or-nothing; a rejection is a
+                // fail-closed generation error.
+                const std::vector<std::uint8_t> regions(forced.size(), 0);
+                if (!request.grammar_runtime->commit(forced, regions)) {
+                    throw std::logic_error(
+                        "forced thinking-control span diverged from its grammar");
+                }
+            }
             advance_rebuild_work(sequence, end, prefill_chunk);
             sequence.execution_frontier = end;
             sequence.ledger_frontier    = end + 1U;

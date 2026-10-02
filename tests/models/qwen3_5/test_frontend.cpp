@@ -1866,133 +1866,6 @@ int test_thinking_budget_control(const Frontend& frontend) {
     return failures;
 }
 
-int test_reasoning_regions(const Frontend& frontend) {
-    // The fixture's token 3 is "thought</thi" and token 4 is "nk>\n\nanswer", so a span over {3, 4}
-    // completes the close marker (and its deciding byte) inside token 4: token 3 stays reasoning,
-    // token 4 is the transition/answer column.
-    const std::vector<ninfer::TokenId> close_then_answer{3, 4};
-    const std::vector<ninfer::TokenId> answer_only{4};
-    const std::vector<ninfer::TokenId> none;
-
-    auto session = frontend.make_output_session(thinking_prompt(frontend), {});
-    int failures = 0;
-    auto flags   = session.preview_reasoning_flags(none);
-    failures += check(flags.size() == 1 && flags[0] == 1,
-                      "a fresh thinking session does not start in the reasoning region");
-
-    flags = session.preview_reasoning_flags(close_then_answer);
-    failures += check(flags.size() == 3 && flags[0] == 1 && flags[1] == 0 && flags[2] == 0,
-                      "the reasoning close did not mask the transition and bonus columns");
-
-    // A pending preview owns the core cursor: the query must refuse to clobber it, and after the
-    // commit the committed region must be the answer region.
-    const auto pending = session.preview_model(close_then_answer, 3,
-                                               ninfer::FinishReason::OutputLimit);
-    failures += check(pending.accepted_tokens == close_then_answer.size() && !pending.finished(),
-                      "the region queries changed how the round licensed tokens");
-    bool refused = false;
-    try {
-        (void)session.preview_reasoning_flags(answer_only);
-    } catch (const std::logic_error&) { refused = true; }
-    failures += check(refused, "the region query did not refuse a pending preview");
-    const auto output = session.commit_preview();
-    failures += check(channel_text(output, ninfer::OutputChannel::Reasoning) == "thought" &&
-                          channel_text(output, ninfer::OutputChannel::Content) == "answer",
-                      "the region queries changed the committed channels");
-    flags = session.preview_reasoning_flags(none);
-    failures += check(flags.size() == 1 && flags[0] == 0,
-                      "the committed region did not stay in the answer region after the close");
-    flags = session.preview_reasoning_flags(answer_only);
-    failures += check(flags.size() == 2 && flags[0] == 0 && flags[1] == 0,
-                      "an answer span did not stay in the answer region");
-
-    // A session that never asks still commits the same channels: the query is pure.
-    auto control = frontend.make_output_session(thinking_prompt(frontend), {});
-    (void)control.preview_model(close_then_answer, 3, ninfer::FinishReason::OutputLimit);
-    const auto control_output = control.commit_preview();
-    failures += check(channel_text(control_output, ninfer::OutputChannel::Reasoning) ==
-                              channel_text(output, ninfer::OutputChannel::Reasoning) &&
-                          channel_text(control_output, ninfer::OutputChannel::Content) ==
-                              channel_text(output, ninfer::OutputChannel::Content),
-                      "the region query changed a later commit");
-
-    const auto make_prompt = [&frontend](bool thinking, bool tools) {
-        ninfer::ChatMessage message;
-        message.role = ninfer::ChatRole::User;
-        message.parts.push_back(
-            ninfer::MessagePart{.kind = ninfer::MessagePartKind::Text, .text = "x", .media = {}});
-        ninfer::PromptInput input;
-        input.messages.push_back(std::move(message));
-        input.options.continuation    = ninfer::PromptContinuationMode::NewAssistantTurn;
-        input.options.enable_thinking = thinking;
-        if (tools) {
-            input.options.tool_jsons.push_back(
-                R"({"type":"function","function":{"name":"bash","parameters":{"type":"object","properties":{"command":{"type":"string"}}}}})");
-        }
-        return frontend.prepare(std::move(input));
-    };
-
-    // R4 across rounds: a complete close marker without its deciding byte stays reasoning, and the
-    // next round's deciding byte is the transition/answer column.
-    auto held_session                = frontend.make_output_session(thinking_prompt(frontend), {});
-    std::vector<ninfer::TokenId> held = {3};
-    const std::vector<ninfer::TokenId> marker_tail = fixture_tokenizer().encode("nk>");
-    held.insert(held.end(), marker_tail.begin(), marker_tail.end());
-    auto held_flags = held_session.preview_reasoning_flags(held);
-    failures += check(held_flags.size() == held.size() + 1 &&
-                          std::all_of(held_flags.begin(), held_flags.end(),
-                                      [](std::uint8_t flag) { return flag == 1; }),
-                      "a complete close marker without its deciding byte left the reasoning phase");
-    (void)held_session.preview_model(held, 8, ninfer::FinishReason::OutputLimit);
-    (void)held_session.commit_preview();
-    held_flags = held_session.preview_reasoning_flags({});
-    failures += check(held_flags.size() == 1 && held_flags[0] == 1,
-                      "the held close marker leaked the answer region into the committed state");
-    const std::vector<ninfer::TokenId> decider = fixture_tokenizer().encode("\n");
-    held_flags                                 = held_session.preview_reasoning_flags(decider);
-    failures += check(held_flags.size() == 2 && held_flags[0] == 0 && held_flags[1] == 0,
-                      "the deciding byte did not open the answer region");
-
-    // A prompt that never opens reasoning reports answer columns from the committed state on.
-    auto plain_session = frontend.make_output_session(make_prompt(/*thinking=*/false, false), {});
-    auto plain_flags   = plain_session.preview_reasoning_flags({});
-    failures += check(plain_flags.size() == 1 && plain_flags[0] == 0,
-                      "a session without a reasoning block did not start in the answer region");
-    plain_flags = plain_session.preview_reasoning_flags(close_then_answer);
-    failures += check(std::all_of(plain_flags.begin(), plain_flags.end(),
-                                  [](std::uint8_t flag) { return flag == 0; }),
-                      "a session without a reasoning block reported a reasoning column");
-
-    // With tools enabled a tool-call opener also leaves the reasoning phase (B1), so the flag is a
-    // phase verdict rather than "these bytes are answer text"; a terminal session refuses queries.
-    auto tool_session                             = frontend.make_output_session(
-        make_prompt(/*thinking=*/true, /*tools=*/true), {});
-    std::vector<ninfer::TokenId> opener = fixture_tokenizer().encode("thought ");
-    const std::vector<ninfer::TokenId> tool_open = fixture_tokenizer().encode("<tool_call>");
-    opener.insert(opener.end(), tool_open.begin(), tool_open.end());
-    const auto opener_flags = tool_session.preview_reasoning_flags(opener);
-    bool opener_monotone    = true;
-    for (std::size_t index = 1; index < opener_flags.size(); ++index) {
-        if (opener_flags[index] > opener_flags[index - 1]) { opener_monotone = false; }
-    }
-    failures += check(opener_flags.size() == opener.size() + 1 && opener_flags.front() == 1 &&
-                          opener_flags.back() == 0 && opener_monotone,
-                      "a tool-call opener span did not cross out of the reasoning phase");
-    (void)tool_session.preview_model(opener, 200, ninfer::FinishReason::OutputLimit);
-    (void)tool_session.commit_preview();
-    const auto tool_flags = tool_session.preview_reasoning_flags({});
-    failures += check(tool_flags.size() == 1 && tool_flags[0] == 0,
-                      "an open tool-call region did not leave the reasoning phase");
-    (void)tool_session.preview_terminal(ninfer::FinishReason::Cancelled);
-    (void)tool_session.commit_preview();
-    bool terminal_refused = false;
-    try {
-        (void)tool_session.preview_reasoning_flags({});
-    } catch (const std::logic_error&) { terminal_refused = true; }
-    failures += check(terminal_refused, "a terminal session still reported regions");
-    return failures;
-}
-
 int test_grammar_constraints(const Frontend& frontend) {
     int failures          = 0;
     const auto vocabulary = frontend.grammar_vocabulary();
@@ -2031,6 +1904,72 @@ int test_grammar_constraints(const Frontend& frontend) {
     const auto invalid = frontend.compile_grammar("root ::= [", &error);
     failures += check(invalid == nullptr && !error.empty(),
                       "an invalid grammar compiled without a diagnostic");
+
+    // The thinking wrapper compiles through the frontend seam with the wire-format close marker
+    // (ChatParseWireFormat) and keeps its own cache identity.
+    {
+        const auto bare = frontend.compile_grammar("root ::= \"hello\"");
+        const auto wrapped = frontend.compile_grammar(
+            "root ::= \"hello\"", Frontend::ConstraintScope::Thinking, &error);
+        if (wrapped == nullptr) { std::cerr << "wrapper compile error: " << error << '\n'; }
+        failures += check(wrapped != nullptr, "a thinking-wrapper grammar did not compile");
+        if (wrapped != nullptr && bare != nullptr) {
+            failures += check(wrapped != bare,
+                              "the thinking wrapper reused the answer-only compilation");
+            failures += check(frontend.compile_grammar("root ::= \"hello\"",
+                                                       Frontend::ConstraintScope::Thinking) ==
+                                  wrapped,
+                              "wrapped grammars are not shared by grammar identity");
+            const auto admits = [](fi::GrammarMaskRow row, ninfer::TokenId id) {
+                return (row[static_cast<std::size_t>(id) >> 5U] &
+                        (1U << (static_cast<unsigned>(id) & 31U))) != 0U;
+            };
+            const std::vector<ninfer::TokenId> hello  = fixture_tokenizer().encode("hello");
+            const std::vector<ninfer::TokenId> less   = fixture_tokenizer().encode("<");
+            const std::vector<ninfer::TokenId> closer = fixture_tokenizer().encode("</think>");
+            failures += check(!hello.empty() && !less.empty() && closer.size() == 1,
+                              "the fixture tokenizer did not produce the corner pieces");
+            const auto wrapped_row = wrapped->row_for(wrapped->initial_state());
+            const auto bare_row    = bare->row_for(bare->initial_state());
+            failures += check(!hello.empty() && admits(wrapped_row, hello.front()) &&
+                                  admits(bare_row, hello.front()),
+                              "the wrapper grammars do not admit the shared answer start");
+            failures += check(!less.empty() && !admits(bare_row, less.front()) &&
+                                  admits(wrapped_row, less.front()),
+                              "the wrapper did not admit reasoning bytes the answer-only grammar "
+                              "rejects");
+
+            // Real-tokenization corner: after a trailing `<`, the single `</think>` token is
+            // rejected; a fallback byte resolves the prefix and the close then fires.
+            fi::GrammarState state = wrapped->initial_state();
+            const auto feed        = [&](fi::GrammarState& target, std::string_view text) {
+                for (const ninfer::TokenId id : fixture_tokenizer().encode(text)) {
+                    if (!admits(wrapped->row_for(target), id) || !target.accept(id)) {
+                        return false;
+                    }
+                }
+                return true;
+            };
+            failures +=
+                check(feed(state, "reasoning<"), "the wrapper did not admit reasoning text");
+            failures += check(closer.size() == 1 &&
+                                  !admits(wrapped->row_for(state), closer.front()),
+                              "the close token was admitted mid-prefix");
+            failures += check(feed(state, "x") && feed(state, "</think>") &&
+                                  feed(state, "\n\nhello") && state.can_end(),
+                              "the wrapper did not recover from the mid-prefix corner");
+
+            // Budget-cap interplay: the canonical thinking-control span (guidance text, close,
+            // whitespace) is admissible from a mid-prefix reasoning state and hands off to the
+            // answer grammar.
+            fi::GrammarState controlled = wrapped->initial_state();
+            failures += check(feed(controlled, "reasoning<") && feed(controlled, kThinkingControl),
+                              "the wrapper did not admit the thinking-control span mid-prefix");
+            failures += check(feed(controlled, "hello") && controlled.can_end(),
+                              "the wrapper did not continue into the answer after thinking "
+                              "control");
+        }
+    }
 
     // The cache is weak by contract: once every holder drops its reference, the next compile of
     // the same text is fresh - the row cache is rebuilt rather than retained forever.
@@ -2679,7 +2618,6 @@ int main() {
     failures += test_structured_tool_output();
     failures += test_reasoning_split(frontend);
     failures += test_thinking_budget_control(frontend);
-    failures += test_reasoning_regions(frontend);
     failures += test_grammar_constraints(frontend);
     failures += test_chat_parsing_corpus_sessions(frontend);
     failures += test_utf8_and_hidden_eos(frontend);

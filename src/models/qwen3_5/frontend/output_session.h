@@ -67,18 +67,6 @@ public:
                                                         FinishReason limit_reason);
     [[nodiscard]] std::uint32_t
     model_token_budget_remaining(std::uint32_t total_budget_remaining) const noexcept;
-    // Region verdicts for a tentative generated-token span (the round's drafts), the grammar-mask
-    // region gate: flag j is 1 while the parsing core is still in the reasoning phase after
-    // consuming column j's token bytes and 0 once it has left it. Leaving the phase means the
-    // answer channel opened - or, with tools enabled, a structured tool-call region did, so the
-    // flag is a phase verdict, not "these bytes are answer text", and a producer must not apply an
-    // answer grammar to a tool region. The token that completes the reasoning close is itself a 0
-    // column, so each flag is read after that token's bytes; flags.back() is the region after the
-    // whole span (the bonus column), and a draft-free span reports the committed region alone,
-    // which is what an ordinary decode column uses. Pure over the committed state: it restarts the
-    // parsing core's preview, never commits, and refuses to run while a preview is pending.
-    [[nodiscard]] std::vector<std::uint8_t>
-    preview_reasoning_flags(std::span<const TokenId> tokens);
     [[nodiscard]] std::span<const TokenId> pending_control_tokens() const noexcept;
     [[nodiscard]] runtime::OutputDecision preview_control(std::span<const TokenId> tokens,
                                                           std::uint32_t total_budget_remaining);

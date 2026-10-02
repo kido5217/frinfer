@@ -889,8 +889,11 @@ public:
     [[nodiscard]] bool has_context_transaction() const noexcept;
     // Attaches (or, with a null grammar, clears) the sequence's grammar constraint. Called once
     // when the sequence starts; the Program owns the per-request mask state until the lane is
-    // recycled.
-    void set_constraint(SequenceHandle sequence, std::shared_ptr<const frontend::CompiledGrammar> grammar);
+    // recycled. `carries_reasoning` marks the full-stream thinking wrapper: forced
+    // thinking-control tokens then advance the grammar state as answer tokens.
+    void set_constraint(SequenceHandle sequence,
+                        std::shared_ptr<const frontend::CompiledGrammar> grammar,
+                        bool carries_reasoning);
 
     [[nodiscard]] PrefillProgress
     advance_prefill(SequenceHandle sequence, MaskPlan mask_plan = {},

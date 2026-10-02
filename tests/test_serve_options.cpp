@@ -284,6 +284,38 @@ int main() {
     failures += check(resolve_prompt_semantics(request, configured).preserve_thinking == false,
                       "request preserve-thinking override did not win");
 
+    // Constraint signal: the resolved thinking state rides into Engine options so the Engine can
+    // select the full-stream thinking wrapper for a thinking-on constrained request.
+    request.grammar          = "root ::= \"ok\"";
+    request.constraint_source = ConstraintSource::Grammar;
+    request.enable_thinking.reset();
+    request.reasoning_effort.reset();
+    {
+        const auto off = resolve_prompt_semantics(request, defaults);
+        const ninfer::RequestOptions options = to_request_options(request, defaults, off, true);
+        failures += check(options.constraint && !options.constraint->thinking_enabled,
+                          "a constrained request without an explicit enable did not signal "
+                          "thinking off");
+    }
+    request.enable_thinking = true;
+    {
+        const auto on = resolve_prompt_semantics(request, defaults);
+        const ninfer::RequestOptions options = to_request_options(request, defaults, on, true);
+        failures += check(options.constraint && options.constraint->thinking_enabled,
+                          "an explicitly thinking constrained request did not signal the wrapper");
+    }
+    request.enable_thinking.reset();
+    request.reasoning_effort = RequestedReasoningEffort::Low;
+    {
+        const auto effort = resolve_prompt_semantics(request, defaults);
+        const ninfer::RequestOptions options = to_request_options(request, defaults, effort, true);
+        failures += check(options.constraint && options.constraint->thinking_enabled,
+                          "a constrained reasoning_effort request did not signal the wrapper");
+    }
+    request.reasoning_effort.reset();
+    request.grammar.reset();
+    request.constraint_source = ConstraintSource::None;
+
     failures +=
         check(serve_usage_text("ninfer-yarn-serve").find("--no-prefix-reuse") != std::string::npos,
               "serve help omits --no-prefix-reuse");

@@ -349,8 +349,10 @@ PrefillProgress Program::advance_prefill(SequenceHandle sequence, MaskPlan mask_
 }
 
 void Program::set_constraint(SequenceHandle sequence,
-                             std::shared_ptr<const frontend::CompiledGrammar> grammar) {
-    impl_->set_constraint(detail::RuntimeContractAccess::lane(sequence).value, std::move(grammar));
+                             std::shared_ptr<const frontend::CompiledGrammar> grammar,
+                             bool carries_reasoning) {
+    impl_->set_constraint(detail::RuntimeContractAccess::lane(sequence).value, std::move(grammar),
+                          carries_reasoning);
 }
 
 SpeculativeBackend Program::speculative_backend() const noexcept {

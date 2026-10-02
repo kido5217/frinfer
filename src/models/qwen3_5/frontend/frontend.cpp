@@ -9,6 +9,7 @@
 #include "models/qwen3_5/frontend/processor.h"
 #include "models/qwen3_5/frontend/test_access.h"
 #include "models/qwen3_5/frontend/tokenizer.h"
+#include "models/qwen3_5/frontend/grammar/thinking_wrapper.h"
 #include "models/qwen3_5/frontend/grammar/tokenizer_vocabulary.h"
 #include "models/qwen3_5/frontend/tool_call_parser.h"
 #include "text/unicode.h"
@@ -940,9 +941,24 @@ std::shared_ptr<const frontend::GrammarVocabulary> Frontend::grammar_vocabulary(
     return impl_->grammar_vocabulary;
 }
 
-std::shared_ptr<const frontend::CompiledGrammar> Frontend::compile_grammar(std::string_view gbnf,
-                                                                           std::string* error) const {
+std::shared_ptr<const frontend::CompiledGrammar>
+Frontend::compile_grammar(std::string_view gbnf, std::string* error) const {
+    return compile_grammar(gbnf, ConstraintScope::Answer, error);
+}
+
+std::shared_ptr<const frontend::CompiledGrammar>
+Frontend::compile_grammar(std::string_view gbnf, ConstraintScope scope, std::string* error) const {
     if (error != nullptr) { error->clear(); }
+    std::string wrapped;
+    if (scope == ConstraintScope::Thinking) {
+        const std::string_view close_marker =
+            frontend::ChatParseWireFormat::qwen3_5().thinking_close;
+        const std::optional<std::string> text =
+            frontend::wrap_thinking_constraint_grammar(gbnf, close_marker, error);
+        if (!text) { return nullptr; }
+        wrapped = std::move(*text);
+        gbnf    = wrapped;
+    }
     const std::shared_ptr<const frontend::GrammarVocabulary> vocabulary = grammar_vocabulary();
     const std::string key(gbnf);
     std::lock_guard lock(impl_->grammar_mutex);

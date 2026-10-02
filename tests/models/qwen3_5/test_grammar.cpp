@@ -19,6 +19,7 @@
 
 #include "models/qwen3_5/frontend/grammar/grammar.h"
 #include "models/qwen3_5/frontend/grammar/grammar_runtime.h"
+#include "models/qwen3_5/frontend/grammar/thinking_wrapper.h"
 #include "models/qwen3_5/frontend/grammar/tokenizer_vocabulary.h"
 #include "models/qwen3_5/frontend/tokenizer.h"
 
@@ -36,6 +37,7 @@
 #include <cstdio>
 #include <cstring>
 #include <memory>
+#include <optional>
 #include <random>
 #include <stdexcept>
 #include <string>
@@ -1164,6 +1166,225 @@ void test_lookalike_chain_guard() {
 }
 
 // ---------------------------------------------------------------------------
+// The thinking wrapper (constrained thinking design; ADR 0001)
+// ---------------------------------------------------------------------------
+
+// Builds, compiles and returns a wrapped grammar; `grammar` is null on failure.
+std::optional<std::string>
+wrap_and_compile(std::string_view gbnf, std::string_view close_marker,
+                 const std::shared_ptr<const frontend::GrammarVocabulary>& vocabulary,
+                 std::shared_ptr<const frontend::CompiledGrammar>* grammar) {
+    std::string error;
+    std::optional<std::string> wrapped =
+        frontend::wrap_thinking_constraint_grammar(gbnf, close_marker, &error);
+    check(wrapped.has_value(), "wrapper built", error);
+    if (!wrapped) { return std::nullopt; }
+    *grammar = frontend::CompiledGrammar::compile(*wrapped, vocabulary, &error);
+    check(*grammar != nullptr, "wrapper compiled", error);
+    return wrapped;
+}
+
+void test_thinking_wrapper() {
+    const std::shared_ptr<const SyntheticVocabulary>& vocabulary = standard_vocabulary();
+    constexpr std::string_view kClose                            = "</think>";
+
+    // Construction: the wrapper renames the input root and its references, takes the close
+    // marker as given, and avoids every rule-name prefix that already occurs in the input.
+    {
+        std::string error;
+        const std::string input = "root ::= \"a\"\nref ::= root\ntcw0-body ::= \"q\"\n";
+        const std::optional<std::string> wrapped =
+            frontend::wrap_thinking_constraint_grammar(input, kClose, &error);
+        check(wrapped.has_value(), "wrapper: colliding-prefix grammar wraps", error);
+        if (wrapped) {
+            check(wrapped->find("tcw0-body ::= \"q\"") != std::string::npos,
+                  "wrapper: the input's look-alike rule survives");
+            check(wrapped->find("tcw1-answer ::= \"a\"") != std::string::npos,
+                  "wrapper: the input root is renamed with a free prefix");
+            check(wrapped->find("ref ::= tcw1-answer") != std::string::npos,
+                  "wrapper: root references follow the rename");
+            check(wrapped->find("tcw1-close ::= \"</think>\"") != std::string::npos,
+                  "wrapper: the close rule is the wire marker");
+        }
+    }
+
+    // Token references (`<[id]>`, `<text>`) are operands: the rename leaves their inner text
+    // untouched while a bare `root` rule is still renamed.
+    {
+        std::string error;
+        const std::string input = "root ::= <[42]> <root> <root_x>\nroots ::= \"z\"\n";
+        const std::optional<std::string> wrapped =
+            frontend::wrap_thinking_constraint_grammar(input, kClose, &error);
+        check(wrapped.has_value(), "wrapper: token-reference grammar wraps", error);
+        if (wrapped) {
+            check(wrapped->find("tcw0-answer ::= <[42]> <root> <root_x>") != std::string::npos,
+                  "wrapper: token references are left untouched");
+            check(wrapped->find("roots ::= \"z\"") != std::string::npos,
+                  "wrapper: a rule name that only starts with root is untouched");
+        }
+    }
+
+    // Token references survive the wrap and compile in the answer grammar.
+    {
+        std::shared_ptr<const frontend::CompiledGrammar> grammar;
+        (void)wrap_and_compile("root ::= <[42]>", kClose, vocabulary, &grammar);
+        check(grammar != nullptr, "wrapper: a token-reference answer grammar compiles");
+    }
+
+    // Construction errors.
+    {
+        std::string error;
+        check(!frontend::wrap_thinking_constraint_grammar("root ::= \"a\"", "", &error) &&
+                  !error.empty(),
+              "wrapper: an empty close marker is rejected");
+        error.clear();
+        check(!frontend::wrap_thinking_constraint_grammar("x ::= \"a\"", kClose, &error) &&
+                  error.find("'root'") != std::string::npos,
+              "wrapper: a grammar without a root declaration is rejected", error);
+        error.clear();
+        check(!frontend::wrap_thinking_constraint_grammar("x ::= root", kClose, &error),
+              "wrapper: a referenced but undeclared root is rejected");
+    }
+
+    // Scripted walk: free-form reasoning, forced close, whitespace, then the answer grammar.
+    // Every visited state's row is compared against the independent engine oracle.
+    {
+        std::shared_ptr<const frontend::CompiledGrammar> grammar;
+        const std::optional<std::string> wrapped =
+            wrap_and_compile("root ::= \"ok\"", kClose, vocabulary, &grammar);
+        if (wrapped && grammar) {
+            EngineOracle oracle(*wrapped, *vocabulary);
+            frontend::GrammarState state = grammar->initial_state();
+            const auto verify            = [&](const std::string& where) {
+                const frontend::GrammarMaskRow row = grammar->row_for(state);
+                for (int id = 0; id < vocabulary->token_count(); ++id) {
+                    if (row_bit(row, id) != oracle.token_allowed(id)) {
+                        check(false, "wrapper walk: row matches the oracle " + where);
+                        return;
+                    }
+                }
+            };
+            const auto feed = [&](std::string_view text) {
+                for (const int id : vocabulary->encode(text)) {
+                    const bool accepted = state.accept(id);
+                    check(accepted, "wrapper walk: accepts its scripted text");
+                    if (accepted) {
+                        check(oracle.accept(id), "wrapper walk: oracle advances with the text");
+                    }
+                }
+            };
+            verify("at the initial state");
+            check(state.can_end(), "wrapper walk: EOG is admitted at the empty body");
+            feed("Hello, world! <t </thi");
+            verify("mid-prefix");
+            check(!state.can_end(), "wrapper walk: no EOG mid-prefix");
+            feed("x");
+            verify("after the prefix resolves");
+            check(state.can_end(), "wrapper walk: EOG returns after the prefix resolves");
+            feed(kClose);
+            verify("after the close");
+            check(!state.can_end(), "wrapper walk: no EOG after the close");
+            feed("\n\n");
+            verify("after the whitespace");
+            check(!state.can_end(), "wrapper walk: no EOG before a complete answer");
+            feed("ok");
+            verify("after the answer");
+            check(state.can_end(), "wrapper walk: EOG after a complete answer");
+
+            // A full marker anywhere in the reasoning text closes the stream: the abort path
+            // cannot consume it, so no quoted `</think>` stays reasoning.
+            frontend::GrammarState quoted = grammar->initial_state();
+            check(feed_text(quoted, *grammar, *vocabulary, "he said </think>"),
+                  "wrapper walk: a quoted marker is consumed through the close");
+            check(!quoted.can_end(), "wrapper walk: the quoted marker leaves no abort path");
+        }
+    }
+
+    // Corner probes with a multi-byte close piece: while the body is mid-prefix, a close token
+    // that completes the marker is rejected (the model must resolve the prefix with one byte
+    // first), a longer partial token is admitted, and the close then fires.
+    {
+        std::vector<std::string> pieces;
+        for (int byte = 0; byte < 256; ++byte) {
+            pieces.emplace_back(1, static_cast<char>(byte));
+        }
+        pieces.emplace_back("</think>");
+        pieces.emplace_back("</thin");
+        const int eos = static_cast<int>(pieces.size());
+        pieces.emplace_back("<eos>");
+        const auto corner_vocabulary = std::make_shared<const SyntheticVocabulary>(
+            std::move(pieces), std::vector<int>{eos});
+
+        std::shared_ptr<const frontend::CompiledGrammar> grammar;
+        const std::optional<std::string> wrapped =
+            wrap_and_compile("root ::= \"ok\"", kClose, corner_vocabulary, &grammar);
+        if (wrapped && grammar) {
+            const int close_piece = piece_id(*corner_vocabulary, "</think>");
+            const int thin_piece  = piece_id(*corner_vocabulary, "</thin");
+            frontend::GrammarState state = grammar->initial_state();
+            check(feed_text(state, *grammar, *corner_vocabulary, "reasoning<"),
+                  "wrapper corner: a trailing marker-start byte is body text");
+            const frontend::GrammarMaskRow pending = grammar->row_for(state);
+            check(!row_bit(pending, close_piece),
+                  "wrapper corner: the completing close token is rejected mid-prefix");
+            check(row_bit(pending, thin_piece),
+                  "wrapper corner: a partial close token continues the chain mid-prefix");
+            check(row_bit(pending, piece_id(*corner_vocabulary, "x")) &&
+                      row_bit(pending, piece_id(*corner_vocabulary, ">")),
+                  "wrapper corner: fallback bytes are admitted mid-prefix");
+            check(!state.can_end(), "wrapper corner: no EOG mid-prefix");
+            check(feed_text(state, *grammar, *corner_vocabulary, "x"),
+                  "wrapper corner: a fallback byte resolves the prefix");
+            check(state.can_end(), "wrapper corner: EOG returns after the fallback");
+            check(feed_text(state, *grammar, *corner_vocabulary, kClose),
+                  "wrapper corner: the close fires after the fallback");
+            check(feed_text(state, *grammar, *corner_vocabulary, "\n\nok"),
+                  "wrapper corner: whitespace and the answer complete");
+            check(state.can_end(), "wrapper corner: EOG after the answer");
+        }
+    }
+
+    // Marker shapes: single-byte, two-byte and escape-bearing markers exercise the general
+    // chain and the character-class encoding.
+    for (const std::string& marker : {"#", "<>", "]-", "</think>"}) {
+        std::shared_ptr<const frontend::CompiledGrammar> grammar;
+        const std::optional<std::string> wrapped =
+            wrap_and_compile("root ::= \"ok\"", marker, vocabulary, &grammar);
+        if (!wrapped || !grammar) { continue; }
+        auto state = grammar->initial_state();
+        check(feed_text(state, *grammar, *vocabulary, "reasoning text. "),
+              "wrapper marker " + marker + ": reasoning is free-form");
+        check(state.can_end(), "wrapper marker " + marker + ": EOG during reasoning");
+        check(feed_text(state, *grammar, *vocabulary, marker),
+              "wrapper marker " + marker + ": the close is admitted");
+        check(!state.can_end(), "wrapper marker " + marker + ": no EOG before the answer");
+        check(feed_text(state, *grammar, *vocabulary, "\n") &&
+                  feed_text(state, *grammar, *vocabulary, "ok"),
+              "wrapper marker " + marker + ": whitespace and the answer complete");
+        check(state.can_end(), "wrapper marker " + marker + ": EOG after the answer");
+    }
+
+    // A converted non-object-root schema (array) wraps and answers through the same path.
+    {
+        const std::string schema_gbnf =
+            schema_to_gbnf(R"({"type":"array","items":{"type":"integer"}})");
+        std::shared_ptr<const frontend::CompiledGrammar> grammar;
+        const std::optional<std::string> wrapped =
+            wrap_and_compile(schema_gbnf, kClose, vocabulary, &grammar);
+        if (wrapped && grammar) {
+            auto state = grammar->initial_state();
+            check(feed_text(state, *grammar, *vocabulary, "counting: ") &&
+                      feed_text(state, *grammar, *vocabulary, kClose) &&
+                      feed_text(state, *grammar, *vocabulary, "\n"),
+                  "wrapper array schema: reasoning and close are admitted");
+            check(feed_text(state, *grammar, *vocabulary, "[1,2]"),
+                  "wrapper array schema: an array answer is admitted");
+            check(state.can_end(), "wrapper array schema: EOG after the array");
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Compile and parse error propagation (the serve layer turns these into 400s)
 // ---------------------------------------------------------------------------
 
@@ -1615,6 +1836,7 @@ int main() {
     test_diary_schema();
     test_tokenizer_vocabulary();
     test_grammar_runtime();
+    test_thinking_wrapper();
 
     if (g_failures != 0) {
         std::fprintf(stderr, "%d grammar test failure(s)\n", g_failures);
