@@ -13,7 +13,8 @@ opencode request shapes **and** real opencode agent sessions.
   `docs/research/serve-capabilities.md` @ `research/serve-capabilities`).
   Three runs recorded: `e2e/results/probes-20261003-002025.jsonl` (run 1),
   `probes-20261003-002046.jsonl` (run 2), `probes-20261003-002106.jsonl`
-  (run 3, final — 24/24 pass).
+  (run 3, final — 24/24 pass; file stamps are MSK, the final run is
+  2026-10-02 21:21:06 UTC).
 - Real sessions: `opencode run --standalone --model ai.kido.ws/Qwen3.8-27B#xhigh
   --auto --format json` (opencode v2.0.22, the installed binary), in scratch dirs
   `e2e/sessions/w{1,2,3}/` (task prompts + captured event streams + exit codes).
@@ -21,8 +22,8 @@ opencode request shapes **and** real opencode agent sessions.
   (`requested_reasoning_effort: "xhigh"` in the request log).
 - Request log: `/home/kido/trash/temp/ninfer-yarn-log.jsonl` (schema v22,
   append-only across restarts; `request_id` is per server instance).
-  E2e window: 2026-10-03 00:01:30Z → 00:08:20Z (timestamps 1790976090000–
-  1790976500000 ms). The operator's own opencode session generated concurrent
+  E2e window: 2026-10-02 21:21:30 → 21:28:20 UTC (= 2026-10-03 00:21:30 →
+  00:28:20 MSK; timestamps 1790976090000–1790976500000 ms). The operator's own opencode session generated concurrent
   traffic in the same window; it is classified out by prompt size
   (>100,000 prompt tokens ≈ the operator's ~200K context; e2e sessions were
   ≤29K).
@@ -160,14 +161,14 @@ Task: create six one-word files, then run `wc -w` on each **one at a time**
 
 | Metric | Value |
 |---|---|
-| e2e requests (W1+W2+W3) | 15 |
+| e2e requests (W1: 4 + W2: 1 + W3: 8) | 13 |
 | request errors / client disconnects / engine deaths | 0 / 0 / 0 |
-| parser demotions (`fallback_reason ≠ none`) | 0 (vs 1 `malformed_structure` in the preceding 71 h window) |
+| parser demotions (`fallback_reason ≠ none`) | 0 (vs 2 `malformed_structure` in the 71 h before the window: req 310 at 2026-10-02 09:57Z and req 533 at 2026-10-02 21:07:50Z, 13.5 min before the window — the serve-capabilities doc's 71 h snapshot predates req 533, which is why it recorded 1) |
 | `schema_mismatch_arguments` / `duplicate_arguments_merged` | 0 / 0 |
 | parallel tool-call batches served in one response | 3 (W1 req 628) and 6 (W3 req 641) |
 | `output_limit` finishes | 1 (W2 — the F1 case) |
-| queue wait under a concurrent opencode session | 12–102 ms (p99-class 102 ms on a 199K-prompt step of the operator's own session) |
-| TTFT (15–29K-token prompts) | 0.3–1.5 s |
+| queue wait | e2e requests: 12.4–18.9 ms; the 102 ms point in the window is on the operator's own concurrent 199K-prompt session request (req 634), not on an e2e request |
+| TTFT (15–29K-token prompts) | 0.09–1.44 s (the ~0.09 s values are the warm-prefix W3 sequential steps 643–647; first-step TTFTs are 1.0–1.5 s) |
 
 ## 3. MTP transparency
 
@@ -177,7 +178,8 @@ no client-visible speculative field exists or is needed). The serve log's
 `speculative` counters (per request) show the engine internals:
 `accepted_per_position` decaying across the 4-position draft window (e.g.
 W1 req 627: 282/199/141/101 of 407 rounds), `fallback_steps: 0` everywhere,
-≈2.3–2.6 effective tokens per MTP round on the e2e requests. Nothing in
+2.56–4.36 effective tokens per MTP round across the e2e requests (W2's
+32,768-token turn: 32768/12813 = 2.56). Nothing in
 opencode's stream contract is affected; no probe or session showed a
 difference attributable to MTP.
 
@@ -185,7 +187,7 @@ difference attributable to MTP.
 
 | Failure shape | E2e evidence | Status |
 |---|---|---|
-| Parser demotion → silent stall | 0 observed in the e2e window (1 in the prior 71 h window) | **open risk** — still the only client-invisible failure mode; F1 (zero-visible `length`) is its benign cousin |
+| Parser demotion → silent stall | 0 observed in the e2e window (2 in the 71 h before the window: req 310, req 533) | **open risk** — still the only client-invisible failure mode; F1 (zero-visible `length`) is its benign cousin |
 | `length` truncation | 1 (W2: the full 32768 bound consumed by reasoning) | handled per contract; operational gap recorded as F1 |
 | Context overflow 400 | P16: exact code + message at submit, no GPU work | classified `context-overflow` (fatal step) by opencode; unreachable in practice (client fits to the same 446902 window) |
 | Engine death mid-stream | 0 observed (not inducible safely) | code-cited: in-band SSE error, no `[DONE]` → opencode retryable dead-stream + continuation |
@@ -204,9 +206,10 @@ difference attributable to MTP.
   (b) the demotion class persists at low frequency with no client-visible
   signal; (c) model coverage (single architecture family, single model id) —
   structural, outside this ticket's evidence scope.
-- **Performance envelope (this window, 446902 context, MTP4):** TTFT 0.3–1.5 s
-  at 15–29K-token prompts; ≈146 tok/s sustained decode over a 32,768-token
-  turn; queue waits in the low tens of ms under a concurrent session.
+- **Performance envelope (this window, 446902 context, MTP4):** TTFT 0.09–1.44 s
+  at 15–29K-token prompts (first steps 1.0–1.5 s, warm-prefix steps ~0.09 s);
+  ≈146 tok/s sustained decode over a 32,768-token turn; e2e queue waits
+  12.4–18.9 ms with a concurrent session in flight.
 
 ## Verification notes
 
