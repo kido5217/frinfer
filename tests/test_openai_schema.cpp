@@ -509,6 +509,126 @@ int test_constrained_decoding_extensions() {
     return failures;
 }
 
+int test_constrained_thinking_default() {
+    int failures = 0;
+
+    // A constraining request without an explicit thinking field resolves thinking off: the
+    // constrained default replaces both the server and the template defaults (issue #86).
+    const std::vector<std::pair<const char*, Json>> constraints = {
+        {"grammar", Json("root ::= \"yes\" | \"no\"")},
+        {"response_format", Json{{"type", "json_object"}}},
+        {"response_format",
+         Json{{"type", "json_schema"}, {"json_schema", Json{{"type", "object"}}}}},
+    };
+    for (const auto& [field, value] : constraints) {
+        Json body                   = base_request();
+        body[field]                 = value;
+        const OpenAIChatRequest parsed = parse(body);
+        failures += check(parsed.generation.constraint_source != ConstraintSource::None,
+                          std::string("the constraining request carries a constraint: ") + field);
+        failures += check(semantics(parsed.generation).enable_thinking == false,
+                          "a constraining request without a thinking field resolves thinking off: " +
+                              std::string(field));
+    }
+
+    // An explicit enable overrides the constrained default: thinking runs and the constraint
+    // stays on the request options (the v1 answer-region contract).
+    Json enabled_body               = base_request();
+    enabled_body["grammar"]         = "root ::= \"yes\" | \"no\"";
+    enabled_body["enable_thinking"] = true;
+    const OpenAIChatRequest enabled = parse(enabled_body);
+    failures += check(semantics(enabled.generation).enable_thinking == true,
+                      "an explicit enable_thinking overrides the constrained default");
+    failures += check(options(enabled.generation).constraint.has_value(),
+                      "the constraint stays on the request options when thinking is enabled");
+
+    // Every non-none effort value counts as an explicit enable (the rule keys on presence,
+    // not on a specific level).
+    const std::vector<const char*> efforts = {"minimal", "low", "medium", "high", "xhigh", "max"};
+    for (const char* effort : efforts) {
+        Json effort_body                = base_request();
+        effort_body["grammar"]          = "root ::= \"yes\" | \"no\"";
+        effort_body["reasoning_effort"] = effort;
+        failures += check(semantics(parse(effort_body).generation).enable_thinking == true,
+                          "a non-none reasoning_effort overrides the constrained default: " +
+                              std::string(effort));
+    }
+    Json effort_object_body               = base_request();
+    effort_object_body["response_format"] = Json{{"type", "json_object"}};
+    effort_object_body["reasoning_effort"] = "max";
+    failures +=
+        check(semantics(parse(effort_object_body).generation).enable_thinking == true,
+              "a non-none reasoning_effort overrides the constrained default on json_object");
+
+    // Conflict handling is unchanged for constraining requests: the throw precedes the rule,
+    // so a conflicting explicit enable and none-effort is rejected, not defaulted.
+    Json conflict_body                = base_request();
+    conflict_body["grammar"]          = "root ::= \"yes\" | \"no\"";
+    conflict_body["enable_thinking"]  = true;
+    conflict_body["reasoning_effort"] = "none";
+    const ApiError conflict = api_error([&] { (void)semantics(parse(conflict_body).generation); });
+    failures += check(conflict.code == "conflicting_template_option" &&
+                         conflict.param == "reasoning_effort",
+                      "a constraining request with conflicting thinking fields still raises "
+                      "conflicting_template_option");
+
+    // Explicit disables stay off without error (same outcome as the constrained default).
+    Json off_body               = base_request();
+    off_body["grammar"]         = "root ::= \"yes\" | \"no\"";
+    off_body["enable_thinking"] = false;
+    failures += check(semantics(parse(off_body).generation).enable_thinking == false,
+                      "an explicit enable_thinking false stays off");
+
+    Json none_body                = base_request();
+    none_body["grammar"]          = "root ::= \"yes\" | \"no\"";
+    none_body["reasoning_effort"] = "none";
+    failures += check(semantics(parse(none_body).generation).enable_thinking == false,
+                      "an explicit reasoning_effort none stays off");
+
+    // Unconstrained requests keep the existing resolution order: request field, then the
+    // server default, then the template default (unspecified stays unspecified here).
+    const OpenAIChatRequest plain = parse(base_request());
+    failures += check(!semantics(plain.generation).enable_thinking.has_value(),
+                      "an unconstrained request without a thinking field stays unspecified");
+    Json plain_enabled_body = base_request();
+    plain_enabled_body["enable_thinking"] = true;
+    failures += check(semantics(parse(plain_enabled_body).generation).enable_thinking == true,
+                      "an unconstrained request with an explicit enable stays on");
+
+    ServeOptions no_thinking_server;
+    no_thinking_server.enable_thinking = false;
+    failures +=
+        check(resolve_prompt_semantics(plain.generation, no_thinking_server).enable_thinking ==
+                  false,
+              "an unconstrained request honors the --no-thinking server default");
+
+    // --no-thinking and the constrained default agree: off either way, no error.
+    Json constrained_body         = base_request();
+    constrained_body["grammar"]   = "root ::= \"yes\" | \"no\"";
+    const OpenAIChatRequest constrained = parse(constrained_body);
+    failures += check(
+        resolve_prompt_semantics(constrained.generation, no_thinking_server).enable_thinking ==
+            false,
+        "--no-thinking and the constrained default agree");
+
+    // The --default-thinking-budget cap follows the effective thinking state: a defaulted-off
+    // constrained request receives no cap; an explicitly enabled one inherits the server cap.
+    ServeOptions budget_server;
+    budget_server.default_thinking_budget = 512;
+    failures += check(
+        !to_request_options(constrained.generation, budget_server,
+                            resolve_prompt_semantics(constrained.generation, budget_server), true)
+             .execution.thinking.budget.has_value(),
+        "a defaulted-off constrained request receives no thinking cap");
+    failures += check(
+        to_request_options(enabled.generation, budget_server,
+                           resolve_prompt_semantics(enabled.generation, budget_server), true)
+            .execution.thinking.budget == 512,
+        "an explicitly enabled constrained request inherits the server cap");
+
+    return failures;
+}
+
 Json function_tool(std::string name = "weather", bool strict = false) {
     return Json{{"type", "function"},
                 {"function", Json{{"name", std::move(name)},
@@ -1074,6 +1194,7 @@ int main() {
     failures += test_request_envelope_and_sampling();
     failures += test_standard_field_policy();
     failures += test_constrained_decoding_extensions();
+    failures += test_constrained_thinking_default();
     failures += test_tools();
     failures += test_messages_and_media();
     failures += test_reasoning_and_extensions();
