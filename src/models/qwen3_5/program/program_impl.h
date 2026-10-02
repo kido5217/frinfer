@@ -7,7 +7,6 @@
 #include "ninfer/ops/gdn_replay.h"
 #include "ninfer/ops/sampling.h"
 #include "core/decode_graph.h"
-#include "models/qwen3_5/frontend/grammar/grammar_runtime.h"
 #include "models/qwen3_5/frontend/prepared_prompt.h"
 
 #include "models/qwen3_5/program/planning/startup.h"
@@ -16,6 +15,7 @@
 #include "models/qwen3_5/program/storage/kv_store.h"
 #include "models/qwen3_5/program/storage/state_store.h"
 #include "models/qwen3_5/program/prefix_identity.h"
+#include "models/qwen3_5/program/constraint_state.h"
 #include "models/qwen3_5/program/mask_transport.h"
 #include "models/qwen3_5/program/planning/resource_projection.h"
 #include "models/qwen3_5/execution/text.h"
@@ -428,14 +428,9 @@ struct RequestControl {
 
     std::optional<Prefill> prefill;
 
-    // Grammar constraint state: the compiled grammar stays alive with the request record, and the
-    // runtime owns the committed grammar state plus row production. `grammar_carries_reasoning`
-    // marks the thinking wrapper (the grammar covers the reasoning stream too).
-    std::shared_ptr<const frontend::CompiledGrammar> grammar;
-    std::optional<frontend::GrammarRuntime> grammar_runtime;
-    bool grammar_carries_reasoning = false;
-    // Mask plan of the round currently pending commit (which columns were masked).
-    MaskPlan pending_mask_plan;
+    // Grammar constraint state: the compiled grammar, its committed runtime and the round's mask
+    // plan live behind one owner (constraint_state.h).
+    ConstraintState constraint;
 };
 
 class ProgramImpl {
@@ -509,12 +504,11 @@ public:
     progress_context_transaction(runtime::CancellationFlagView cancellation);
     void finalize_context_transaction() noexcept;
     [[nodiscard]] bool has_context_transaction() const noexcept;
-    [[nodiscard]] PrefillProgress advance_prefill(SequenceHandle sequence, MaskPlan mask_plan,
+    [[nodiscard]] PrefillProgress advance_prefill(SequenceHandle sequence,
                                                   runtime::ExecutionTiming* failed_timing);
     void set_constraint(std::uint32_t lane,
                         std::shared_ptr<const frontend::CompiledGrammar> grammar,
                         bool carries_reasoning);
-    [[nodiscard]] std::span<const TokenId> draft_tokens(SequenceHandle sequence) const;
     [[nodiscard]] CaptureAssessment
     inspect_capture(const CaptureOffer& offer, const SharedPrefixHandle* exact_shared,
                     const SharedPrefixHandle* replacement,
@@ -542,7 +536,6 @@ public:
         CapturePressureCandidate&& pressure, runtime::CancellationFlagView cancellation);
     [[nodiscard]] PendingBatch decode(std::span<const SequenceHandle> sequences,
                                       std::span<const runtime::RoundBudget> budgets,
-                                      std::span<const MaskPlan> mask_plans,
                                       runtime::ExecutionTiming* failed_timing);
     [[nodiscard]] runtime::ExecutionTiming
     append_forced_tokens(std::span<const SequenceHandle> sequences,
@@ -1092,12 +1085,11 @@ private:
     [[nodiscard]] PendingBatch wrap_pending(std::span<const std::uint32_t> lanes,
                                             const runtime::BatchedGeneratedRound& round);
     void invalidate_lane(std::uint32_t lane) noexcept;
-    // Grammar mask rows: refresh the round's rows (all-ones for unconstrained columns) and upload
-    // them together with the device active flag. No-op on programs without mask regions.
-    void refresh_mask_rows(std::span<const std::uint32_t> lanes, std::span<const MaskPlan> plans);
+    // Grammar mask rows: plan and fill the round's rows (all-ones for unconstrained columns) and
+    // upload them together with the device active flag. No-op on programs without mask regions.
+    void refresh_mask_rows(std::span<const std::uint32_t> lanes);
     // Prefill samples read mask row 0 (one request per prefill step).
-    void refresh_prefill_mask_row(std::uint32_t lane, MaskPlan plan);
-    void clear_constraint(RequestControl& request) noexcept;
+    void refresh_prefill_mask_row(std::uint32_t lane);
     void advance_grammar_state(std::span<const std::uint32_t> bases,
                                std::span<const std::uint32_t> lanes,
                                std::span<const runtime::CommitDecision> decisions,

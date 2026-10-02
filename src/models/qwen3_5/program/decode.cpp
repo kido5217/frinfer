@@ -860,24 +860,17 @@ runtime::ExecutionTiming ProgramImpl::resolve_non_speculative_pending(
     return timing.finish();
 }
 
-
-void ProgramImpl::refresh_mask_rows(std::span<const std::uint32_t> lanes,
-                                    std::span<const MaskPlan> plans) {
+void ProgramImpl::refresh_mask_rows(std::span<const std::uint32_t> lanes) {
     if (!mask_transport_.enabled()) { return; }
-    const std::size_t row_count = std::min(lanes.size(), plans.size());
-    bool any_masked             = false;
-    std::uint32_t columns_used  = 1;
-    for (std::size_t row = 0; row < lanes.size(); ++row) {
-        RequestControl& request = requests[lanes[row]];
-        MaskPlan plan           = row < plans.size() ? plans[row] : MaskPlan{};
-        if (!request.grammar_runtime || plan.column_count == 0 ||
-            plan.column_count > MaskTransport::kColumnCapacity) {
-            plan = MaskPlan{};
-        }
-        request.pending_mask_plan = plan;
-        if (plan.column_count != 0) {
-            any_masked   = true;
-            columns_used = std::max<std::uint32_t>(columns_used, plan.column_count);
+    bool any_masked            = false;
+    std::uint32_t columns_used = 1;
+    for (const std::uint32_t lane : lanes) {
+        const SequenceState& sequence = active_sequence(lane);
+        const std::span<const TokenId> drafts(sequence.mtp_drafts.data(), sequence.mtp_draft_count);
+        if (requests[lane].constraint.plan_round(drafts) != 0) {
+            any_masked = true;
+            columns_used =
+                std::max<std::uint32_t>(columns_used, requests[lane].constraint.planned_columns());
         }
     }
     if (!any_masked) {
@@ -887,38 +880,25 @@ void ProgramImpl::refresh_mask_rows(std::span<const std::uint32_t> lanes,
         return;
     }
     // Every row of the round is rewritten - masked columns from the grammar, everything else
-    // all-ones - so a row left masked by an earlier round can never leak into this one. The
-    // grammar fills a contiguous [columns x words] block; the transport scatters it into the
-    // column-major row table and uploads one block per column.
-    mask_transport_.begin_round(columns_used, row_count);
-    for (std::size_t row = 0; row < row_count; ++row) {
-        const MaskPlan plan = requests[lanes[row]].pending_mask_plan;
-        if (plan.column_count == 0) { continue; }
-        std::array<int, MaskTransport::kColumnCapacity> tokens{};
-        tokens.fill(frontend::kUnknownConstraintToken);
-        for (std::uint32_t index = 0; index + 1 < plan.column_count; ++index) {
-            tokens[index] = active_sequence(lanes[row]).mtp_drafts[index];
-        }
-        const std::span<const int> column_tokens(tokens.data(), plan.column_count);
-        std::span<std::uint32_t> filled = mask_transport_.fill_block(plan.column_count);
-        requests[lanes[row]].grammar_runtime->fill_round_rows(column_tokens, filled,
-                                                              mask_transport_.words());
-        mask_transport_.publish(static_cast<std::uint32_t>(row), plan.column_count);
+    // all-ones - so a row left masked by an earlier round can never leak into this one. Each
+    // constrained lane fills its planned block; the transport scatters it into the column-major
+    // row table and uploads one block per column.
+    mask_transport_.begin_round(columns_used, lanes.size());
+    for (std::size_t row = 0; row < lanes.size(); ++row) {
+        const SequenceState& sequence = active_sequence(lanes[row]);
+        const std::span<const TokenId> drafts(sequence.mtp_drafts.data(), sequence.mtp_draft_count);
+        requests[lanes[row]].constraint.fill_row(drafts, static_cast<std::uint32_t>(row),
+                                                 mask_transport_);
     }
-    mask_transport_.upload(columns_used, row_count);
+    mask_transport_.upload(columns_used, lanes.size());
 }
 
-void ProgramImpl::refresh_prefill_mask_row(std::uint32_t lane, MaskPlan plan) {
+void ProgramImpl::refresh_prefill_mask_row(std::uint32_t lane) {
     if (!mask_transport_.enabled()) { return; }
     RequestControl& request = requests[lane];
-    if (!request.grammar_runtime || plan.column_count > 1) { plan = MaskPlan{}; }
-    request.pending_mask_plan = plan;
-    if (plan.column_count != 0) {
+    if (request.constraint.plan_round({}) != 0) {
         // A prefill step samples one row from the shared step logits, so its row is table row 0.
-        std::array<int, 1> tokens{frontend::kUnknownConstraintToken};
-        std::span<std::uint32_t> filled = mask_transport_.fill_block(1);
-        request.grammar_runtime->fill_round_rows(tokens, filled, mask_transport_.words());
-        mask_transport_.publish(0, 1);
+        request.constraint.fill_row({}, 0, mask_transport_);
         mask_transport_.upload(1, 1);
         return;
     }
