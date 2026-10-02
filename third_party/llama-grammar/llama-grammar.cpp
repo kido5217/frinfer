@@ -717,7 +717,8 @@ bool llama_grammar_parser::parse(const char * src) {
             }
         }
     } catch (const std::exception & err) {
-        fprintf(stderr, "%s: error parsing grammar: %s\n\n%s\n", __func__, err.what(), src);
+        // NInfer adaptation (see README.ninfer.md, patch 0003): the diagnostic is exposed
+        // through last_error; never write the client-supplied grammar to stderr.
         last_error = err.what();
         rules.clear();
         return false;
