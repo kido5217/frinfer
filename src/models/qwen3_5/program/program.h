@@ -835,13 +835,12 @@ struct ReleaseResult {
     runtime::ConsumeStatus status = runtime::ConsumeStatus::InvariantMismatch;
 };
 
-// One decode row's grammar-mask plan. `column_count` is the number of decode columns the row
-// carries (0 leaves the row unconstrained); bit j of `reasoning_mask` marks column j as still
-// unconstrained because the parsing core is in its reasoning region there. Column j of the mask
-// table mirrors column j of the target logits, so the plan follows the batch layout.
+// One decode row's grammar-mask plan: the number of masked decode columns the row carries
+// (0 leaves the row unconstrained). Every masked column is an answer column - the thinking
+// wrapper admits the reasoning bytes itself - and column j of the mask table mirrors column j of
+// the target logits, so the plan follows the batch layout.
 struct MaskPlan {
-    std::uint8_t column_count   = 0;
-    std::uint8_t reasoning_mask = 0;
+    std::uint8_t column_count = 0;
 };
 
 class Program {

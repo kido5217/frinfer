@@ -19,18 +19,11 @@ constraint_carries_reasoning(const std::optional<GrammarConstraint>& constraint,
 }
 
 // Mask engagement for a constrained request: the grammar governs every column from token 0, so
-// each column is an answer column (region 0) - the thinking wrapper admits the reasoning bytes
-// itself, and an answer-only grammar is already at its answer position. `columns` is one for a
-// prefill step, and the draft span plus the bonus column for a decode round. The phase-dependent
-// deferral no longer exists for constrained requests.
-struct ConstraintMaskEngagement {
-    std::uint8_t column_count   = 0;
-    std::uint8_t reasoning_mask = 0;
-};
-
-[[nodiscard]] constexpr ConstraintMaskEngagement
-constraint_mask_engagement(std::size_t columns) noexcept {
-    return ConstraintMaskEngagement{static_cast<std::uint8_t>(columns), 0};
+// each column is an answer column - the thinking wrapper admits the reasoning bytes itself, and
+// an answer-only grammar is already at its answer position. `columns` is one for a prefill step,
+// and the draft span plus the bonus column for a decode round.
+[[nodiscard]] constexpr std::uint8_t constraint_mask_engagement(std::size_t columns) noexcept {
+    return static_cast<std::uint8_t>(columns);
 }
 
 } // namespace ninfer::runtime

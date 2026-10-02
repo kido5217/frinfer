@@ -398,8 +398,7 @@ runtime::ExecutionTiming ProgramImpl::append_forced_tokens(
                 // body, the close and format whitespace): advance the grammar state so the next
                 // round's rows start at the answer grammar. All-or-nothing; a rejection is a
                 // fail-closed generation error.
-                const std::vector<std::uint8_t> regions(forced.size(), 0);
-                if (!request.grammar_runtime->commit(forced, regions)) {
+                if (!request.grammar_runtime->commit(forced)) {
                     throw std::logic_error(
                         "forced thinking-control span diverged from its grammar");
                 }
@@ -439,10 +438,8 @@ void ProgramImpl::advance_grammar_state(std::span<const std::uint32_t> bases,
     for (std::size_t row = 0; row < lanes.size(); ++row) {
         RequestControl& request = requests[lanes[row]];
         const MaskPlan plan = request.pending_mask_plan;
-        if (!request.grammar_runtime || plan.column_count == 0 ||
-            ((plan.reasoning_mask & static_cast<std::uint8_t>((1U << plan.column_count) - 1U)) ==
-             static_cast<std::uint8_t>((1U << plan.column_count) - 1U)) ||
-            decisions[row].cancelled || accepted[row] == 0) {
+        if (!request.grammar_runtime || plan.column_count == 0 || decisions[row].cancelled ||
+            accepted[row] == 0) {
             continue;
         }
         const SequenceState& sequence = active_sequence(lanes[row]);
@@ -451,18 +448,10 @@ void ProgramImpl::advance_grammar_state(std::span<const std::uint32_t> bases,
             throw std::logic_error("constrained round produced an invalid accepted span");
         }
         std::array<int, kMaximumConcurrency> tokens{};
-        std::array<std::uint8_t, kMaximumConcurrency> regions{};
         for (std::uint32_t index = 0; index < accepted[row]; ++index) {
             tokens[index] = sequence.ledger[bases[row] + index];
-            // The plan marks each column's region; a column past the plan is answer-region data.
-            regions[index] = index < request.pending_mask_plan.column_count
-                                 ? static_cast<std::uint8_t>(
-                                       (request.pending_mask_plan.reasoning_mask >> index) & 1U)
-                                 : 0;
         }
-        if (!request.grammar_runtime->commit(
-                std::span<const int>(tokens.data(), accepted[row]),
-                std::span<const std::uint8_t>(regions.data(), accepted[row]))) {
+        if (!request.grammar_runtime->commit(std::span<const int>(tokens.data(), accepted[row]))) {
             throw std::logic_error("constrained generation diverged from its grammar");
         }
     }

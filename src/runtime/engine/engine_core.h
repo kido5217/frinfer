@@ -1432,11 +1432,7 @@ private:
         setup.finish();
         ProgramCallScope program_call(*this);
         MaskPlan plan{};
-        if (request->grammar) {
-            const ConstraintMaskEngagement engagement = constraint_mask_engagement(1);
-            plan.column_count                         = engagement.column_count;
-            plan.reasoning_mask                       = engagement.reasoning_mask;
-        }
+        if (request->grammar) { plan.column_count = constraint_mask_engagement(1); }
         auto progress = instance_.program->advance_prefill(*request->sequence, plan,
                                                            &program_call.failed_timing());
         program_call.finish(progress.timing);
@@ -1860,14 +1856,10 @@ private:
             if (record == nullptr || !record->grammar) { continue; }
             // A constrained request's grammar governs every column of the round from token 0
             // (reasoning stream included under the thinking wrapper), and the round's columns
-            // are the draft span plus the bonus column. No region preview is consulted: the
-            // phase-dependent deferral no longer applies to constrained requests.
+            // are the draft span plus the bonus column.
             const std::span<const TokenId> drafts =
                 instance_.program->draft_tokens(*record->sequence);
-            const ConstraintMaskEngagement engagement =
-                constraint_mask_engagement(drafts.size() + 1U);
-            plans[row].column_count   = engagement.column_count;
-            plans[row].reasoning_mask = engagement.reasoning_mask;
+            plans[row].column_count = constraint_mask_engagement(drafts.size() + 1U);
         }
         auto pending = instance_.program->decode(
             membership.sequence_span(), membership.budget_span(),
