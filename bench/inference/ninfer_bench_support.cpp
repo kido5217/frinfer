@@ -288,6 +288,9 @@ std::string usage_text(std::string_view program) {
         << "Options:\n"
         << "  --weights <path>            required .ninfer artifact\n"
         << "  --corpus <path>             token-id corpus (default: " << kDefaultCorpusPath << ")\n"
+        << "  --grammar <path>            constrain every request with a GBNF root rule (default:\n"
+        << "                              none; the constrained mode is documented in "
+           "bench/README.md)\n"
         << "  -p, --n-prompt <list>       pp lengths, for example 512,2048\n"
         << "  -n, --n-gen <list>          tg lengths, for example 128\n"
         << "  -pg, --prompt-gen <P,G;..>  combined pp+tg tests\n"
@@ -334,6 +337,8 @@ BenchOptions parse_args(int argc, char** argv) {
             saw_artifact          = true;
         } else if (arg == "--corpus") {
             options.corpus_path = value("--corpus");
+        } else if (arg == "--grammar") {
+            options.grammar_path = value("--grammar");
         } else if (arg == "-p" || arg == "--n-prompt") {
             auto parsed = parse_int_list(value("--n-prompt"), "n-prompt");
             options.n_prompt.insert(options.n_prompt.end(), parsed.begin(), parsed.end());
@@ -387,6 +392,10 @@ BenchOptions parse_args(int argc, char** argv) {
         throw std::invalid_argument("--prefill-chunk must be a multiple of 128");
     }
     product::validate_speculative_cli_options(options.speculative);
+    if (!options.grammar_path.empty() && options.speculative.backend != SpeculativeBackend::None &&
+        options.speculative.backend != SpeculativeBackend::Mtp) {
+        throw std::invalid_argument("--grammar supports the ordinary and MTP backends only");
+    }
     return options;
 }
 
@@ -594,6 +603,8 @@ std::string format_table(const BenchEnvironment& env, const std::vector<TestResu
         << format_bytes(env.memory.cuda_graph_allowance_bytes) << ", KV payload "
         << format_bytes(env.memory.kv_payload_bytes) << '\n'
         << "  corpus:     " << env.corpus_path << " (" << env.corpus_tokens << " tokens)\n"
+        << "  grammar:    "
+        << (env.grammar_path.empty() ? "(none)" : env.grammar_path) << '\n'
         << "  config:     max_context=" << env.max_context << " prefill_chunk=" << env.prefill_chunk
         << " kv_cache=" << kv_cache_name(env.kv_cache)
         << " spec=" << product::speculative_backend_name(env.speculative.backend)
@@ -727,7 +738,8 @@ std::string format_json(const BenchEnvironment& env, const std::string& command,
         << "    \"repetitions\": " << env.repetitions << ",\n"
         << "    \"warmup\": " << env.warmup << ",\n"
         << "    \"corpus_path\": \"" << json_escape(env.corpus_path) << "\",\n"
-        << "    \"corpus_tokens\": " << env.corpus_tokens << "\n"
+        << "    \"corpus_tokens\": " << env.corpus_tokens << ",\n"
+        << "    \"grammar_path\": \"" << json_escape(env.grammar_path) << "\"\n"
         << "  },\n"
         << "  \"tests\": [\n";
 
@@ -793,8 +805,8 @@ std::string csv_field(std::string_view value) {
 
 std::string format_csv(const BenchEnvironment& env, const std::vector<TestResult>& results) {
     std::ostringstream out;
-    out << "label,kind,n_prompt,n_gen,architecture,prefill_signature,model_name,artifact_path,max_"
-           "context,prefill_chunk,"
+    out << "label,kind,n_prompt,n_gen,architecture,prefill_signature,model_name,artifact_path,"
+           "grammar_path,max_context,prefill_chunk,"
            "speculative_"
            "backend,draft_tokens,"
            "proposal_head,decode_path,kv_cache,kv_payload_bytes,load_host_to_device_bytes,"
@@ -821,7 +833,8 @@ std::string format_csv(const BenchEnvironment& env, const std::vector<TestResult
         out << result.test.label << ',' << kind_string(result.test.kind) << ','
             << result.test.n_prompt << ',' << result.test.n_gen << ',' << env.load.architecture
             << ',' << env.load.prefill_signature << ',' << csv_field(env.load.model_name) << ','
-            << csv_field(env.artifact_path) << ',' << env.max_context << ',' << env.prefill_chunk
+            << csv_field(env.artifact_path) << ',' << csv_field(env.grammar_path) << ','
+            << env.max_context << ',' << env.prefill_chunk
             << ',' << product::speculative_backend_name(env.speculative.backend) << ','
             << env.speculative.draft_tokens << ','
             << proposal_head_name(env.speculative.proposal_head) << ','

@@ -71,6 +71,8 @@ int test_cli_contract() {
         "64",
         "-pg",
         "2048,128",
+        "--grammar",
+        "forced_line.gbnf",
         "-r",
         "3",
         "--warmup",
@@ -97,6 +99,7 @@ int test_cli_contract() {
     });
 
     failures += expect_string(parsed.artifact_path, "model.ninfer", "artifact path");
+    failures += expect_string(parsed.grammar_path, "forced_line.gbnf", "grammar path");
     failures += expect(parsed.n_prompt == std::vector<int>({128, 512}), "prompt list");
     failures += expect(parsed.n_gen == std::vector<int>({64}), "generation list");
     failures += expect(parsed.prompt_gen == std::vector<std::pair<int, int>>({{2048, 128}}),
@@ -134,10 +137,19 @@ int test_cli_contract() {
                "default pp/tg matrix");
     failures += expect(qb::usage_text("ninfer_bench").find("artifact.ninfer") != std::string::npos,
                        "help names native artifact");
+    failures +=
+        expect(qb::usage_text("ninfer_bench").find("--grammar") != std::string::npos,
+               "help names the grammar flag");
     failures += expect(parse_for_test({"ninfer_bench", "--help"}).help_requested, "help flag");
 
     failures += expect_throws<std::invalid_argument>([] { (void)parse_for_test({"ninfer_bench"}); },
                                                      "missing artifact");
+    failures += expect_throws<std::invalid_argument>(
+        [] {
+            (void)parse_for_test(
+                {"ninfer_bench", "--weights", "model.ninfer", "--grammar"});
+        },
+        "missing grammar value");
     failures += expect_throws<std::invalid_argument>(
         [] {
             (void)parse_for_test({"ninfer_bench", "--weights", "model.ninfer", "--lm-head-draft"});
@@ -155,6 +167,12 @@ int test_cli_contract() {
                 {"ninfer_bench", "--weights", "model.ninfer", "--prefill-chunk", "129"});
         },
         "misaligned prefill chunk");
+    failures += expect_throws<std::invalid_argument>(
+        [] {
+            (void)parse_for_test({"ninfer_bench", "--weights", "model.ninfer", "--grammar",
+                                  "g.gbnf", "--spec", "dflash2", "--draft-tokens", "4"});
+        },
+        "grammar with a DFlash backend");
     const qb::BenchOptions fp8 =
         parse_for_test({"ninfer_bench", "--weights", "model.ninfer", "--kv-dtype", "fp8"});
     failures += expect(fp8.kv_cache == ninfer::KvCacheStorage::Fp8E4M3Row256, "FP8 KV");
@@ -309,6 +327,7 @@ qb::BenchEnvironment sample_environment() {
     env.warmup                            = 1;
     env.corpus_path                       = "bench/fixtures/bench_corpus.ids";
     env.corpus_tokens                     = 65536;
+    env.grammar_path                      = "bench/fixtures/grammar/forced_line_2048.gbnf";
     return env;
 }
 
@@ -324,7 +343,7 @@ int test_report_contract() {
         return fail(std::string("invalid benchmark JSON: ") + error.what());
     }
 
-    failures += expect(report.at("schema_version") == 15, "report schema v15");
+    failures += expect(report.at("schema_version") == 16, "report schema v16");
     failures += expect(report.at("config").at("speculative_backend") == "mtp" &&
                            report.at("config").at("draft_tokens") == 5,
                        "report identifies its backend and window");
@@ -348,6 +367,10 @@ int test_report_contract() {
                        "CUDA Graph allowance");
     failures += expect(report.at("memory").at("kv_payload_bytes") == 123456ULL, "KV payload");
     failures += expect(report.at("config").at("proposal_head") == "optimized", "proposal head");
+    failures +=
+        expect(report.at("config").at("grammar_path") ==
+                   "bench/fixtures/grammar/forced_line_2048.gbnf",
+               "report grammar path");
     failures += expect(report.at("config").at("decode_graph_prime").at("output_tokens") == 13,
                        "graph prime output count");
 
@@ -392,6 +415,7 @@ int test_human_and_csv_reports() {
     failures += expect(table.find("Qwen3_5ForCausalLM") != std::string::npos, "table target");
     failures += expect(table.find("qwen3.6-27b") != std::string::npos, "table model name");
     failures += expect(table.find("model.ninfer") != std::string::npos, "table artifact");
+    failures += expect(table.find("forced_line_2048.gbnf") != std::string::npos, "table grammar");
     failures +=
         expect(table.find("proposal_head=optimized") != std::string::npos, "table proposal head");
     failures +=
@@ -408,7 +432,7 @@ int test_human_and_csv_reports() {
     failures += expect(csv.starts_with("label,kind,n_prompt,n_gen,architecture,prefill_signature"),
                        "CSV identity columns");
     for (const std::string_view field :
-         {"model_name", "artifact_path", "proposal_head", "kv_payload_bytes",
+         {"model_name", "artifact_path", "grammar_path", "proposal_head", "kv_payload_bytes",
           "load_host_to_device_bytes", "workspace_general_capacity_bytes",
           "vision_handoff_capacity_bytes", "cuda_graph_allowance_bytes", "workspace_peak_bytes",
           "workspace_allocator_peak_bytes", "spec_acceptance_rate", "decode_output_tok_s_mean",

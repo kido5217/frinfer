@@ -62,11 +62,23 @@ keeps the requested token count exact without adding another generation path. Wh
 enabled and the matrix contains decode work, one ordinary public generation request primes the
 decode graph before warmups and measured repetitions.
 
+## Constrained mode
+
+`--grammar <path>` attaches a GBNF constraint (root symbol `root`) to every request, including the
+decode-graph prime, so the same matrix measures the constrained route against its unconstrained
+baseline. The harness requires the requested token count to be produced, so a measurement grammar
+must not allow the grammar's end inside the measured span — `fixtures/grammar/forced_line_2048.gbnf`
+(`root ::= [^\n]{2048,}`) keeps end-of-generation masked for measured spans under 2048
+codepoints (the repeated class is accepted at 2048, where end unmasks). Grammars that can end
+early (the acceptance fixtures' bounded repetitions) are correctness workloads, not throughput
+workloads. The grammar path is reported in every output format.
+
 ## CLI
 
 ```text
 ninfer_bench --weights <artifact.ninfer>
           [--corpus <ids-path>]
+          [--grammar <gbnf-path>]
           [-p, --n-prompt <list>]
           [-n, --n-gen <list>]
           [-pg, --prompt-gen <P,G;P,G...>]

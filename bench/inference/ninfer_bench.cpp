@@ -2,7 +2,6 @@
 
 #include "ninfer/engine.h"
 
-#include <cuda_profiler_api.h>
 #include <cuda_runtime.h>
 
 #include <exception>
@@ -13,6 +12,12 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
+
+// CUDA 13 removed the profiler-control declarations from the public headers while cudart keeps
+// exporting the entry points; declare them so --profile-measured can still bracket a measured
+// repetition.
+extern "C" cudaError_t cudaProfilerStart(void);
+extern "C" cudaError_t cudaProfilerStop(void);
 
 namespace {
 
@@ -59,7 +64,8 @@ bool has_decode_tests(const std::vector<ninfer::bench::BenchTest>& tests) {
     return false;
 }
 
-ninfer::RequestOptions benchmark_request(const ninfer::bench::BenchTest& test) {
+ninfer::RequestOptions benchmark_request(const ninfer::bench::BenchTest& test,
+                                          const std::string& grammar) {
     ninfer::RequestOptions options;
     options.execution.requested_output_tokens = test.requested_output_tokens();
     options.execution.allow_prefix_reuse      = false;
@@ -67,18 +73,22 @@ ninfer::RequestOptions benchmark_request(const ninfer::bench::BenchTest& test) {
     options.stop.include_model_defaults       = false;
     options.output.raw                        = true;
     options.output.preserve_special_tokens    = true;
+    if (!grammar.empty()) {
+        options.constraint.emplace(ninfer::GrammarConstraint{grammar});
+    }
     return options;
 }
 
 ninfer::bench::RepTiming run_repetition(ninfer::Engine& engine,
                                         const ninfer::bench::BenchTest& test,
-                                        const std::vector<ninfer::TokenId>& corpus) {
+                                        const std::vector<ninfer::TokenId>& corpus,
+                                        const std::string& grammar) {
     const int prompt_tokens = test.kind == ninfer::bench::TestKind::Decode
                                   ? ninfer::bench::kDecodeSeedTokens
                                   : test.n_prompt;
     auto prompt = engine.prepare_tokens(ninfer::bench::prompt_slice(corpus, prompt_tokens), false);
     ninfer::GenerationResult generated =
-        engine.generate(std::move(prompt), benchmark_request(test));
+        engine.generate(std::move(prompt), benchmark_request(test, grammar));
 
     const std::uint32_t expected = test.requested_output_tokens();
     if (generated.generated_token_ids.size() != expected) {
@@ -98,12 +108,12 @@ ninfer::bench::RepTiming run_repetition(ninfer::Engine& engine,
 }
 
 void prime_decode_graph(ninfer::Engine& engine, ninfer::bench::BenchEnvironment& env,
-                        const std::vector<ninfer::TokenId>& corpus) {
+                        const std::vector<ninfer::TokenId>& corpus, const std::string& grammar) {
     if (!env.use_cuda_graph || env.decode_graph_prime_output_tokens == 0) { return; }
     const int decode_tokens = static_cast<int>(env.decode_graph_prime_output_tokens - 1);
     const ninfer::bench::BenchTest prime{ninfer::bench::TestKind::Decode, 0, decode_tokens,
                                          "decode-graph-prime"};
-    (void)run_repetition(engine, prime, corpus);
+    (void)run_repetition(engine, prime, corpus, grammar);
     env.decode_graph_primed = true;
 }
 
@@ -147,6 +157,23 @@ int main(int argc, char** argv) {
         const std::uint32_t max_context = ninfer::bench::resolve_max_context(
             tests, options.max_context, options.speculative, options.use_cuda_graph);
 
+        std::string grammar;
+        if (!options.grammar_path.empty()) {
+            if (std::filesystem::is_directory(options.grammar_path)) {
+                throw std::invalid_argument("grammar path is a directory: " + options.grammar_path);
+            }
+            std::ifstream input(options.grammar_path);
+            if (!input) {
+                throw std::runtime_error("failed to open grammar file: " + options.grammar_path);
+            }
+            std::ostringstream buffer;
+            buffer << input.rdbuf();
+            grammar = buffer.str();
+            if (grammar.empty()) {
+                throw std::invalid_argument("grammar file is empty: " + options.grammar_path);
+            }
+        }
+
         ninfer::EngineOptions engine_options;
         engine_options.artifact_path = options.artifact_path;
         engine_options.device        = options.device;
@@ -170,6 +197,7 @@ int main(int argc, char** argv) {
         env.warmup                   = options.warmup;
         env.corpus_path              = options.corpus_path;
         env.corpus_tokens            = corpus.size();
+        env.grammar_path             = options.grammar_path;
         if (options.use_cuda_graph && has_decode_tests(tests)) {
             env.decode_graph_prime_output_tokens =
                 ninfer::bench::decode_graph_prime_output_tokens(options.speculative);
@@ -183,7 +211,7 @@ int main(int argc, char** argv) {
         env.load   = engine.load_summary();
         env.memory = engine.memory_summary();
 
-        prime_decode_graph(engine, env, corpus);
+        prime_decode_graph(engine, env, corpus, grammar);
 
         std::vector<ninfer::bench::TestResult> results;
         results.reserve(tests.size());
@@ -197,7 +225,7 @@ int main(int argc, char** argv) {
             result.test = test;
             engine.reset_memory_peaks();
             for (int warmup = 0; warmup < options.warmup; ++warmup) {
-                (void)run_repetition(engine, test, corpus);
+                (void)run_repetition(engine, test, corpus, grammar);
             }
             result.reps.reserve(static_cast<std::size_t>(options.repetitions));
             if (options.profile_measured) {
@@ -205,7 +233,7 @@ int main(int argc, char** argv) {
                 require_cuda(cudaProfilerStart(), "cudaProfilerStart");
             }
             for (int repetition = 0; repetition < options.repetitions; ++repetition) {
-                result.reps.push_back(run_repetition(engine, test, corpus));
+                result.reps.push_back(run_repetition(engine, test, corpus, grammar));
             }
             if (options.profile_measured) {
                 require_cuda(cudaDeviceSynchronize(), "profile post-boundary synchronize");

@@ -15,7 +15,7 @@
 
 namespace ninfer::bench {
 
-inline constexpr int kSchemaVersion                   = 15;
+inline constexpr int kSchemaVersion                   = 16;
 inline constexpr std::string_view kArtifactType       = "ninfer_bench_report";
 inline constexpr std::string_view kDefaultCorpusPath  = "bench/fixtures/bench_corpus.ids";
 inline constexpr int kDecodeSeedTokens                = 1;
@@ -54,6 +54,7 @@ enum class OutputFormat { Table, Json, Csv };
 struct BenchOptions {
     std::string artifact_path;
     std::string corpus_path{kDefaultCorpusPath};
+    std::string grammar_path;
     std::vector<int> n_prompt;
     std::vector<int> n_gen;
     std::vector<std::pair<int, int>> prompt_gen;
@@ -112,6 +113,7 @@ struct BenchEnvironment {
     int warmup                                     = 0;
     std::string corpus_path;
     std::size_t corpus_tokens = 0;
+    std::string grammar_path;   // empty = unconstrained; else every request carries the GBNF
 };
 
 BenchOptions parse_args(int argc, char** argv);
