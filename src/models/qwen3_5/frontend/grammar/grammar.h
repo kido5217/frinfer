@@ -66,13 +66,6 @@ public:
     compile(std::string_view gbnf, std::shared_ptr<const GrammarVocabulary> vocabulary,
             std::string* error = nullptr);
 
-    // Converts a JSON Schema document with the vendored llama.cpp converter and compiles
-    // the resulting GBNF; conversion failures surface like parse errors.
-    [[nodiscard]] static std::shared_ptr<const CompiledGrammar>
-    compile_from_schema(std::string_view json_schema,
-                        std::shared_ptr<const GrammarVocabulary> vocabulary,
-                        std::string* error = nullptr);
-
     ~CompiledGrammar();
     CompiledGrammar(const CompiledGrammar&)            = delete;
     CompiledGrammar& operator=(const CompiledGrammar&) = delete;

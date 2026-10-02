@@ -538,13 +538,19 @@ void test_language_cases() {
 // JSON Schema cases (ported from tests/test-grammar-integration.cpp)
 // ---------------------------------------------------------------------------
 
+// The vendored JSON-schema converter, the production channel's first half (the protocol adapter
+// uses the same converter before the compile seam).
+std::string schema_to_gbnf(const std::string& schema) {
+    return json_schema_to_grammar(common_json::parse(schema), /*force_gbnf=*/true);
+}
+
 void run_schema_case(const std::string& name, const std::string& schema,
                      const std::vector<std::string>& passing,
                      const std::vector<std::string>& failing) {
     const std::shared_ptr<const SyntheticVocabulary>& vocabulary = standard_vocabulary();
     std::string error;
     std::shared_ptr<const frontend::CompiledGrammar> grammar =
-        frontend::CompiledGrammar::compile_from_schema(schema, vocabulary, &error);
+        frontend::CompiledGrammar::compile(schema_to_gbnf(schema), vocabulary, &error);
     check(grammar != nullptr, "schema case " + name + " compiled", error);
     if (!grammar) { return; }
 
@@ -662,11 +668,6 @@ struct DifferentialResult {
     bool exhausted          = false;
 };
 
-// The vendored JSON-schema converter, for the oracle side of schema-driven cases.
-std::string schema_to_gbnf(const std::string& schema) {
-    return json_schema_to_grammar(common_json::parse(schema), /*force_gbnf=*/true);
-}
-
 DifferentialResult run_differential(const std::string& name, const std::string& gbnf,
                                     std::uint32_t seed, std::size_t max_steps,
                                     bool from_schema = false, bool single_step = false) {
@@ -674,7 +675,7 @@ DifferentialResult run_differential(const std::string& name, const std::string& 
     const std::shared_ptr<const SyntheticVocabulary>& vocabulary = standard_vocabulary();
     std::string error;
     std::shared_ptr<const frontend::CompiledGrammar> grammar =
-        from_schema ? frontend::CompiledGrammar::compile_from_schema(gbnf, vocabulary, &error)
+        from_schema ? frontend::CompiledGrammar::compile(schema_to_gbnf(gbnf), vocabulary, &error)
                     : frontend::CompiledGrammar::compile(gbnf, vocabulary, &error);
     check(grammar != nullptr, "differential " + name + " compiled", error);
     if (!grammar) { return result; }
@@ -892,7 +893,7 @@ void test_diary_schema() {
     const std::shared_ptr<const SyntheticVocabulary>& vocabulary = standard_vocabulary();
     std::string error;
     std::shared_ptr<const frontend::CompiledGrammar> grammar =
-        frontend::CompiledGrammar::compile_from_schema(kDiarySchema, vocabulary, &error);
+        frontend::CompiledGrammar::compile(schema_to_gbnf(kDiarySchema), vocabulary, &error);
     check(grammar != nullptr, "diary schema compiles", error);
     if (!grammar) { return; }
 
@@ -1419,8 +1420,11 @@ void test_compile_errors() {
     }
     {
         std::string error;
-        std::shared_ptr<const frontend::CompiledGrammar> grammar =
-            frontend::CompiledGrammar::compile_from_schema("not a schema", vocabulary, &error);
+        std::shared_ptr<const frontend::CompiledGrammar> grammar;
+        try {
+            grammar = frontend::CompiledGrammar::compile(schema_to_gbnf("not a schema"), vocabulary,
+                                                         &error);
+        } catch (const std::exception& failure) { error = failure.what(); }
         check(grammar == nullptr && !error.empty(), "conversion failure is reported", error);
     }
 }

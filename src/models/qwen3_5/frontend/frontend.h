@@ -100,9 +100,6 @@ public:
     // production against a compiled grammar still belongs to the single serving worker.
     [[nodiscard]] std::shared_ptr<const frontend::GrammarVocabulary> grammar_vocabulary() const;
     [[nodiscard]] std::shared_ptr<const frontend::CompiledGrammar>
-    compile_grammar(std::string_view gbnf, std::string* error = nullptr) const;
-    // The same compilation under an explicit scope (see ConstraintScope).
-    [[nodiscard]] std::shared_ptr<const frontend::CompiledGrammar>
     compile_grammar(std::string_view gbnf, ConstraintScope scope, std::string* error = nullptr) const;
 
 private:

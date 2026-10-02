@@ -2,8 +2,6 @@
 #include "models/qwen3_5/frontend/grammar/test_access.h"
 #include "models/qwen3_5/frontend/grammar/trie_producer.h"
 
-#include "json-schema-to-grammar.h"
-#include "json.h"
 #include "llama-grammar.h"
 #include "llama-vocab.h"
 
@@ -255,21 +253,6 @@ CompiledGrammar::compile(std::string_view gbnf, std::shared_ptr<const GrammarVoc
         return nullptr;
     }
     return compiled;
-}
-
-std::shared_ptr<const CompiledGrammar>
-CompiledGrammar::compile_from_schema(std::string_view json_schema,
-                                     std::shared_ptr<const GrammarVocabulary> vocabulary,
-                                     std::string* error) {
-    std::string gbnf;
-    try {
-        const common_json schema = common_json::parse(std::string(json_schema));
-        gbnf                     = json_schema_to_grammar(schema, /*force_gbnf=*/true);
-    } catch (const std::exception& failure) {
-        if (error) { *error = failure.what(); }
-        return nullptr;
-    }
-    return compile(gbnf, std::move(vocabulary), error);
 }
 
 GrammarState CompiledGrammar::initial_state() const {
