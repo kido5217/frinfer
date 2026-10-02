@@ -162,7 +162,7 @@ the reasoning-end marker; the marker token itself is not grammar-validated in th
   `should_fill_bitmask` / `should_advance` reasoning checks near lines 260-290); the flag was added
   as the escape hatch. v0.11.1's version is the same logic with `enable_in_reasoning` guards
   (`should_fill_bitmask`: "if enable_in_reasoning is True ... we should always enable the bitmask
-  filling"; `should_advance` likewise), against a much smaller file — the v0.30.0 code above is a
+  filling"; `should_advance` likewise), in a much smaller file — the v0.30.0 code above is a
   later unification.
 - **Docs note:** added by commit `138d891d7f42004c417561050a6813792316b13b`
   ("[Docs] Clarify structured outputs configuration for Qwen3 reasoning mode", PR #32441,
@@ -241,14 +241,14 @@ Source at `ced6857afa0ea7b2e3f0846a62e1394e90f15607` (GitHub permalink prefix
 
 - `vllm/config/structured_outputs.py:41-42` — the flag and docstring.
 - `vllm/engine/arg_utils.py:1032-1046` — `--reasoning-parser` under `StructuredOutputsConfig`.
-- `vllm/v1/structured_output/__init__.py:96-98`, `:205-214`, `:220-297`, `:298-303`, `:317-414`,
+- `vllm/v1/structured_output/__init__.py:96-98`, `:205-214`, `:220-297`, `:298-303`, `:317-436`,
   `:438-459` — gate, mask fill, FSM advance.
 - `vllm/v1/structured_output/utils.py:100-189` — mask application to logits (`:175`).
 - `vllm/v1/structured_output/backend_xgrammar.py:157-209` — FSM accept/validate/fill/rollback.
 - `vllm/v1/structured_output/request.py:20-31` — per-request `reasoning_ended`.
 - `vllm/v1/worker/gpu_model_runner.py:4596-4599` — mask applied before sampling.
 - `vllm/parser/engine/parser_engine.py:615-673` — reasoning-end token ids and scan.
-- `vllm/parser/qwen3.py:41-43`, `:89-101`, `:205-241` — `<think>`/`</think>`, `<tool_call>`
+- `vllm/parser/qwen3.py:41-43`, `:90-103`, `:205-241` — `<think>`/`</think>`, `<tool_call>`
   implicit reasoning end, thinking-dependent initial state.
 - `vllm/parser/abstract_parser.py:196-232`; `vllm/reasoning/abs_reasoning_parsers.py:62-112`;
   `vllm/parser/engine/adapters.py:35-115` — reasoning-parser interfaces.
