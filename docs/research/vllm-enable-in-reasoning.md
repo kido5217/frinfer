@@ -95,7 +95,7 @@ Consumers of `constraint_start`:
   allowed).
 - `grammar_bitmask` (`:317-...`): parallel path at `:361` (`apply_bitmask = ... == 0`), serial path
   at `:385-406` (per scheduled token, `apply_bitmask = i >= constraint_start`), plus a rollback of
-  speculative state advancements at `:413-414`.
+  speculative state advancements at `:426-427`.
 - `accept_tokens` (`:438-459`): tokens before `constraint_start` are not fed to the FSM; the early
   return at `:452-455` keeps the FSM frozen during reasoning, otherwise `:457` latches
   `structured_req.reasoning_ended = True`.
@@ -103,7 +103,7 @@ Consumers of `constraint_start`:
   `constraint_start`, so draft tokens in the reasoning interval are never grammar-validated.
 
 `reasoning_ended` is per-request state on `StructuredOutputRequest`
-(`vllm/v1/structured_output/request.py:20-31`, field `:25`), one of `None` / `False` / `True`.
+(`vllm/v1/structured_output/request.py:20-31`, field `:27`), one of `None` / `False` / `True`.
 
 ### 2.3 Behavior matrix (v0.30.0)
 
@@ -116,10 +116,10 @@ Consumers of `constraint_start`:
 
 The last row follows from the reasoning parser being request-scoped and fed the request's
 chat-template kwargs: `_get_reasoner` builds the parser with `structured_req.reasoning_parser_kwargs`
-(`vllm/v1/structured_output/__init__.py:101-112`; kwargs propagated at `vllm/v1/request.py:93-94`,
-`:251-264`). For Qwen3 the parser config is built with `initial_state=CONTENT`,
+(`vllm/v1/structured_output/__init__.py:101-112`; kwargs propagated at `vllm/v1/request.py:92-94`,
+`:261-262`). For Qwen3 the parser config is built with `initial_state=CONTENT`,
 `wait_for_reasoning=False` when `enable_thinking` is false
-(`vllm/parser/qwen3.py:89-101`), so `is_reasoning_end` returns `True` immediately
+(`vllm/parser/qwen3.py:90-103`), so `is_reasoning_end` returns `True` immediately
 (`vllm/parser/engine/parser_engine.py:650-673`).
 
 Note the empty-config case: if the server was started without `--reasoning-parser`,
@@ -132,7 +132,7 @@ Two layers, both driven by the selected `--reasoning-parser`:
 
 1. **API/output layer (text):** the parser splits generated text into the OpenAI `reasoning` and
    `content` fields, via `extract_reasoning` / `extract_reasoning_streaming`
-   (`vllm/reasoning/abs_reasoning_parsers.py:62-160`; interface docs at
+   (`vllm/reasoning/abs_reasoning_parsers.py:62-190`; interface docs at
    `docs/features/reasoning_outputs.md`). For Qwen3 the markers are `<think>`/`</think>`, and
    `<tool_call>` also ends reasoning in the unified parser engine
    (`vllm/parser/qwen3.py:41-43`, `:205-241`; `docs/features/reasoning_outputs.md` model table).
