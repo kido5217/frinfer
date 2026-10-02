@@ -19,6 +19,7 @@
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <deque>
 #include <exception>
 #include <future>
@@ -35,6 +36,19 @@
 #include <vector>
 
 namespace ninfer::runtime {
+
+namespace proto {
+
+// PROTO (ticket #96, branch proto/wrapper-thinking-boundary): engage a request's grammar
+// mask from token 0 regardless of the session's reasoning phase. Enabled only when
+// NINFER_PROTO_WRAPPER is set in the serving process environment; without it the engine
+// keeps the v1 answer-region deferral byte-identical.
+[[nodiscard]] inline bool wrapper_engage_from_zero() {
+    static const bool engaged = std::getenv("NINFER_PROTO_WRAPPER") != nullptr;
+    return engaged;
+}
+
+} // namespace proto
 
 template <class Instance>
 class EngineCore {
@@ -216,8 +230,11 @@ public:
 
         std::shared_ptr<Request> request;
         try {
+            // PROTOTYPE ticket #97: a request carrying a grammar gets the constrained-mode close
+            // rule (the parser may accept `</think>{`); every other request keeps the v1 path.
             auto output = instance_.frontend.make_output_session(
-                prompt, options.stop, options.output, options.execution.thinking);
+                prompt, options.stop, options.output, options.execution.thinking,
+                /*constrained_answer=*/options.constraint.has_value());
             const std::uint32_t capacity_output =
                 max_context_ - prompt_summary.prompt_tokens + static_cast<std::uint32_t>(1);
             try {
@@ -1415,7 +1432,8 @@ private:
         if (request->grammar) {
             const std::vector<std::uint8_t> regions = request->output.preview_reasoning_flags({});
             plan.column_count                       = 1;
-            plan.reasoning_mask                     = regions.empty() ? 1U : regions.front();
+            plan.reasoning_mask =
+                proto::wrapper_engage_from_zero() ? 0U : (regions.empty() ? 1U : regions.front());
         }
         auto progress = instance_.program->advance_prefill(*request->sequence, plan,
                                                            &program_call.failed_timing());
@@ -1844,8 +1862,9 @@ private:
             const std::vector<std::uint8_t> regions =
                 record->output.preview_reasoning_flags(drafts);
             plans[row].column_count = static_cast<std::uint8_t>(regions.size());
+            const bool engage_all   = proto::wrapper_engage_from_zero();
             for (std::size_t column = 0; column < plans[row].column_count; ++column) {
-                if (regions[column] != 0) {
+                if (!engage_all && regions[column] != 0) {
                     plans[row].reasoning_mask |= static_cast<std::uint8_t>(1U << column);
                 }
             }

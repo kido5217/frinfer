@@ -2144,7 +2144,10 @@ int test_chat_parsing_corpus_sessions(const Frontend& frontend) {
         }
 
         auto prompt  = frontend.prepare(std::move(input));
-        auto session = frontend.make_output_session(prompt, {}, {}, thinking);
+        // PROTOTYPE ticket #97: the session gets the constrained-mode signal the engine derives
+        // from the request's grammar; unconstrained vectors keep the shipped behavior.
+        auto session = frontend.make_output_session(
+            prompt, {}, {}, thinking, /*constrained_answer=*/vector.value("constrained", false));
         ++sessions;
 
         std::string reasoning;

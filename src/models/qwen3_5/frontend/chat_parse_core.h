@@ -38,6 +38,11 @@ struct ChatParseOptions {
     bool thinking_enabled = true;
     // Presentation bound on emitted function names (B3).
     std::size_t tool_name_max_length = 128;
+    // PROTOTYPE ticket #97: the request carries an answer grammar, so a close marker followed
+    // directly by the answer grammar's first byte (`{`, the observed object-root case) closes the
+    // reasoning channel and that byte opens the answer region - the R2 close without its required
+    // format whitespace. Unset reproduces the shipped R2/R3 behavior byte for byte.
+    bool constrained_answer = false;
 };
 
 // The effect of one round (or of the terminal flush) on the append-only channels. Deltas are

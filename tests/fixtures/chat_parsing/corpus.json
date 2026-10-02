@@ -1,5 +1,5 @@
 {
-  "source": "docs/research/chat-parsing-oracle.md §6 (36 vectors; one expectation corrected, see the vector's note) + PR Neroued/ninfer#309 tests (head 713045812a5bb861b089d4c430c4a03bdbd526df, tests-only extraction) + the wrapper-less vector from issue #35.",
+  "source": "docs/research/chat-parsing-oracle.md §6 (36 vectors; one expectation corrected, see the vector's note) + PR Neroued/ninfer#309 tests (head 713045812a5bb861b089d4c430c4a03bdbd526df, tests-only extraction) + the wrapper-less vector from issue #35. + ticket #97 constrained-mode close vectors (4, appended 2026-10-02).",
   "family": "qwen3_5_froggeric_xml",
   "tools": [
     {
@@ -1750,6 +1750,111 @@
       "diverges": [
         "vllm(row 7 in the oracle's §7): accepts <function=...> without <tool_call>"
       ]
+    },
+    {
+      "id": "constrained-close-brace-single-round",
+      "thinking": true,
+      "constrained": true,
+      "tools": [],
+      "rounds": [
+        {
+          "feed": "I will answer.\n</think>{\"extracted_entities\":[]}",
+          "reasoning": "I will answer.\n",
+          "content": "{\"extracted_entities\":[]}"
+        }
+      ],
+      "final": {
+        "reasoning": "I will answer.\n",
+        "content": "{\"extracted_entities\":[]}",
+        "tool_calls": []
+      },
+      "basis": [
+        "ninfer_proto_97"
+      ],
+      "note": "PROTOTYPE #97 constrained-mode close: with a grammar-carrying request, `</think>` followed directly by the answer grammar's first byte (`{`) closes the reasoning channel, and the `{` opens the answer region; no format whitespace is required. Unset `constrained` keeps the shipped R2/R3 behavior."
+    },
+    {
+      "id": "constrained-close-brace-split-across-rounds",
+      "thinking": true,
+      "constrained": true,
+      "tools": [],
+      "rounds": [
+        {
+          "feed": "Weighing options.\n",
+          "reasoning": "Weighing options.\n",
+          "content": ""
+        },
+        {
+          "feed": "</think>",
+          "reasoning": "Weighing options.\n",
+          "content": "",
+          "held": "</think>"
+        },
+        {
+          "feed": "{\"a\":1}",
+          "reasoning": "Weighing options.\n",
+          "content": "{\"a\":1}"
+        }
+      ],
+      "final": {
+        "reasoning": "Weighing options.\n",
+        "content": "{\"a\":1}",
+        "tool_calls": []
+      },
+      "basis": [
+        "ninfer_proto_97"
+      ],
+      "note": "PROTOTYPE #97: the decider byte arrives in the next round; the held marker resolves when `{` follows it, exactly as the R4 hold resolves on whitespace in the unconstrained rule."
+    },
+    {
+      "id": "constrained-quoted-close-not-brace",
+      "thinking": true,
+      "constrained": true,
+      "tools": [],
+      "rounds": [
+        {
+          "feed": "compare \"</think>\" then",
+          "reasoning": "compare \"</think>\" then",
+          "content": ""
+        },
+        {
+          "feed": "\n</think>{\"x\":1}",
+          "reasoning": "compare \"</think>\" then\n",
+          "content": "{\"x\":1}"
+        }
+      ],
+      "final": {
+        "reasoning": "compare \"</think>\" then\n",
+        "content": "{\"x\":1}",
+        "tool_calls": []
+      },
+      "basis": [
+        "ninfer_proto_97"
+      ],
+      "note": "PROTOTYPE #97: the constrained rule admits exactly the answer-start byte; a marker followed by a quote stays quoted protocol text (R3) and the later real close still wins."
+    },
+    {
+      "id": "reasoning-quoted-close-followed-by-brace",
+      "thinking": true,
+      "tools": [
+        "bash"
+      ],
+      "rounds": [
+        {
+          "feed": "the marker </think>{\"a\":1} stays reasoning",
+          "reasoning": "the marker </think>{\"a\":1} stays reasoning",
+          "content": ""
+        }
+      ],
+      "final": {
+        "reasoning": "the marker </think>{\"a\":1} stays reasoning",
+        "content": "",
+        "tool_calls": []
+      },
+      "basis": [
+        "ninfer_proto_97"
+      ],
+      "note": "PROTOTYPE #97 guard: the same stream WITHOUT `constrained` stays quoted protocol text and never closes - the constrained rule is not a global relaxation of R2."
     }
   ]
 }

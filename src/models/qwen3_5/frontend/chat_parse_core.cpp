@@ -35,6 +35,14 @@ constexpr bool is_format_whitespace(char byte) {
     return byte == ' ' || byte == '\t' || byte == '\r' || byte == '\n';
 }
 
+// PROTOTYPE ticket #97: the constrained-mode close rule. The observed answer start under an
+// active object-root schema is `{`; the boundary column is masked with the pre-boundary
+// (schema-root) row, which admits exactly such tokens. A grammar-derived first-byte set is the
+// product route; the prototype pins the object-root case only.
+constexpr bool is_constrained_answer_start(char byte) {
+    return byte == '{';
+}
+
 // Longest suffix of `text` that is a prefix of `marker`; with `allow_complete = false` the whole
 // marker does not count (a complete marker at the end of the available bytes is withheld by the
 // callers explicitly, because the next byte decides how it reads).
@@ -443,6 +451,8 @@ GeneratedToolCall normalize_raw_tool_call(const RawToolCall& raw, const Contract
 struct ParseContext {
     const ChatParseWireFormat* format = nullptr;
     bool tools_enabled                = false;
+    // PROTOTYPE ticket #97: carries ChatParseOptions::constrained_answer into the feed rules.
+    bool constrained_answer = false;
 };
 
 struct ParseState {
@@ -610,13 +620,17 @@ void feed_reasoning(ParseState& state, const ParseContext& context, std::string_
 
     const std::string_view buffer(state.held);
     // R2: close at the first `</think>` followed by format whitespace. A marker followed by any
-    // other byte is quoted protocol text and stays reasoning (R3).
+    // other byte is quoted protocol text and stays reasoning (R3). PROTOTYPE ticket #97: in
+    // constrained mode a marker followed directly by an answer-start byte (`{`) closes as well,
+    // because the boundary column is masked with the answer grammar's root row, which admits that
+    // byte and forbids the whitespace R2 waits for.
     std::size_t close = std::string_view::npos;
     for (std::size_t marker = buffer.find(thinking_close, begin); marker != std::string_view::npos;
          marker             = buffer.find(thinking_close, marker + thinking_close.size())) {
         const std::size_t after = marker + thinking_close.size();
         if (after >= buffer.size()) { break; } // held until the next byte decides (R4)
-        if (is_format_whitespace(buffer[after])) {
+        if (is_format_whitespace(buffer[after]) ||
+            (context.constrained_answer && is_constrained_answer_start(buffer[after]))) {
             close = marker;
             break;
         }
@@ -727,8 +741,9 @@ public:
     }
 
     [[nodiscard]] ParseContext context() const {
-        return ParseContext{.format        = &ChatParseWireFormat::qwen3_5(),
-                            .tools_enabled = contract_ != nullptr};
+        return ParseContext{.format             = &ChatParseWireFormat::qwen3_5(),
+                            .tools_enabled      = contract_ != nullptr,
+                            .constrained_answer = options_.constrained_answer};
     }
 
     std::shared_ptr<const ToolCallOutputContract> contract_;

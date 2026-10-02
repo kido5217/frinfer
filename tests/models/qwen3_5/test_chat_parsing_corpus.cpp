@@ -28,7 +28,7 @@ using ninfer::ToolCallParseDiagnostics;
 using ninfer::ToolCallParseFallbackReason;
 using ninfer::tool_call_parse_fallback_reason_name;
 
-constexpr std::size_t kExpectedVectorCount = 42;
+constexpr std::size_t kExpectedVectorCount = 46;
 
 int g_failures = 0;
 
@@ -174,6 +174,9 @@ void run_vector(const ordered_json& vector, const std::map<std::string, ordered_
     ChatParseOptions options;
     options.thinking_enabled     = vector.value("thinking", false);
     options.tool_name_max_length = 64;
+    // PROTOTYPE ticket #97: constrained-mode vectors carry the request's grammar signal; the
+    // unconstrained vectors leave it false and pin the shipped R2/R3 behavior.
+    options.constrained_answer = vector.value("constrained", false);
     ChatParseCore core(std::move(contract), options);
 
     const ordered_json& rounds = vector.at("rounds");

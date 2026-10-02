@@ -275,14 +275,16 @@ public:
     Impl(std::shared_ptr<const fi::Tokenizer> tokenizer_, StopPolicy policy_, OutputOptions output,
          bool starts_in_reasoning, ThinkingControlOptions thinking_,
          std::shared_ptr<const std::vector<TokenId>> thinking_control_tokens_,
-         std::shared_ptr<const fi::ToolCallOutputContract> tool_call_output_)
+         std::shared_ptr<const fi::ToolCallOutputContract> tool_call_output_,
+         bool constrained_answer)
         : tokenizer(std::move(tokenizer_)), policy(std::move(policy_)),
           thinking_control_tokens(std::move(thinking_control_tokens_)),
           preserve_special(output.raw || output.preserve_special_tokens),
           raw_presentation(output.raw), split_reasoning(starts_in_reasoning && !output.raw),
           core(output.raw ? nullptr : std::move(tool_call_output_),
                fi::ChatParseOptions{.thinking_enabled     = starts_in_reasoning,
-                                    .tool_name_max_length = output.tool_name_max_length}) {
+                                    .tool_name_max_length = output.tool_name_max_length,
+                                    .constrained_answer   = constrained_answer}) {
         if (thinking_.budget && *thinking_.budget == 0) {
             throw std::invalid_argument("thinking budget must be positive");
         }
@@ -432,10 +434,11 @@ OutputSession::OutputSession(
     std::shared_ptr<const frontend::Tokenizer> tokenizer, StopPolicy policy, OutputOptions output,
     bool starts_in_reasoning, ThinkingControlOptions thinking,
     std::shared_ptr<const std::vector<TokenId>> thinking_control_tokens,
-    std::shared_ptr<const frontend::ToolCallOutputContract> tool_call_output)
+    std::shared_ptr<const frontend::ToolCallOutputContract> tool_call_output,
+    bool constrained_answer)
     : impl_(std::make_unique<Impl>(
           std::move(tokenizer), std::move(policy), output, starts_in_reasoning, thinking,
-          std::move(thinking_control_tokens), std::move(tool_call_output))) {}
+          std::move(thinking_control_tokens), std::move(tool_call_output), constrained_answer)) {}
 
 std::vector<std::uint8_t>
 OutputSession::preview_reasoning_flags(std::span<const TokenId> tokens) {
