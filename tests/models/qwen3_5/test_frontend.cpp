@@ -1982,9 +1982,14 @@ int test_grammar_constraints(const Frontend& frontend) {
         }
         failures += check(released.expired(), "a compiled grammar outlived every reference");
         const auto recompiled = frontend.compile_grammar("root ::= \"ab\" \"ab\"");
-        failures += check(recompiled != nullptr && recompiled->stats().row_fills == 0 &&
+        // A fresh compile pays exactly the initial-mask validation fill (compile has filled that
+        // one row since the unsatisfiable-grammar guard). A retained row cache surfaces as a hit
+        // on that row, and a retained producer as accumulated fills, so (1 fill, 0 hits) is the
+        // fresh signature.
+        failures += check(recompiled != nullptr && recompiled->stats().row_fills == 1 &&
                               recompiled->stats().row_hits == 0,
-                          "a recompiled grammar reused a released grammar's row cache");
+                          "a recompiled grammar did not rebuild its row cache freshly (expected "
+                          "the one validation fill and no hits)");
     }
 
     // Bounded retention: more distinct live grammars than the key bound keep compiling, and a
