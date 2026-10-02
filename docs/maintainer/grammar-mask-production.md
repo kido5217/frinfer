@@ -93,5 +93,11 @@ document fixes the requirements they must meet.
    the engine's validate/accept at the states the producer emitted rows for) plus the ported
    vectors; a producer swap moves vectors only deliberately.
 
-Until the replacement lands and is measured, constrained decoding stays disabled in serving
-(ticket #57's gate; the injection and serve tickets may proceed against this seam).
+The replacement landed and was measured: the token-trie producer
+([#79](https://github.com/kido5217/ninfer-yarn/issues/79), PR
+[#81](https://github.com/kido5217/ninfer-yarn/pull/81)) passed the end-to-end matrix
+([#53](https://github.com/kido5217/ninfer-yarn/issues/53)) and the cost measurement
+([#54](https://github.com/kido5217/ninfer-yarn/issues/54)), and serve enforcement shipped
+([#52](https://github.com/kido5217/ninfer-yarn/issues/52), PR
+[#85](https://github.com/kido5217/ninfer-yarn/pull/85)). Constrained decoding is enabled in
+serving; the requirements above remain the contract for any future producer swap.

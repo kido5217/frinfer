@@ -1703,8 +1703,8 @@ void test_engine_structural_vector() {
 }
 
 
-// The per-request constrained-generation runtime: region gating, the transition column, the
-// round advance and the atomic commit.
+// The per-request constrained-generation runtime: the round advance, the reachable prefix and the
+// atomic commit.
 void test_grammar_runtime() {
     const std::shared_ptr<const frontend::CompiledGrammar> grammar =
         frontend::CompiledGrammar::compile("root ::= \"ab\" (\"c\" | \"d\")",
@@ -1733,8 +1733,7 @@ void test_grammar_runtime() {
     frontend::GrammarRuntime runtime(grammar);
     {
         const std::array<int, 1> tokens{frontend::kUnknownConstraintToken};
-        const std::array<std::uint8_t, 1> regions{0};
-        runtime.fill_round_rows(tokens, regions, rows, words);
+        runtime.fill_round_rows(tokens, rows, words);
         std::copy(rows.begin(), rows.begin() + static_cast<std::ptrdiff_t>(words), initial.begin());
         check(render_row(column(rows, 0), vocab) ==
                   render_row(grammar->row_for(grammar->initial_state()), vocab),
@@ -1742,42 +1741,25 @@ void test_grammar_runtime() {
               render_row(column(rows, 0), vocab));
     }
 
-    // Unconstrained columns are all-ones and their tokens never reach the grammar.
-    const std::array<int, 2> free_tokens{ab, ab};
-    const std::array<std::uint8_t, 2> free_regions{1, 1};
-    runtime.fill_round_rows(free_tokens, free_regions, rows, words);
-    check(all_ones(column(rows, 0)) && all_ones(column(rows, 1)),
-          "an unconstrained column was masked");
-    check(runtime.commit(free_tokens, free_regions), "committing unconstrained columns failed");
-
-    // The transition column is the first masked column: it uses the pre-boundary state row.
-    const std::array<int, 2> transition_tokens{ab, frontend::kUnknownConstraintToken};
-    const std::array<std::uint8_t, 2> transition_regions{1, 0};
-    runtime.fill_round_rows(transition_tokens, transition_regions, rows, words);
-    check(all_ones(column(rows, 0)), "a reasoning column was masked");
-    check(same(column(rows, 1), initial),
-          "the transition column did not use the pre-boundary state row");
-
-    // Answer columns advance the preview state: after "ab" only "c"/"d" remain.
+    // Masked columns advance the preview state: after "ab" only "c"/"d" remain.
     const std::array<int, 2> answer_tokens{ab, frontend::kUnknownConstraintToken};
-    const std::array<std::uint8_t, 2> answer_regions{0, 0};
-    runtime.fill_round_rows(answer_tokens, answer_regions, rows, words);
-    check(same(column(rows, 0), initial), "the first answer column did not use the initial row");
+    runtime.fill_round_rows(answer_tokens, rows, words);
+    check(same(column(rows, 0), initial), "the first masked column did not use the initial row");
     frontend::GrammarState after_ab = grammar->initial_state();
     check(after_ab.accept(ab), "the fixture's \"ab\" token did not advance a fresh state");
     check(render_row(column(rows, 1), vocab) == render_row(grammar->row_for(after_ab), vocab),
-          "the second answer column did not advance by the first answer token",
+          "the second masked column did not advance by the first answer token",
           render_row(column(rows, 1), vocab));
 
     // An ungrammatical draft ends the reachable prefix; later masked columns keep all-ones.
     const std::array<int, 2> rejected_tokens{z, frontend::kUnknownConstraintToken};
-    runtime.fill_round_rows(rejected_tokens, answer_regions, rows, words);
+    runtime.fill_round_rows(rejected_tokens, rows, words);
     check(all_ones(column(rows, 1)), "a rejected draft did not end the reachable prefix");
 
     // An unknown column token cannot advance the preview either: later masked columns keep
     // all-ones rows while the column itself still uses the committed state's row.
     const std::array<int, 2> unknown_tokens{frontend::kUnknownConstraintToken, ab};
-    runtime.fill_round_rows(unknown_tokens, answer_regions, rows, words);
+    runtime.fill_round_rows(unknown_tokens, rows, words);
     check(same(column(rows, 0), initial),
           "a masked column with an unknown token did not use the committed row");
     check(all_ones(column(rows, 1)), "an unknown column token did not end the reachable prefix");
@@ -1786,8 +1768,7 @@ void test_grammar_runtime() {
     const std::size_t wide_words = words + 2;
     std::vector<std::uint32_t> wide_rows(wide_words, 0);
     const std::array<int, 1> wide_tokens{frontend::kUnknownConstraintToken};
-    const std::array<std::uint8_t, 1> wide_regions{0};
-    runtime.fill_round_rows(wide_tokens, wide_regions, wide_rows, wide_words);
+    runtime.fill_round_rows(wide_tokens, wide_rows, wide_words);
     bool wide_padding_ok = true;
     for (std::size_t word = words; word < wide_words; ++word) {
         if (wide_rows[word] != 0xFFFFFFFFU) { wide_padding_ok = false; }
@@ -1798,26 +1779,23 @@ void test_grammar_runtime() {
     {
         frontend::GrammarRuntime atomic_runtime(grammar);
         const std::array<int, 2> partial_tokens{ab, z};
-        check(!atomic_runtime.commit(partial_tokens, answer_regions),
+        check(!atomic_runtime.commit(partial_tokens),
               "a partially invalid answer round was committed");
         std::vector<std::uint32_t> probe_rows(words, 0);
         const std::array<int, 1> probe_tokens{frontend::kUnknownConstraintToken};
-        const std::array<std::uint8_t, 1> probe_regions{0};
-        atomic_runtime.fill_round_rows(probe_tokens, probe_regions, probe_rows, words);
+        atomic_runtime.fill_round_rows(probe_tokens, probe_rows, words);
         check(same(std::span<const std::uint32_t>(probe_rows), initial),
               "a failed commit moved the committed state");
     }
 
-    // Commit is answer-aware and atomic; a token after the grammar ended is refused.
+    // Commit is atomic; a token after the grammar ended is refused.
     const std::array<int, 2> commit_tokens{ab, c};
-    check(runtime.commit(commit_tokens, answer_regions), "committing the answer tokens failed");
+    check(runtime.commit(commit_tokens), "committing the answer tokens failed");
     check(runtime.can_end(), "the grammar could not end after the complete answer");
     const std::array<int, 1> late_tokens{ab};
-    const std::array<std::uint8_t, 1> late_regions{0};
-    check(!runtime.commit(late_tokens, late_regions),
-          "a token after the grammar ended was committed");
+    check(!runtime.commit(late_tokens), "a token after the grammar ended was committed");
     check(runtime.can_end(), "a failed commit moved the committed state");
-    check(!runtime.commit(std::array<int, 1>{frontend::kUnknownConstraintToken}, late_regions),
+    check(!runtime.commit(std::array<int, 1>{frontend::kUnknownConstraintToken}),
           "an answer column without a token was committed");
 }
 

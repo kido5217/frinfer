@@ -15,12 +15,6 @@ require_grammar(std::shared_ptr<const CompiledGrammar> grammar) {
     return grammar;
 }
 
-void check_plan_spans(std::span<const int> tokens, std::span<const std::uint8_t> regions) {
-    if (tokens.size() != regions.size()) {
-        throw std::invalid_argument("grammar runtime plan spans must have the same length");
-    }
-}
-
 } // namespace
 
 GrammarRuntime::GrammarRuntime(std::shared_ptr<const CompiledGrammar> grammar)
@@ -30,11 +24,9 @@ GrammarRuntime::GrammarRuntime(GrammarRuntime&&) noexcept            = default;
 GrammarRuntime& GrammarRuntime::operator=(GrammarRuntime&&) noexcept = default;
 GrammarRuntime::~GrammarRuntime()                                    = default;
 
-void GrammarRuntime::fill_round_rows(std::span<const int> tokens,
-                                     std::span<const std::uint8_t> regions,
-                                     std::span<std::uint32_t> rows, std::size_t words) const {
-    check_plan_spans(tokens, regions);
-    const std::size_t columns = regions.size();
+void GrammarRuntime::fill_round_rows(std::span<const int> tokens, std::span<std::uint32_t> rows,
+                                     std::size_t words) const {
+    const std::size_t columns = tokens.size();
     if (words == 0 || rows.size() < columns * words) {
         throw std::invalid_argument("grammar runtime row buffer is too short");
     }
@@ -47,7 +39,7 @@ void GrammarRuntime::fill_round_rows(std::span<const int> tokens,
     bool reachable       = true;
     for (std::size_t column = 0; column < columns; ++column) {
         const std::span<std::uint32_t> row = rows.subspan(column * words, words);
-        if (regions[column] != 0 || !reachable) {
+        if (!reachable) {
             std::fill(row.begin(), row.end(), 0xFFFFFFFFU);
             continue;
         }
@@ -63,14 +55,10 @@ void GrammarRuntime::fill_round_rows(std::span<const int> tokens,
     }
 }
 
-bool GrammarRuntime::commit(std::span<const int> accepted, std::span<const std::uint8_t> regions) {
-    check_plan_spans(accepted, regions);
+bool GrammarRuntime::commit(std::span<const int> accepted) {
     GrammarState next = state_;
-    for (std::size_t column = 0; column < accepted.size(); ++column) {
-        if (regions[column] != 0) { continue; }
-        if (accepted[column] == kUnknownConstraintToken || !next.accept(accepted[column])) {
-            return false;
-        }
+    for (const int token : accepted) {
+        if (token == kUnknownConstraintToken || !next.accept(token)) { return false; }
     }
     state_ = std::move(next);
     return true;
