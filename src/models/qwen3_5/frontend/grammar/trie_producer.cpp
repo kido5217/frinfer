@@ -236,8 +236,13 @@ RepetitionNormalization normalize_repetitions(const llama_grammar_rules& rules,
     return result;
 }
 
-
 namespace {
+
+// UTF-8 and character-class helpers shared across this translation unit only.
+[[nodiscard]] bool decode_utf8_bytes(const std::uint8_t* bytes, std::size_t len,
+                                     const llama_partial_utf8& start,
+                                     std::vector<std::uint32_t>& cps, llama_partial_utf8& end);
+[[nodiscard]] CharClass class_from_element(const Element* pos);
 
 constexpr int kLookup[16] = {1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 2, 2, 3, 4};
 
@@ -499,7 +504,7 @@ void pos_copy(PosSet& dst, const PosSet& src) {
     for (int i = 0; i < src.n; ++i) { dst.s[i] = src.s[i]; }
 }
 
-}  // namespace
+} // namespace
 
 bool CharClass::accepts(std::uint32_t cp) const noexcept {
     return in_ranges(ranges, cp) != negated;
@@ -508,6 +513,8 @@ bool CharClass::accepts(std::uint32_t cp) const noexcept {
 bool CharClass::operator==(const CharClass& other) const noexcept {
     return negated == other.negated && ranges == other.ranges;
 }
+
+namespace {
 
 CharClass class_from_element(const Element* pos) {
     CharClass cls;
@@ -557,7 +564,7 @@ bool decode_utf8_bytes(const std::uint8_t* bytes, std::size_t len,
         n_remain = kLookup[highbits] - 1;
         if (n_remain < 0) { return false; }
         const std::uint8_t mask = (1 << (7 - n_remain)) - 1;
-        value = first_byte & mask;
+        value                   = first_byte & mask;
         ++pos;
         while (pos < len && bytes[pos] != 0 && n_remain > 0) {
             value = (value << 6) + (bytes[pos] & 0x3F);
@@ -569,6 +576,8 @@ bool decode_utf8_bytes(const std::uint8_t* bytes, std::size_t len,
     end = llama_partial_utf8{value, n_remain};
     return true;
 }
+
+} // namespace
 
 // ---------------------------------------------------------------------------
 // Producer

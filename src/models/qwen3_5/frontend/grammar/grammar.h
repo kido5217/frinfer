@@ -48,7 +48,6 @@ public:
 
 private:
     friend class CompiledGrammar;
-    friend class GrammarTestAccess;
     class Impl;
     explicit GrammarState(std::unique_ptr<Impl> impl) noexcept;
     std::unique_ptr<Impl> impl_;
@@ -85,8 +84,8 @@ public:
     [[nodiscard]] int token_count() const noexcept;
 
     // The allowed-token row of `state`: produced by the compiled token-trie producer
-    // (the vendored engine's full-vocabulary walk is retained as the differential
-    // oracle, see GrammarTestAccess). The returned view is valid until the next row_for
+    // (the differential oracle is built directly on the vendored engine in the producer
+    // test). The returned view is valid until the next row_for
     // call on this grammar - the producer serves it from a bounded store or its scratch
     // row - so the consumer must copy the row before the next fill (the serving runtime
     // copies it into the round buffer immediately).

@@ -153,17 +153,6 @@ struct ProducerStats {
     std::uint64_t correction_tokens = 0;
 };
 
-// Replicates the vendored engine's UTF-8 decoder over a piece (NUL-truncating,
-// with a pending partial in/out). Exposed for the differential test's self-check.
-[[nodiscard]] bool decode_utf8_bytes(const std::uint8_t* bytes, std::size_t len,
-                                     const llama_partial_utf8& start,
-                                     std::vector<std::uint32_t>& cps,
-                                     llama_partial_utf8& end);
-
-// The class accepted by one char-range element group of the engine, starting at
-// `pos`. Exposed for the differential test's self-check.
-[[nodiscard]] CharClass class_from_element(const Element* pos);
-
 // Row production runs on the single serving worker; one producer per compiled
 // grammar. The row returned by produce() is valid until the next produce() call
 // on this producer: it points into the shape store (a hit, or a repeated shape)
