@@ -1,0 +1,6 @@
+{
+  "wall_s": 228,
+  "exit": 0,
+  "session": "ses_f0180baaeffe2IOtQKxoOfHD5X",
+  "task": "Do not use any tools. In a single reply, write a very detailed technical tutorial on TCP congestion control: slow start, congestion avoidance, fast retransmit, fast recovery, the retransmission timer, CUBIC, and BBR. Include the state transitions between them and the packet-loss signals that drive each transition. Target length: at least 6000 words. Write the full text now."
+}

@@ -163,7 +163,9 @@ def tool_call_checks(events):
                 tc_events.append(d["tool_calls"])
     checks.append(("tool_calls appear", ">=1 delta", len(tc_events), len(tc_events) > 0))
     if tc_events:
-        complete = False
+        complete = True
+        if not (len(tc_events) == 1 and all(len(t) >= 1 for t in tc_events)):
+            complete = False
         if len(tc_events) == 1 and all(len(t) >= 1 for t in tc_events):
             for t in tc_events[0]:
                 ok = (
@@ -521,21 +523,23 @@ def main():
         ]
         return {"checks": checks, "raw_head": txt[:800], "raw_tail": txt[-400:]}
 
-    GRAMMAR = '''root ::= "{" "color" ":" ( "red" | "blue" ) " intensity" ":" ( "low" | "high" ) "}"'''
+    # GBNF string literals must escape the JSON quote characters: \" is a quote.
+    GRAMMAR = r'''root ::= "{" "\"color\"" ":" ( "\"red\"" | "\"blue\"" ) "," "\"intensity\"" ":" ( "\"low\"" | "\"high\"" ) "}"'''
 
     def probe_grammar():
         body = common_body(
             [{"role": "user", "content": "Emit the JSON object for the requested color: blue, high."}],
             mct=64, grammar=GRAMMAR)
+        body["stream"] = False
         st, txt, _ = post_chat(body)
         checks = [("grammar request -> 200", 200, st, st == 200)]
         if st == 200:
             j = json.loads(txt)
             ch = (j.get("choices") or [{}])[0]
             content = (ch.get("message") or {}).get("content") or ""
-            checks.append(("output satisfies the grammar", '{"color":"blue" "intensity":"high"}',
-                           content, content.replace(" ", "") == '{"color":"blue" "intensity":"high"}'.replace(" ", "")
-                           and json.loads(content) == {"color": "blue", "intensity": "high"}))
+            allowed = {f'{{"color":"{c}","intensity":"{i}"}}' for c in ("red", "blue") for i in ("low", "high")}
+            checks.append(("output satisfies the grammar (one of the 4 admitted strings)",
+                           sorted(allowed), content, content in allowed))
         else:
             checks.append(("body", "", txt[:300], False))
         return {"checks": checks, "raw_head": txt[:1000], "raw_tail": txt[-400:]}
@@ -544,6 +548,7 @@ def main():
         body = common_body(
             [{"role": "user", "content": "Return a JSON object with a single field 'greeting' whose value is a short greeting."}],
             mct=128, response_format={"type": "json_object"})
+        body["stream"] = False
         st, txt, _ = post_chat(body)
         checks = [("response_format json_object -> 200", 200, st, st == 200)]
         if st == 200:

@@ -1,0 +1,6 @@
+{
+  "wall_s": 31,
+  "exit": 0,
+  "session": "ses_f018176f4ffep46zHOy6Pj5SX8",
+  "task": "Create a small Python CLI in this empty directory: stat.py reads a CSV file given as argv[1] and prints count, min, max, mean for each numeric column, one 'col: count=.. min=.. max=.. mean=..' line per column. Then create data.csv with headers id,a,b,c and 5 rows of numeric data you choose. Then write test_stat.py that runs stat.py on data.csv via subprocess and asserts the printed stats for column a match the known values. Then run python3 test_stat.py with the shell tool and iterate until it passes. Finish by reporting the final test output verbatim."
+}
