@@ -161,27 +161,6 @@ public:
     std::shared_ptr<detail::Producer> producer;
     // The master rules' index of the root rule (for the producer's preparation).
     std::uint32_t root_rule = 0;
-
-    // The vendored engine's full-vocabulary walk for one state, without any caching:
-    // the differential oracle for the producer (D4) and its test access. Fresh each
-    // call: a walk must never be served from a producer cache.
-    [[nodiscard]] std::vector<std::uint32_t> engine_walk_row(const GrammarState::Impl& state) const {
-        const int token_count = backbone->vocabulary->token_count();
-        const std::uint32_t row_words = static_cast<std::uint32_t>((token_count + 31) / 32);
-        std::vector<llama_token_data> candidates(static_cast<std::size_t>(token_count));
-        for (int id = 0; id < token_count; ++id) {
-            candidates[static_cast<std::size_t>(id)] =
-                llama_token_data{static_cast<llama_token>(id), 0.0f, 0.0f};
-        }
-        llama_token_data_array array{candidates.data(), candidates.size(), -1, false};
-        llama_grammar_apply_impl(*state.engine, &array);
-        std::vector<std::uint32_t> row(row_words, 0);
-        for (std::size_t index = 0; index < candidates.size(); ++index) {
-            const float logit = candidates[index].logit;
-            if (!(std::isinf(logit) && logit < 0.0f)) { row[index >> 5U] |= 1U << (index & 31U); }
-        }
-        return row;
-    }
 };
 
 CompiledGrammar::CompiledGrammar(std::unique_ptr<Impl> impl) noexcept : impl_(std::move(impl)) {}
@@ -330,25 +309,8 @@ CompiledGrammar::Stats CompiledGrammar::stats() const noexcept {
 }
 
 // ---------------------------------------------------------------------------
-// Test access (D4 differential oracle + producer diagnostics)
+// Test access (standalone producer for the D4 differential walk)
 // ---------------------------------------------------------------------------
-
-std::vector<std::uint32_t> GrammarTestAccess::engine_walk_row(const CompiledGrammar& grammar,
-                                                              const GrammarState& state) {
-    if (!state.impl_) {
-        throw std::invalid_argument("GrammarTestAccess::engine_walk_row called with a "
-                                    "moved-from state");
-    }
-    if (state.impl_->backbone != grammar.impl_->backbone) {
-        throw std::invalid_argument("GrammarTestAccess::engine_walk_row called with a foreign "
-                                    "state");
-    }
-    return grammar.impl_->engine_walk_row(*state.impl_);
-}
-
-const detail::Producer& GrammarTestAccess::producer(const CompiledGrammar& grammar) {
-    return *grammar.impl_->producer;
-}
 
 std::shared_ptr<detail::Producer>
 GrammarTestAccess::make_producer(const CompiledGrammar& grammar, bool shape_cache) {
