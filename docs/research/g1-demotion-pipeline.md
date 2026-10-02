@@ -115,7 +115,7 @@ store (assistant messages).
 
 | Req | When (UTC) | Prompt / completion | Client session | Trigger | Client-visible result |
 |---|---|---|---|---|---|
-| 310 | 10-02 09:57:47 | 90,823 / 10,073 | a map-#86 ("thinking default under constrained requests") research subagent (`explore`) | **(a) quoted marker in prose** — its report "Current-code facts for issue #86" quotes the literal `tool_call_open` marker in prose | benign round-trip: the tail re-emitted as content; the report text arrived (#86 closed 35 min later) |
+| 310 | 10-02 09:57:47 | 90,823 / 10,073 | a map-#86 ("thinking default under constrained requests") research subagent (`explore`) | **(a) quoted marker in prose** — its report "Current-code facts for issue #86" quotes the literal `tool_call_open` marker in prose | benign round-trip: the tail re-emitted as content; the report text arrived (#86 closed ~38 min later) |
 | 533 | 10-02 21:07:50 | 222,012 / 7,070 | map #139's adversarial review subagent (`general`) | **(a)** same — its verification checklist cites the marker | benign round-trip: the tail re-emitted; the review report arrived |
 | 876 | 10-02 22:08:15 | 123,262 / 354 | the #146 research subagent itself (`ses_f0159c808…`) | **(b) marker inside the call's own arguments** — its own `shell` call carried an inline `<parameter=` fragment in the query string | **call lost**: the demoted call text became its final output (the garbled "result" the parent read); that subagent idled at 22:08:15 |
 | 878 | 10-02 22:08:40 | 179,434 / 2,613 | **this session** (map #145 charting; the retry dispatch to the #146 subagent) | **(b)** again — the retry brief quoted marker fragments | **call lost**; session went `idle` at 22:08:40; the user's "continue" at 22:08:57 is the manual recovery |
@@ -207,18 +207,15 @@ through the continuation path — the loop resumes without user action.
 ## 7. What this implies for the fix (input to the design, #148)
 
 Robustness (parse-side; the llama.cpp-port ranking is #147's job):
-1. **Argument-value semantics** — the family-(b) fix and the primary
-   work-stopping shape: a value rule that admits marker fragments as text
-   (cf. #147's M2 delimiter-terminated values, a #148 decision against the
-   corpus-pinned rows 21/22). The prose (family a) cases are already recovered
-   or benign; a "quoted marker stays text" rule à la R3 would be the
-   belt-and-braces form.
-2. **B4 value semantics** — the unbalanced nested `parameter` rule is what
-   kills family (b)'s real calls; compare the vendored/upstream value rules
-   (#147).
-3. **Truncated-region handling** — a region cut by the bound (payload 907):
+1. **Value semantics** (family (b), the work-stopping shape): a value rule
+   that admits marker fragments as text — cf. #147's M2 delimiter-terminated
+   values, a #148 decision against the corpus-pinned rows 21/22 (the
+   unbalanced nested `parameter` rule is what kills the real call today; a
+   "quoted marker stays text" rule à la R3 would be the belt-and-braces
+   prose form).
+2. **Truncated-region handling** — a region cut by the bound (payload 907):
    close-at-end à la vLLM vs. demote-as-markup vs. a distinct signal.
-4. **Degenerate repetition** — the 32,768-token loop: is a repetition
+3. **Degenerate repetition** — the 32,768-token loop: is a repetition
    collapse detectable earlier (the output bound is the only stop today)?
 
 Signaling (serve contract): two viable shapes — (A) a pre-output 4xx for
