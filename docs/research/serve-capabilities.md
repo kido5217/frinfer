@@ -168,7 +168,7 @@ Parser: `src/serve/openai_chat_request.cpp` (**[code]**); rejection/neutral pins
 `body.max_tokens: 32768` overlay — companion doc §2.2), **`max_completion_tokens`
 wins**. Pinned by tests/test_openai_schema.cpp:87-105 ("max_completion_tokens wins and
 explicitness stays in envelope": `max_completion_tokens: 48` + `max_tokens: 9` →
-effective 48). **[live]** every one of the 3,284 `request_start` records in the 71 h
+effective 48). **[live]** every one of the 3,285 `request_start` records in the 71 h
 log window carries `requested_output_tokens_source: "client"` — the overlay is always
 on the wire, and the serve records the client-set value.
 
@@ -567,10 +567,14 @@ materialization), `request_error` (config + terminal message), `throughput`
 (interval counter deltas, scheduler snapshot, host-work breakdown). No generated
 text or API keys in the file (serving.md:984-985, **[docs]**).
 
-**[log]** 71.3 h window (2026-09-29 21:18:59Z → 2026-10-02 20:36:48Z): 3,284
+**[log]** 71.3 h window (2026-09-29 21:18:59Z → 2026-10-02 20:36:48Z): 3,285
 `request_start` / 3,280 `request_done` / 3 `request_error` / 22 `server_start`
 (process restarts; `Restart=always`), **all** `openai_chat_completions` — i.e. this
-window is pure opencode traffic. Finish reasons: 3,259 `stop_token`, 21
+window is pure opencode traffic. The 22 restarts are not homogeneous: the first 7
+ran at `--max-context 426432` (build `ninfer-yarn-0-unstable-2026-09-29`,
+09-29 21:18–23:09Z, ~1.8 h) and the remaining 15 at `--max-context 446902`
+(09-29 23:14Z – 10-02 19:52Z); the §0 deployment table is anchored to the live
+process. Finish reasons: 3,259 `stop_token`, 21
 `output_limit`. Tool-parse fallbacks: 3,279 `none`, 1 `malformed_structure`. Output
 tokens: 100% client-sourced. Three `request_error` records are all
 "client disconnected".
