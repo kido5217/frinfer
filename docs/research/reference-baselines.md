@@ -209,13 +209,13 @@ The `llama-cpp-qwen38-27b` block (llm.nix:263-314) serves
 
 | Flag | Value | Documented meaning |
 |---|---|---|
-| `-c` | `0` | context size; "default: 0, 0 = loaded from model" (`tools/server/README.md:52`) — i.e. the GGUF's declared context, not a fixed number |
+| `-c` | `0` | context size; "default: 0, 0 = loaded from model" (`tools/server/README.md:50`) — i.e. the GGUF's declared context, not a fixed number |
 | `--cache-type-k` / `--cache-type-v` | `q8_0` / `q8_0` | KV cache dtype (allowed: f32, f16, bf16, q8_0, q4_0, …; default f16) (`tools/server/README.md:71-72`) — halves KV size vs f16 |
-| `-fa` | `on` | flash attention (default `auto`) (`tools/server/README.md:49`) |
+| `-fa` | `on` | flash attention (default `auto`) (`tools/server/README.md:56`) |
 | `-ngl` | `99` | all layers on GPU |
 | `--parallel` | `1` | one server slot (default `-1` = auto) (`tools/server/README.md:176`) |
 | `--kv-unified` | set | single unified KV buffer shared across slots (default enabled when slots are auto) (`tools/server/README.md:168`) |
-| `-b` / `-ub` | `2048` / `1024` | batch / ubatch size (`tools/server/README.md:56-57`) |
+| `-b` / `-ub` | `2048` / `1024` | batch / ubatch size (`tools/server/README.md:52-53`) |
 | `--cont-batching` | set | continuous batching (default on) (`tools/server/README.md:177`) |
 | `--image-min-tokens` / `--no-mmproj-offload` | `1024` / set | vision enabled, mmproj on CPU (`tools/server/README.md:183, 181`) |
 | `--jinja` + `--chat-template-file` | froggeric | template override (§1.2) |
@@ -226,7 +226,7 @@ The `llama-cpp-qwen38-27b` block (llm.nix:263-314) serves
 context (native window; the Qwen3.8-27B family's native 262144 is documented
 by the companion docs and by the vLLM block's binding-constraint note,
 llm.nix:327-339). The block sets **no** `--rope-scaling yarn` (the flag exists,
-`tools/server/README.md:58`), so — unlike the ninfer-yarn unit — there is no
+`tools/server/README.md:59`), so — unlike the ninfer-yarn unit — there is no
 context extension above the native window. The exact declared context of the
 unsloth GGUF was not verified this session (no live runs); it is whatever the
 file's metadata says, with the 262144 figure as the model family's documented
@@ -393,11 +393,14 @@ streaming** — a different architecture from llama.cpp's template-driven PEG.
 - **Wire format**: OpenAI `tool_calls` deltas with `index`, `id`
   (`chatcmpl-tool-<random_uuid>`, `vllm/entrypoints/chat_utils.py:2256-2261`),
   `type: "function"`, `function.name`, streamed `function.arguments` fragments;
-  the id and name are present from the first tool delta of each index (slot
-  created on `TOOL_CALL_START`, name on `TOOL_NAME`, coalesced into one delta —
-  `vllm/parser/engine/parser_engine.py:759-800` @ `ced6857`), satisfying
-  opencode's id+name-by-stream-end requirement (companion doc §3.3) in its
-  strictest form.
+  the parser creates the slot on the `TOOL_CALL_START` event and accumulates
+  the name on `TOOL_NAME` events; if the name marker straddles decode batches
+  the first tool delta is deferred to a later batch, but the id is minted
+  together with the accepted name, so each index's first tool delta carries id
+  and name in a single delta
+  (`vllm/parser/engine/parser_engine.py:756-884` @ `ced6857`); both land well
+  before the finish chunk, so opencode's id+name-by-stream-end requirement
+  (companion doc §3.3) is unaffected.
 - **Partial/failing regions**: the engine is per-state explicit
   (`vllm/parser/engine/parser_engine_config.py:66-73` @ `ced6857`):
   plain text in the `TOOL_PREAMBLE`/`TOOL_BETWEEN` states maps to **no content
@@ -512,7 +515,7 @@ SSE shape (`vllm/entrypoints/openai/chat_completion/serving.py` @ `ced6857`):
 - **Overflow**: `max_model_len < input_length` raises
   `ValueError("Input length ({n}) exceeds model's maximum context length ({m}).")`
   (`api_utils.py:184-187`), mapped to **400 `BadRequestError`** in the OpenAI
-  error envelope (`exception_handling/error_response.py:56, 87-90`). Cross-check:
+  error envelope (`exception_handling/error_response.py:69-72, 87-90`). Cross-check:
   opencode's phrase list contains both
   `/exceeds (?:the )?(?:model'?s )?maximum context length(?: …|\s*\([\d,]+\))/i`
   (`provider-error.ts:22`) and `/input length.*exceeds.*context length/i`
