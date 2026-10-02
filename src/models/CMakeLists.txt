@@ -18,7 +18,7 @@ add_library(ninfer_grammar STATIC qwen3_5/frontend/grammar/grammar.cpp
                                   qwen3_5/frontend/grammar/grammar_runtime.cpp
                                   qwen3_5/frontend/grammar/thinking_wrapper.cpp)
 ninfer_internal_includes(ninfer_grammar)
-target_link_libraries(ninfer_grammar PRIVATE ninfer_llama_grammar ninfer_llama_chat)
+target_link_libraries(ninfer_grammar PRIVATE ninfer_llama_grammar)
 
 add_library(ninfer_model_runtime STATIC)
 ninfer_internal_includes(ninfer_model_runtime)

@@ -76,7 +76,7 @@ document fixes the requirements they must meet.
 
 ## Requirements for the replacement
 
-1. **Same seam.** `CompiledGrammar` compile/`compile_from_schema`, `GrammarState` accept/can_end/
+1. **Same seam.** `CompiledGrammar` compile, `GrammarState` accept/can_end/
    cheap copies, and `row_for` returning a dense `uint32` bitmask over the exact token domain,
    with EOG bits set exactly where the grammar can end. The fixed-shape device layout (128 rows,
    sized by the widest target-verify column domain), per-column MTP masks and committed-prefix

@@ -942,11 +942,6 @@ std::shared_ptr<const frontend::GrammarVocabulary> Frontend::grammar_vocabulary(
 }
 
 std::shared_ptr<const frontend::CompiledGrammar>
-Frontend::compile_grammar(std::string_view gbnf, std::string* error) const {
-    return compile_grammar(gbnf, ConstraintScope::Answer, error);
-}
-
-std::shared_ptr<const frontend::CompiledGrammar>
 Frontend::compile_grammar(std::string_view gbnf, ConstraintScope scope, std::string* error) const {
     if (error != nullptr) { error->clear(); }
     std::string wrapped;
