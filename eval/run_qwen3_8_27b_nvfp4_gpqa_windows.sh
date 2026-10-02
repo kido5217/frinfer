@@ -6,9 +6,23 @@ set -euo pipefail
 # (262,144) and the deployed YaRN window (446,902); only --max-context
 # differs. nvfp4 KV is required for the 446,902 arm to fit the RTX 5090.
 # Concurrency is one so the per-request 245,760-token output budget always
-# fits the shared KV. Outputs land under profiles/eval/... per tier.
+# fits the shared KV. Server captures land under profiles/eval/.../<tier>/;
+# ninfer_eval results land under eval/runs/ at the repo root.
+#
+# No --chat-template override on purpose: the artifact-embedded qwen3_8.jinja
+# (thinking on, effort xhigh) is the template behind the published 90.40%
+# card's EvalScope runs; the deployed :8827 service uses the froggeric
+# template instead. Both arms share this prompt.
 
 repo_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# The eval coordinator resolves its relative runs_dir against the process CWD;
+# keep everything repo-root-relative.
+cd -- "${repo_dir}"
+
+# The locally built server links the toolkit's CUDA stubs; the NixOS driver
+# libraries must be reachable or CUDA init fails with cudaErrorStubLibrary.
+export LD_LIBRARY_PATH="/run/opengl-driver/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
 server_bin="${repo_dir}/build/apps/ninfer-yarn-serve"
 artifact_hub="${NINFER_ARTIFACT_HUB:-/home/kido/trash/ai/models/hf/hub}"
 artifact="${NINFER_EVAL_ARTIFACT:-${artifact_hub}/models--neroued--Qwen3.8-27B-nvfp4-NInfer/snapshots/f0b43ad436b9fa8142c6ed6647c470a6fe409484/qwen3_8_27b_nvfp4.ninfer}"
