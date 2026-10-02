@@ -124,7 +124,7 @@ private:
 // ---------------------------------------------------------------------------
 
 struct OracleBridge {
-    const StandardVocab* view = nullptr;
+    const frontend::GrammarVocabulary* view = nullptr;
     mutable std::string scratch;
 
     static const std::string& piece(void* context, llama_token id) {
@@ -178,7 +178,7 @@ private:
 // the sampler's validate path (a one-element apply) without disturbing the walk.
 class Oracle {
 public:
-    Oracle(const StandardVocab& vocabulary, const std::string& gbnf)
+    Oracle(const frontend::GrammarVocabulary& vocabulary, const std::string& gbnf)
         : vocabulary_(vocabulary) {
         bridge_.view = &vocabulary_;
         facade_      = llama_vocab{.context     = &bridge_,
@@ -211,7 +211,7 @@ public:
     }
 
 private:
-    const StandardVocab& vocabulary_;
+    const frontend::GrammarVocabulary& vocabulary_;
     OracleBridge bridge_;
     llama_vocab facade_;
     std::unique_ptr<EngineOwner> owner_;
@@ -471,6 +471,100 @@ void test_wide_stacks() {
     check(row_bit(row, 118), "wide-stack row allows the shared leading 'v'");
 }
 
+// ---------------------------------------------------------------------------
+// Test 6: deep trie descent. A permissive grammar walks one trie level per
+// codepoint of a matching piece until the subtree bulk rule takes over (a
+// 200-codepoint piece measured 130 levels before the bulk step); the visit()
+// frame once held five position sets (~129 KiB at kMaxPos 128), and the
+// Qwen3.8-27B vocabulary reaches depths that overflowed an 8 MiB worker stack
+// (66 frames). This drives the same path on a synthetic vocabulary.
+// ---------------------------------------------------------------------------
+
+class LongPieceVocab final : public frontend::GrammarVocabulary {
+public:
+    static constexpr std::size_t kLongPieceLength = 200;
+
+    LongPieceVocab() {
+        for (int byte = 0; byte < 256; ++byte) {
+            pieces_.emplace_back(1, static_cast<char>(byte));
+        }
+        pieces_.emplace_back(kLongPieceLength, 'a');
+        const int eos = static_cast<int>(pieces_.size());
+        pieces_.emplace_back("<eos>");
+        eog_ = {eos};
+        for (std::size_t id = 0; id < pieces_.size(); ++id) {
+            piece_to_id_.emplace(pieces_[id], static_cast<int>(id));
+            max_length_ = std::max(max_length_, static_cast<int>(pieces_[id].size()));
+        }
+    }
+
+    [[nodiscard]] int token_count() const noexcept override {
+        return static_cast<int>(pieces_.size());
+    }
+    [[nodiscard]] std::string_view piece(int id) const override {
+        return pieces_[static_cast<std::size_t>(id)];
+    }
+    [[nodiscard]] bool is_eog(int id) const override {
+        return std::find(eog_.begin(), eog_.end(), id) != eog_.end();
+    }
+    [[nodiscard]] std::vector<int> encode(std::string_view text) const override {
+        std::vector<int> ids;
+        std::size_t offset = 0;
+        while (offset < text.size()) {
+            int matched = 0;
+            const int limit = std::min<int>(max_length_, static_cast<int>(text.size() - offset));
+            for (int length = limit; length >= 1; --length) {
+                const auto found = piece_to_id_.find(
+                    std::string(text.substr(offset, static_cast<std::size_t>(length))));
+                if (found != piece_to_id_.end()) {
+                    matched = length;
+                    ids.push_back(found->second);
+                    break;
+                }
+            }
+            if (matched == 0) { throw std::runtime_error("test vocabulary cannot encode input"); }
+            offset += static_cast<std::size_t>(matched);
+        }
+        return ids;
+    }
+
+private:
+    std::vector<std::string> pieces_;
+    std::vector<int> eog_;
+    std::unordered_map<std::string, int> piece_to_id_;
+    int max_length_ = 0;
+};
+
+void test_deep_piece_walk() {
+    auto vocabulary = std::make_shared<LongPieceVocab>();
+    std::string error;
+    auto grammar =
+        frontend::CompiledGrammar::compile("root ::= [^\\n]{1,400}", vocabulary, &error);
+    check(grammar != nullptr, "deep-walk grammar compiled", error);
+    if (!grammar) { return; }
+
+    const int long_id =
+        vocabulary->encode(std::string(LongPieceVocab::kLongPieceLength, 'a')).front();
+    auto state     = grammar->initial_state();
+    const auto row = grammar->row_for(state);
+
+    Oracle oracle(*vocabulary, "root ::= [^\\n]{1,400}");
+    int mismatches = 0;
+    for (int id = 0; id < vocabulary->token_count(); ++id) {
+        const bool expected = oracle.token_allowed(id);
+        const bool actual   = row_bit(row, id);
+        if (actual != expected) {
+            ++mismatches;
+            check(false, "deep-walk row matches the oracle for id " + std::to_string(id),
+                  std::string("producer=") + (actual ? "1" : "0") + " oracle=" +
+                      (expected ? "1" : "0"));
+        }
+    }
+    check(mismatches == 0, "deep-walk row matches the oracle");
+    check(row_bit(row, long_id), "deep-walk row allows the 200-codepoint piece");
+    check(row_bit(row, static_cast<int>('a')), "deep-walk row allows the single-byte piece");
+}
+
 }  // namespace
 
 int main() {
@@ -479,6 +573,7 @@ int main() {
     test_shape_cache();
     test_cost_smoke();
     test_wide_stacks();
+    test_deep_piece_walk();
     if (g_failures == 0) {
         std::fprintf(stderr, "producer tests passed\n");
         return 0;

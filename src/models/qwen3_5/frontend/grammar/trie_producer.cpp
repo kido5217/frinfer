@@ -592,6 +592,7 @@ void Producer::build(const GrammarVocabulary& vocabulary) {
     exceptions_.clear();
     exception_bytes_.clear();
     eog_ids_.clear();
+    trie_depth_ = 0;
     std::size_t max_piece_bytes = 0;
 
     for (int id = 0; id < static_cast<int>(token_count_); ++id) {
@@ -675,6 +676,7 @@ void Producer::build(const GrammarVocabulary& vocabulary) {
             const std::uint32_t child = static_cast<std::uint32_t>(nodes_.size());
             Node node;
             node.depth = static_cast<std::uint16_t>(d + 1);
+            if (node.depth > trie_depth_) { trie_depth_ = node.depth; }
             // Lexicographic item order: this item is the first id of the new
             // subtree, so the subtree block starts here and is extended below.
             node.sub_begin = static_cast<std::uint32_t>(euler_ids_.size());
@@ -706,6 +708,10 @@ void Producer::build(const GrammarVocabulary& vocabulary) {
         end.own_end = static_cast<std::uint32_t>(euler_ids_.size());
         prev_path.assign(path, path + item.len);
     }
+
+    // One walk scratch per codepoint depth: the deepest matching path is the longest
+    // piece, and pre-sizing keeps references stable across the recursive descent.
+    visit_scratch_.resize(static_cast<std::size_t>(trie_depth_) + 1);
 
     for (std::size_t n = nodes_.size(); n-- > 0;) {
         std::uint16_t best = 0;
@@ -743,6 +749,7 @@ std::uint64_t Producer::memory_bytes() const noexcept {
     bytes += exception_bytes_.capacity();
     bytes += cap_table_.capacity() * sizeof(CapEntry);
     bytes += prep_table_.capacity() * sizeof(PrepEntry);
+    bytes += visit_scratch_.capacity() * sizeof(VisitScratch);
     return bytes;
 }
 
@@ -1000,6 +1007,13 @@ bool Producer::try_bulk(std::uint32_t node, const PosSet& pos, std::uint32_t dep
 void Producer::visit(std::uint32_t node, const PosSet& pos, std::uint32_t depth,
                      std::vector<int>& anc_pos, std::vector<int>& anc_neg) {
     ++stats.nodes_visited;
+    if (depth >= visit_scratch_.size()) {
+        throw std::logic_error("grammar trie walk exceeded its recorded depth");
+    }
+    VisitScratch& scratch = visit_scratch_[depth];
+    scratch.nsigs = 0;
+    PosSet& local = scratch.local;
+
     const Node& nd = nodes_[node];
     if (nd.own_begin != kNoEdge) {
         for (std::uint32_t k = nd.own_begin; k < nd.own_end; ++k) { set_bit(euler_ids_[k]); }
@@ -1021,14 +1035,6 @@ void Producer::visit(std::uint32_t node, const PosSet& pos, std::uint32_t depth,
     const PrepEntry* prepared[kMaxPos];
     for (int i = 0; i < pos.n; ++i) { prepared[i] = prepare_cached(pos.s[i]); }
 
-    struct SigEntry {
-        std::uint64_t sig;
-        PosSet set;
-    };
-    constexpr int kSigCache = 4;
-    SigEntry sigs[kSigCache];
-    int nsigs = 0;
-
     for (std::uint32_t e = nd.first_edge; e != kNoEdge; e = edges_[e].next) {
         ++stats.edges_visited;
         const std::uint32_t cp = edges_[e].cp;
@@ -1038,16 +1044,15 @@ void Producer::visit(std::uint32_t node, const PosSet& pos, std::uint32_t depth,
                 sig |= 1ULL << i;
             }
         }
-        PosSet local;
         PosSet* next = &local;
         if (sig == 0) {
             local.n = 0;
             local.has_empty = false;
         } else {
             bool found = false;
-            for (int i = 0; i < nsigs; ++i) {
-                if (sigs[i].sig == sig) {
-                    next = &sigs[i].set;
+            for (int i = 0; i < scratch.nsigs; ++i) {
+                if (scratch.sigs[i] == sig) {
+                    next = &scratch.sets[i];
                     found = true;
                     break;
                 }
@@ -1058,11 +1063,11 @@ void Producer::visit(std::uint32_t node, const PosSet& pos, std::uint32_t depth,
                 for (int i = 0; i < pos.n; ++i) {
                     if ((sig >> i) & 1U) { succ_merge(local, prepared[i]->succ); }
                 }
-                if (nsigs < kSigCache) {
-                    sigs[nsigs].sig = sig;
-                    pos_copy(sigs[nsigs].set, local);
-                    next = &sigs[nsigs].set;
-                    ++nsigs;
+                if (scratch.nsigs < kVisitSigCache) {
+                    scratch.sigs[scratch.nsigs] = sig;
+                    pos_copy(scratch.sets[scratch.nsigs], local);
+                    next = &scratch.sets[scratch.nsigs];
+                    ++scratch.nsigs;
                 }
             }
         }
