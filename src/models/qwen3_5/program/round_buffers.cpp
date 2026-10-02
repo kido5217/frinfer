@@ -1,4 +1,5 @@
 #include "models/qwen3_5/program/round_buffers.h"
+#include "models/qwen3_5/program/mask_transport.h"
 #include "models/load_options.h"
 #include <algorithm>
 #include <limits>
@@ -98,9 +99,9 @@ RoundStateLayout begin_round_state_layout(LayoutBuilder& builder, const RoundSta
         const std::int32_t words =
             checked_i32((static_cast<std::uint64_t>(spec.mask_token_domain) + 31ULL) / 32ULL,
                         "grammar mask words exceed int32");
-        layout.mask_rows =
-            add_tensor(builder, DType::I32, {words, static_cast<std::int32_t>(kMaskRowCapacity)},
-                       "grammar mask rows");
+        layout.mask_rows = add_tensor(
+            builder, DType::I32, {words, static_cast<std::int32_t>(MaskTransport::kRowCapacity)},
+            "grammar mask rows");
         layout.mask_active = add_tensor(builder, DType::I32, {1}, "grammar mask active");
     }
     return layout;

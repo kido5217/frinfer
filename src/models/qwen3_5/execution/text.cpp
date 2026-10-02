@@ -10,6 +10,7 @@
 #include "models/qwen3_5/execution/visual_scatter.h"
 #include "models/qwen3_5/execution/vision.h"
 #include "models/qwen3_5/program/vision_control.h"
+#include "models/qwen3_5/program/mask_transport.h"
 #include "ninfer/ops/apply_mask.h"
 #include "ninfer/ops/argmax.h"
 #include "ninfer/ops/attn_input_proj.h"
@@ -774,7 +775,7 @@ void TextContext::target_verify_batch_impl(const Tensor& ids, const Tensor& cach
             // speculative acceptance consumer, so no disallowed token can be licensed.
             ops::apply_mask(logits, width, batch, io_.mask_rows, io_.mask_active,
                             dimension(parameters_.model.resources().public_token_count),
-                            static_cast<std::int32_t>(kMaximumConcurrency), stream);
+                            static_cast<std::int32_t>(MaskTransport::lane_stride()), stream);
         }
         ops::argmax(flat_logits, flat_tokens,
                     dimension(parameters_.model.resources().public_token_count), stream);
@@ -1286,7 +1287,7 @@ TextContext::prefill_impl(std::span<const int> ids, const TextPrefill* text_pref
                     ops::apply_mask(
                         logits, /*columns=*/1, /*batch=*/1, io_.mask_rows, io_.mask_active,
                         dimension(parameters_.model.resources().public_token_count),
-                        static_cast<std::int32_t>(kMaximumConcurrency), s);
+                        static_cast<std::int32_t>(MaskTransport::lane_stride()), s);
                 }
                 // Set io_.pos to the bonus token's absolute position (base + T) before picking so
                 // the sampler RNG is keyed by it (prefill purpose keeps it distinct from the first

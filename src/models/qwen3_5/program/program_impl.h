@@ -16,6 +16,7 @@
 #include "models/qwen3_5/program/storage/kv_store.h"
 #include "models/qwen3_5/program/storage/state_store.h"
 #include "models/qwen3_5/program/prefix_identity.h"
+#include "models/qwen3_5/program/mask_transport.h"
 #include "models/qwen3_5/program/planning/resource_projection.h"
 #include "models/qwen3_5/execution/text.h"
 #include "models/qwen3_5/execution/vision.h"
@@ -623,12 +624,8 @@ public:
     std::vector<SharedPrefixSlot> shared_prefix_slots;
     std::array<std::uint32_t, kMaximumConcurrency> active_continuations{};
     std::array<RequestControl, kMaximumConcurrency> requests;
-    // Host staging for grammar mask rows, laid out like the device table ([words, rows]).
-    std::vector<std::uint32_t> mask_staging;
-    // Contiguous [columns x words] block the grammar fills before the scatter into mask_staging.
-    std::vector<std::uint32_t> mask_columns_staging;
-    std::size_t mask_staging_words = 0;
-    std::int32_t mask_active_host  = 0;
+    // Host staging, row-table geometry and upload lifecycle for grammar mask rows.
+    MaskTransport mask_transport_;
     std::array<std::uint64_t, kMaximumConcurrency> lane_epochs{};
 
     DecodeGraphFamily ordinary_graphs;

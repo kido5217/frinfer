@@ -18,13 +18,6 @@ inline constexpr std::uint32_t kMtpDecodeMaximumWidth     = kMtpDecodeMaximumDra
 inline constexpr std::uint32_t kDFlashDecodeMaximumDrafts = 15;
 inline constexpr std::uint32_t kDFlashDecodeMaximumWidth  = kDFlashDecodeMaximumDrafts + 1;
 
-// Mask rows mirror the decode batch layout: column-major over (kMaskColumnCapacity columns,
-// kMaximumConcurrency batches), so a decode lane (column c, batch b) addresses row
-// c * kMaximumConcurrency + b. The column capacity covers the widest decode layout any backend
-// can present (DFlash target verify); MTP and ordinary layouts are prefixes of it.
-inline constexpr std::uint32_t kMaskColumnCapacity = kDFlashDecodeMaximumWidth;
-inline constexpr std::uint32_t kMaskRowCapacity    = kMaskColumnCapacity * kMaximumConcurrency;
-
 struct RoundStateSpec {
     std::int32_t hidden          = 0;
     std::int32_t output_rows     = 0;
@@ -198,9 +191,9 @@ struct RoundStateLayout {
     std::optional<TensorRegion> yarn_inv_freq;
     std::vector<float> yarn_inv_freq_values;
     float yarn_mscale = 1.0f;
-    // Grammar mask transport: I32 [words, kMaskRowCapacity] mask rows (present only when
-    // spec.mask_token_domain > 0) and the device-resident I32[1] active flag that gates the
-    // apply-mask Op per round.
+    // Grammar mask transport: I32 [words, rows] mask rows mirroring the decode batch layout
+    // (present only when spec.mask_token_domain > 0; geometry in mask_transport.h) and the
+    // device-resident I32[1] active flag that gates the apply-mask Op per round.
     std::optional<TensorRegion> mask_rows;
     std::optional<TensorRegion> mask_active;
     bool complete = false;
@@ -351,8 +344,8 @@ struct RoundState {
     // unextended) and the host-side attention magnitude.
     Tensor yarn_inv_freq;
     float yarn_mscale = 1.0f;
-    // Grammar mask transport: I32 [words, kMaskRowCapacity] rows and the I32[1] active flag
-    // (null-backed when the program has no mask regions).
+    // Grammar mask transport: I32 [words, rows] table and the I32[1] active flag (null-backed
+    // when the program has no mask regions; geometry in mask_transport.h).
     Tensor mask_rows;
     Tensor mask_active;
 
