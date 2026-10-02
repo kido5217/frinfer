@@ -200,13 +200,15 @@ void run_vector(const ordered_json& vector, const std::map<std::string, ordered_
         const std::string committed_reasoning(core.reasoning());
         const std::string committed_content(core.content());
         const std::string committed_held(core.held());
-        (void)core.preview(feed);
+        core.begin_preview();
+        (void)core.preview_feed(feed);
         check(core.reasoning() == committed_reasoning && core.content() == committed_content &&
                   core.held() == committed_held,
               vector_id + ": discarded preview changed the committed state",
               "at round " + std::to_string(index));
 
-        const ChatParseResult fed = core.preview(feed);
+        core.begin_preview();
+        const ChatParseResult fed = core.preview_feed(feed);
         core.commit();
         reasoning += fed.reasoning_delta;
         content += fed.content_delta;
@@ -219,11 +221,13 @@ void run_vector(const ordered_json& vector, const std::map<std::string, ordered_
             }
             const std::string pre_terminal_reasoning(core.reasoning());
             const std::string pre_terminal_content(core.content());
-            (void)core.preview_terminal();
+            core.begin_preview();
+            (void)core.preview_finish();
             check(core.reasoning() == pre_terminal_reasoning &&
                       core.content() == pre_terminal_content && !core.finished(),
                   vector_id + ": discarded terminal preview changed the committed state");
-            const ChatParseResult terminal = core.preview_terminal();
+            core.begin_preview();
+            const ChatParseResult terminal = core.preview_finish();
             core.commit();
             reasoning += terminal.reasoning_delta;
             content += terminal.content_delta;
