@@ -672,9 +672,12 @@ Observed in `~/.config/opencode/opencode.jsonc` (v2.0.22 format: `providers` /
 4. **`compaction: { auto: false, prune: false }`** ⇒ on a context-overflow 4xx the
    runner does **not** auto-compact (`compaction.ts:203-204`): the step fails with
    the provider error and only a manual `/compact` recovers. Combined with the
-   declared window (`limit.context: 446902`) exceeding the deployed unit's actual
-   window (262144 per the map notes), over-window prompts will surface as fatal
-   errors rather than recovering silently. Declared limits are opencode's only
+   declared window (`limit.context: 446902`) — which matches the deployed unit's
+   actual window (verified by serve-capabilities, ticket #141; the 262144 figure
+   in the map notes at the time of writing was superseded) — over-window prompts
+   will surface as fatal errors rather than recovering silently (if a different
+   arm serving only 262144 holds the GPU, the declaration over-declares it by
+   184,758 tokens). Declared limits are opencode's only
    window knowledge (§5.1).
 5. **Fields/headers the backend must tolerate**: `store: false`, `strict: false`
    per tool, `stream_options.include_usage`, `reasoning_effort` (variant
