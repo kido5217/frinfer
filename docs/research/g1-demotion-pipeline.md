@@ -73,7 +73,8 @@ Salvaged by design (no demotion):
   parses to end-of-input and passes the adapter checks (`:473-532`).
 - **B1 framing**: the whitespace before a marker is withheld and re-emitted
   only on demotion; no byte is lost (corpus `tool-call-marker-split-across-rounds`).
-- **R2–R5** (the reasoning boundary, `:588-656`): first `</think>` followed by
+- **R2–R5** (the reasoning boundary; `:588-656` in `feed_reasoning`, R5's
+  terminal implicit-close at `:677-688`): first `</think>` followed by
   format whitespace closes reasoning; a close followed by other bytes is
   quoted protocol text and stays reasoning; a trailing partial marker is held;
   at terminal an implicit close is consumed.
@@ -114,16 +115,18 @@ store (assistant messages).
 
 | Req | When (UTC) | Prompt / completion | Client session | Trigger | Client-visible result |
 |---|---|---|---|---|---|
-| 310 | 10-02 09:57:47 | 90,823 / 10,073 | map #139's #141 research subagent (`explore`) | **(a) quoted marker in prose** — the final report quotes the literal `tool_call_open` marker while describing the wire | benign round-trip: the tail re-emitted as content; the report arrived; the ticket completed |
-| 533 | 10-02 21:07:50 | 222,012 / 7,070 | map #139's #142 research subagent (`general`) | **(a)** same — the verification checklist cites the marker | benign round-trip; the ticket completed |
-| 876 | 10-02 22:08:15 | 123,262 / 354 | **this session** (map #145 charting) | **(b) marker inside the call's own arguments** — the intended subagent dispatch quoted marker fragments in its brief | **call lost**: markup returned as text; opencode saw a text-only turn; session idle |
-| 878 | 10-02 22:08:40 | 179,434 / 2,613 | same (retry dispatch) | **(b)** again | **call lost**; session went `idle` at 22:08:40; the user's "continue" at 22:08:57 is the manual recovery |
+| 310 | 10-02 09:57:47 | 90,823 / 10,073 | a map-#86 ("thinking default under constrained requests") research subagent (`explore`) | **(a) quoted marker in prose** — its report "Current-code facts for issue #86" quotes the literal `tool_call_open` marker in prose | benign round-trip: the tail re-emitted as content; the report text arrived (#86 closed 35 min later) |
+| 533 | 10-02 21:07:50 | 222,012 / 7,070 | map #139's adversarial review subagent (`general`) | **(a)** same — its verification checklist cites the marker | benign round-trip: the tail re-emitted; the review report arrived |
+| 876 | 10-02 22:08:15 | 123,262 / 354 | the #146 research subagent itself (`ses_f0159c808…`) | **(b) marker inside the call's own arguments** — its own `shell` call carried an inline `<parameter=` fragment in the query string | **call lost**: the demoted call text became its final output (the garbled "result" the parent read); that subagent idled at 22:08:15 |
+| 878 | 10-02 22:08:40 | 179,434 / 2,613 | **this session** (map #145 charting; the retry dispatch to the #146 subagent) | **(b)** again — the retry brief quoted marker fragments | **call lost**; session went `idle` at 22:08:40; the user's "continue" at 22:08:57 is the manual recovery |
 | 907 | 10-02 22:17:33 | 233,186 / **32,768** (`output_limit`) | same (the findings-doc write) | **(c) degenerate repetition + limit-path truncation** — the model collapsed into marker repetition; the turn hit the output cap mid-region | 32,768 tokens of degenerate markup returned as content, `finish_reason "length"`; the write never executed; the user switched models |
 
 Trigger families:
-- **(a) quoted markers in prose** — usually a benign round-trip (bytes
-  re-emitted), but always a recorded demotion; when a real call follows the
-  quoted marker, the call is lost (the held region covers it).
+- **(a) quoted markers in prose** — a benign round-trip (bytes re-emitted as
+  content); the corpus pins recovery of a real call that follows a quoted
+  marker (`tool-call-quoted-marker-before-real-call`,
+  `pr309-quoted-marker-before-real-call`), but every occurrence is still a
+  recorded demotion.
 - **(b) markers inside a call's own arguments** — the argument text carries
   `parameter` open/close fragments; unbalanced (B4) or tail-breaking content
   demotes the real call. **The call is lost and the client stalls.**
@@ -132,18 +135,21 @@ Trigger families:
   demotes on the limit path.
 
 **Content-triggered demotion — part of the bug.** All five payloads come from
-sessions whose *content discusses the protocol markup* (two research agents
-writing about the wire, this session documenting and dispatching the G1
-work). This is a deterministic property of the pipeline, not model
+sessions whose *content discusses the protocol markup* (a map-#86 research
+subagent and map #139's review subagent writing about the wire; the #146
+research subagent and this charting session working on the G1 fix itself).
+The mechanism is a deterministic property of the pipeline, not model
 randomness: the hold starts at the first marker byte sequence in any
-generated content — prose, quoted examples, or a tool call's own argument
-values — and with no quote/prose discrimination for the tool marker (§3),
-any marker text that does not form a complete valid region demotes the
-entire held tail, real calls included. A conversation about the protocol
-thereby disables the protocol's own tool calls: the sessions that work on
-this parser are the most exposed to its defect. This trigger class is a
-first-class robustness target for the fix (the §7 lever 1), not an incident
-footnote.
+generated content — prose, quoted examples, or a call's own argument values
+— and B2 then tries every marker occurrence as a candidate. A quoted marker
+in prose is usually recovered or round-trips benignly (payloads 310/533).
+The class becomes work-stopping when the call *itself* embeds marker
+fragments — an unbalanced nested marker in a value fails B4, so no candidate
+(the call's own subregion included) consumes to end and the real call is
+demoted (payloads 876/878) — or when a markup loop is cut by the output
+bound (payload 907). A conversation about the protocol thereby degrades its
+own tool calls; this trigger class is a first-class robustness target (§7),
+not an incident footnote.
 
 ## 5. The corpus vectors that pin demotion (and the gaps)
 
@@ -155,9 +161,12 @@ Demotion-class vectors in `tests/fixtures/chat_parsing/corpus.json`:
 `tool-call-name-invalid-characters`,
 `pr309-later-candidate-must-consume-the-end`.
 
-Gaps (no vector today): the truncated-region shape (payload 907); a quoted
-marker in prose **followed by a real call** (the family-(b) loss case); a
-degenerate-repetition region.
+Already pinned: quoted-marker-then-real-call recovery
+(`tool-call-quoted-marker-before-real-call`,
+`pr309-quoted-marker-before-real-call`) and the family-(b) demotion shape
+(`tool-call-unmatched-nested-parameter`). Gaps (no vector today): the
+**truncated-region** shape (payload 907) and a **degenerate-repetition**
+region.
 
 ## 6. opencode's reaction map (v2.0.22)
 
@@ -174,8 +183,10 @@ From the reviewed requirements doc §3.7/§4 (source re-verified this session):
   auth, quota, content-policy, `model_not_found`, any other 4xx): the step
   fails; with `compaction.auto: false` there is no automatic recovery; the
   error surfaces in the session.
-- **Dead stream** (`incomplete-stream` / in-band SSE error event / mid-stream
-  transport read failure, `openai-chat.ts:280-286,1048-1057`): if **no output
+- **Dead stream** (`incomplete-stream` — the stream ended without a
+  `finish_reason`, `openai-chat.ts:1224-1229`; in-band SSE error event,
+  `openai-chat.ts:280-286,1048-1057`; mid-stream transport read failure,
+  `step.ts:281-285`): if **no output
   had started**, the whole step is retried with the same request
   (`step.ts:192-197`); if output had started, the partial assistant message
   persists, a synthetic user message *"The previous response was interrupted.
@@ -196,10 +207,12 @@ through the continuation path — the loop resumes without user action.
 ## 7. What this implies for the fix (input to the design, #148)
 
 Robustness (parse-side; the llama.cpp-port ranking is #147's job):
-1. **Content-marker discrimination** for `tool_call_open`, mirroring R3's rule
-   for the reasoning close: a marker that cannot begin a well-formed region in
-   its byte context is prose, not protocol — the primary fix for the
-   content-triggered class (§4) and its families (a) and (b).
+1. **Argument-value semantics** — the family-(b) fix and the primary
+   work-stopping shape: a value rule that admits marker fragments as text
+   (cf. #147's M2 delimiter-terminated values, a #148 decision against the
+   corpus-pinned rows 21/22). The prose (family a) cases are already recovered
+   or benign; a "quoted marker stays text" rule à la R3 would be the
+   belt-and-braces form.
 2. **B4 value semantics** — the unbalanced nested `parameter` rule is what
    kills family (b)'s real calls; compare the vendored/upstream value rules
    (#147).
@@ -221,16 +234,21 @@ retry-loop's behavior under repeated demotion.
 (§4), sessions doing this map's work are the most exposed — they should run
 on a model not served by ninfer-yarn until the fix lands, or accept manual
 "continue" recoveries (five payloads, three of them work-stopping). Once
-the fix lands, this class must be covered by the corpus gate: content
-containing marker fragments followed by a real call is exactly the vector
-the corpus lacks today (§5).
+the fix lands, the corpus gate must cover the true gaps (§5): the
+truncated-region shape and a degenerate-repetition region; and if the M2
+value semantics are adopted (#147), the family-(b) vectors rows 21/22 are
+rewritten alongside.
 
 ## 8. Incident note
 
-The five payloads were observed live, not reconstructed: two map #139
-research subagents (310, 533), and this session's own charting (876, 878 —
-the subagent dispatch lost twice, the session idled, the user's "continue"
-recovered it; 907 — the findings-doc write collapsed into a 32,768-token
-markup loop and demoted on the output bound). Session evidence:
-`ses_f01bf532dffezDA16aYsYdnVPi` (this session), `ses_f03f5ebeeffeshC0Dwc8EU7Yai`
-(#141), `ses_f0197ab5effeMUmnDwneXjf8gQ` (#142).
+The five payloads were observed live, not reconstructed: a map-#86 research
+subagent (310 — quoted markers in its report prose), map #139's adversarial
+review subagent (533 — same), the #146 research subagent's own demoted
+`shell` call (876 — the inline fragment in its query string ended its
+investigation), and this charting session (878 — the retry dispatch to that
+subagent was lost, the session idled at 22:08:40, and the user's "continue"
+at 22:08:57 recovered it; 907 — the findings-doc write collapsed into a
+markup loop and demoted on the 32,768 output bound). Session evidence:
+`ses_f03f5ebeeffeshC0Dwc8EU7Yai` (map #86), `ses_f0197ab5effeMUmnDwneXjf8gQ`
+(map #139 review), `ses_f0159c808ffe734rS9NWVeOe0C` (#146 research),
+`ses_f01bf532dffezDA16aYsYdnVPi` (charting).
