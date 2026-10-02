@@ -1,0 +1,77 @@
+schema_version: 1
+
+# Two-arm GPQA-Diamond comparison: the same artifact and serving flags at the
+# native context window (262,144) and the deployed YaRN window (446,902);
+# only --max-context differs. Map: kido5217/ninfer-yarn#129.
+
+targets:
+  qwen38_api:
+    protocol: openai_chat
+    base_url: http://127.0.0.1:18080/v1
+    model: qwen3.8-27b
+    max_concurrency: 1
+    request:
+      timeout_seconds: 86400
+      retries: 2
+      retry_interval_seconds: 10
+
+suites:
+  native:
+    jobs:
+      - id: gpqa_diamond_native
+        backend: evalscope
+        dataset: gpqa_diamond
+        target: qwen38_api
+        max_concurrency: 1
+        generation:
+          temperature: 1.0
+          top_p: 0.95
+          top_k: 20
+          presence_penalty: 0.0
+          frequency_penalty: 0.0
+          # GPQA-Diamond's full output budget. Both windows admit the largest
+          # measured prompt (2,847 tokens) plus this budget: 2,847 + 245,760 =
+          # 248,607 <= 262,144.
+          max_tokens: 245760
+          seed: 42
+          extra_body:
+            enable_thinking: true
+            min_p: 0.0
+        backend_args:
+          few_shot_num: 0
+          judge_strategy: rule
+          dataset_hub: modelscope
+
+  yarn:
+    jobs:
+      - id: gpqa_diamond_yarn
+        backend: evalscope
+        dataset: gpqa_diamond
+        target: qwen38_api
+        max_concurrency: 1
+        generation:
+          temperature: 1.0
+          top_p: 0.95
+          top_k: 20
+          presence_penalty: 0.0
+          frequency_penalty: 0.0
+          max_tokens: 245760
+          seed: 42
+          extra_body:
+            enable_thinking: true
+            min_p: 0.0
+        backend_args:
+          few_shot_num: 0
+          judge_strategy: rule
+          dataset_hub: modelscope
+
+runtime:
+  # Keep the two arms strictly sequential.
+  max_parallel_jobs: 1
+  runs_dir: eval/runs
+  progress:
+    enabled: true
+    refresh_seconds: 1
+    heartbeat_seconds: 900
+  samples:
+    retention: all
