@@ -2,6 +2,7 @@
 #include "models/qwen3_5/program/context_work.h"
 #include "models/qwen3_5/program/context.h"
 #include "models/qwen3_5/execution/linear.h"
+#include "models/qwen3_5/program/mask_transport.h"
 #include "core/device.h"
 #include "ninfer/ops/apply_mask.h"
 #include "ninfer/ops/gdn_replay.h"
@@ -164,7 +165,7 @@ void sample_from_hidden(PrefillContext& state, const Tensor& hidden, std::int32_
         ops::apply_mask(logits, /*columns=*/1, /*batch=*/1, state.execution.io.mask_rows,
                         state.execution.io.mask_active,
                         dimension(state.execution.parameters.model.resources().public_token_count),
-                        static_cast<std::int32_t>(kMaximumConcurrency),
+                        static_cast<std::int32_t>(MaskTransport::lane_stride()),
                         state.execution.device.stream);
     }
     CUDA_CHECK(cudaMemcpyAsync(state.execution.io.pos.data, &absolute_position,

@@ -1,6 +1,7 @@
 #include "core/layout.h"
 #include "models/qwen3_5/state/decoder_state.h"
 #include "models/qwen3_5/program/speculative/mtp_alignment.h"
+#include "models/qwen3_5/program/mask_transport.h"
 #include "models/qwen3_5/program/round_buffers.h"
 #include "models/qwen3_5/program/vision_control.h"
 
@@ -11,6 +12,7 @@
 #include <array>
 #include <cstdint>
 #include <iostream>
+#include <span>
 #include <string_view>
 #include <vector>
 
@@ -158,10 +160,11 @@ void test_round_layout() {
     expect(round.mtp_decode.has_value() && round.mtp_decode->alignment_ids.shape[0] == 6 &&
                round.mtp_decode->alignment_ids.shape[1] == 1,
            "MTP decode frame is explicit");
-    // Derived, not self-referential: the widest lane (DFlash's last column, batch 8) must fit.
-    constexpr std::int32_t widest_required_rows = (q36::kDFlashDecodeMaximumWidth - 1) *
-                                                      ninfer::kMaximumConcurrency +
-                                                  ninfer::kMaximumConcurrency;
+    // Derived from the transport, not repeated: the widest lane (DFlash's last column, batch 8)
+    // must fit.
+    constexpr std::int32_t widest_required_rows =
+        static_cast<std::int32_t>(q36::MaskTransport::required_rows(
+            q36::MaskTransport::kColumnCapacity, ninfer::kMaximumConcurrency));
     expect(round.mask_rows.has_value() && round.mask_rows->shape[0] == 4 &&
                round.mask_rows->shape[1] >= widest_required_rows &&
                round.mask_active.has_value() && round.mask_active->shape[0] == 1,
@@ -427,6 +430,59 @@ void test_rebuild_work_prompt_frontier_boundary() {
            "continuation growth did not preserve the prompt-frontier rebuild split");
 }
 
+void test_mask_transport() {
+    constexpr std::uint32_t words = 4;
+    q36::MaskTransport transport(words);
+    expect(!transport.enabled(), "a host-only transport reports no device table");
+    expect(transport.words() == words, "mask transport staging is sized by the word count");
+    expect(q36::MaskTransport::lane_stride() == 8 && q36::MaskTransport::row_index(2, 3) == 19 &&
+               q36::MaskTransport::required_rows(16, 8) == 128,
+           "mask transport geometry pins the column-major row table");
+
+    constexpr std::uint32_t columns = 3;
+    constexpr std::size_t row_count = 2;
+    transport.begin_round(columns, row_count);
+    for (std::uint32_t column = columns; column < q36::MaskTransport::kColumnCapacity; ++column) {
+        const std::span<const std::uint32_t> row = transport.staged_row(column, 0);
+        expect(row.size() == words &&
+                   std::all_of(row.begin(), row.end(),
+                               [](std::uint32_t value) { return value == 0xFFFFFFFFU; }),
+               "columns outside the round window stay permissive");
+    }
+    // Two batch positions with distinct values, published through the fill block.
+    for (std::size_t position = 0; position < row_count; ++position) {
+        std::span<std::uint32_t> block = transport.fill_block(columns);
+        expect(block.size() == columns * words, "the fill block spans columns x words");
+        for (std::uint32_t column = 0; column < columns; ++column) {
+            for (std::uint32_t word = 0; word < words; ++word) {
+                block[column * words + word] =
+                    static_cast<std::uint32_t>(position) * 0x100U + column * 0x10U + word;
+            }
+        }
+        transport.publish(static_cast<std::uint32_t>(position), columns);
+    }
+    // The staged table addresses lane (column c, batch b) at row c * lane_stride() + b.
+    for (std::uint32_t column = 0; column < columns; ++column) {
+        for (std::size_t position = 0; position < row_count; ++position) {
+            const std::span<const std::uint32_t> row =
+                transport.staged_row(column, static_cast<std::uint32_t>(position));
+            expect(row.size() == words, "staged rows carry one word per 32 tokens");
+            for (std::uint32_t word = 0; word < words; ++word) {
+                expect(row[word] ==
+                           static_cast<std::uint32_t>(position) * 0x100U + column * 0x10U + word,
+                       "the staged row follows the column x lane_stride + batch mapping");
+            }
+        }
+    }
+    // Batch rows beyond the round window stay permissive: nothing rewrites them this round.
+    const std::span<const std::uint32_t> beyond =
+        transport.staged_row(0, static_cast<std::uint32_t>(row_count));
+    expect(beyond.size() == words &&
+               std::all_of(beyond.begin(), beyond.end(),
+                           [](std::uint32_t value) { return value == 0xFFFFFFFFU; }),
+           "batch rows beyond the round window stay permissive");
+}
+
 } // namespace
 
 int main() {
@@ -436,6 +492,7 @@ int main() {
     test_vision_control();
     test_prefix_identity();
     test_rebuild_work_prompt_frontier_boundary();
+    test_mask_transport();
     if (failures != 0) {
         std::cerr << failures << " Qwen3.6 runtime mechanism checks failed\n";
         return 1;

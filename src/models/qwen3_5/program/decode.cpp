@@ -2,6 +2,7 @@
 #include "models/qwen3_5/program/context_work.h"
 #include "models/qwen3_5/program/context.h"
 #include "models/qwen3_5/program/graph_execution.h"
+#include "models/qwen3_5/program/mask_transport.h"
 #include "core/nvtx.h"
 #include "core/device.h"
 #include "ninfer/ops/apply_mask.h"
@@ -58,7 +59,8 @@ auto ordinary_batch_body(OrdinaryBatchContext& state, std::int32_t batch_size,
                 logits, /*columns=*/1, batch_size, state.execution.io.mask_rows,
                 state.execution.io.mask_active,
                 dimension(state.execution.parameters.model.resources().public_token_count),
-                static_cast<std::int32_t>(kMaximumConcurrency), state.execution.device.stream);
+                static_cast<std::int32_t>(MaskTransport::lane_stride()),
+                state.execution.device.stream);
         }
         ops::sample(logits, sampled,
                     dimension(state.execution.parameters.model.resources().public_token_count),
@@ -861,7 +863,7 @@ runtime::ExecutionTiming ProgramImpl::resolve_non_speculative_pending(
 
 void ProgramImpl::refresh_mask_rows(std::span<const std::uint32_t> lanes,
                                     std::span<const MaskPlan> plans) {
-    if (io.mask_rows.data == nullptr) { return; }
+    if (!mask_transport_.enabled()) { return; }
     const std::size_t row_count = std::min(lanes.size(), plans.size());
     bool any_masked             = false;
     std::uint32_t columns_used  = 1;
@@ -869,7 +871,7 @@ void ProgramImpl::refresh_mask_rows(std::span<const std::uint32_t> lanes,
         RequestControl& request = requests[lanes[row]];
         MaskPlan plan           = row < plans.size() ? plans[row] : MaskPlan{};
         if (!request.grammar_runtime || plan.column_count == 0 ||
-            plan.column_count > kMaskColumnCapacity) {
+            plan.column_count > MaskTransport::kColumnCapacity) {
             plan = MaskPlan{};
         }
         request.pending_mask_plan = plan;
@@ -881,97 +883,46 @@ void ProgramImpl::refresh_mask_rows(std::span<const std::uint32_t> lanes,
     if (!any_masked) {
         // Rows are only read while the flag is raised, so an unconstrained round only has to put
         // the flag back.
-        if (mask_active_host != 0) {
-            const std::int32_t inactive = 0;
-            CUDA_CHECK(cudaMemcpyAsync(io.mask_active.data, &inactive, sizeof(inactive),
-                                       cudaMemcpyHostToDevice, device.stream));
-            mask_active_host = 0;
-        }
+        mask_transport_.deactivate();
         return;
     }
     // Every row of the round is rewritten - masked columns from the grammar, everything else
     // all-ones - so a row left masked by an earlier round can never leak into this one. The
-    // grammar fills a contiguous [columns x words] block; the table stores column c of batch
-    // position b at row c * kMaximumConcurrency + b.
-    for (std::uint32_t column = 0; column < columns_used; ++column) {
-        for (std::size_t position = 0; position < row_count; ++position) {
-            std::span<std::uint32_t> staged(
-                mask_staging.data() +
-                    (static_cast<std::size_t>(column) * kMaximumConcurrency + position) *
-                        mask_staging_words,
-                mask_staging_words);
-            std::fill(staged.begin(), staged.end(), 0xFFFFFFFFU);
-        }
-    }
+    // grammar fills a contiguous [columns x words] block; the transport scatters it into the
+    // column-major row table and uploads one block per column.
+    mask_transport_.begin_round(columns_used, row_count);
     for (std::size_t row = 0; row < row_count; ++row) {
         const MaskPlan plan = requests[lanes[row]].pending_mask_plan;
         if (plan.column_count == 0) { continue; }
-        std::array<int, kMaskColumnCapacity> tokens{};
+        std::array<int, MaskTransport::kColumnCapacity> tokens{};
         tokens.fill(frontend::kUnknownConstraintToken);
         for (std::uint32_t index = 0; index + 1 < plan.column_count; ++index) {
             tokens[index] = active_sequence(lanes[row]).mtp_drafts[index];
         }
         const std::span<const int> column_tokens(tokens.data(), plan.column_count);
-        std::span<std::uint32_t> filled(mask_columns_staging.data(),
-                                        static_cast<std::size_t>(plan.column_count) *
-                                            mask_staging_words);
+        std::span<std::uint32_t> filled = mask_transport_.fill_block(plan.column_count);
         requests[lanes[row]].grammar_runtime->fill_round_rows(column_tokens, filled,
-                                                              mask_staging_words);
-        for (std::uint32_t column = 0; column < plan.column_count; ++column) {
-            const std::size_t device_row =
-                static_cast<std::size_t>(column) * kMaximumConcurrency + row;
-            std::copy_n(mask_columns_staging.data() +
-                            static_cast<std::size_t>(column) * mask_staging_words,
-                        mask_staging_words, mask_staging.data() +
-                                                 device_row * mask_staging_words);
-        }
+                                                              mask_transport_.words());
+        mask_transport_.publish(static_cast<std::uint32_t>(row), plan.column_count);
     }
-    // One upload per column: within a column the used rows are contiguous, across columns they
-    // are kMaximumConcurrency rows apart.
-    for (std::uint32_t column = 0; column < columns_used; ++column) {
-        const std::size_t row_offset =
-            static_cast<std::size_t>(column) * kMaximumConcurrency * mask_staging_words;
-        CUDA_CHECK(cudaMemcpyAsync(
-            io.mask_rows.data + row_offset * sizeof(std::uint32_t),
-            mask_staging.data() + row_offset, row_count * mask_staging_words * sizeof(std::uint32_t),
-            cudaMemcpyHostToDevice, device.stream));
-    }
-    if (mask_active_host != 1) {
-        const std::int32_t active = 1;
-        CUDA_CHECK(cudaMemcpyAsync(io.mask_active.data, &active, sizeof(active),
-                                   cudaMemcpyHostToDevice, device.stream));
-        mask_active_host = 1;
-    }
+    mask_transport_.upload(columns_used, row_count);
 }
 
 void ProgramImpl::refresh_prefill_mask_row(std::uint32_t lane, MaskPlan plan) {
-    if (io.mask_rows.data == nullptr) { return; }
+    if (!mask_transport_.enabled()) { return; }
     RequestControl& request = requests[lane];
     if (!request.grammar_runtime || plan.column_count > 1) { plan = MaskPlan{}; }
     request.pending_mask_plan = plan;
-    const bool masked = plan.column_count != 0;
-    if (masked) {
+    if (plan.column_count != 0) {
         // A prefill step samples one row from the shared step logits, so its row is table row 0.
-        std::span<std::uint32_t> staged(mask_staging.data(), mask_staging_words);
         std::array<int, 1> tokens{frontend::kUnknownConstraintToken};
-        request.grammar_runtime->fill_round_rows(tokens, staged, mask_staging_words);
-        CUDA_CHECK(cudaMemcpyAsync(io.mask_rows.data, staged.data(),
-                                   mask_staging_words * sizeof(std::uint32_t),
-                                   cudaMemcpyHostToDevice, device.stream));
-        if (mask_active_host != 1) {
-            const std::int32_t active = 1;
-            CUDA_CHECK(cudaMemcpyAsync(io.mask_active.data, &active, sizeof(active),
-                                       cudaMemcpyHostToDevice, device.stream));
-            mask_active_host = 1;
-        }
+        std::span<std::uint32_t> filled = mask_transport_.fill_block(1);
+        request.grammar_runtime->fill_round_rows(tokens, filled, mask_transport_.words());
+        mask_transport_.publish(0, 1);
+        mask_transport_.upload(1, 1);
         return;
     }
-    if (mask_active_host != 0) {
-        const std::int32_t inactive = 0;
-        CUDA_CHECK(cudaMemcpyAsync(io.mask_active.data, &inactive, sizeof(inactive),
-                                   cudaMemcpyHostToDevice, device.stream));
-        mask_active_host = 0;
-    }
+    mask_transport_.deactivate();
 }
 
 
