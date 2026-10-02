@@ -56,12 +56,16 @@ Include roots: `common/` first (vendored includes resolve to vendored files), th
 
 ## Unused vendored paths
 
-`json-schema-to-grammar.{h,cpp}` is vendored for compile completeness only: `peg-parser.cpp`
-and the Qwen3-Coder handler reference `build_grammar`/`gbnf_format_literal`, and cutting it
-would mean editing vendored sources. NInfer does not consume `common_chat_params::grammar`
-(constrained decoding stays rejected per design #28). Likewise, `chat-auto-parser.h` is needed
-for `autoparser::generation_params`, but the analysis/generator implementations are excluded
-and stubbed.
+`json-schema-to-grammar.{h,cpp}` serves two consumers. `peg-parser.cpp` and the Qwen3-Coder
+handler reference `build_grammar`/`gbnf_format_literal`, and the serve route
+(`src/serve/constraint_contract.cpp`) converts `response_format` `json_schema`/`json_object`
+documents with `json_schema_to_grammar` for constrained decoding (wayfinder map #45, design #48 —
+the earlier "constrained decoding stays rejected" stance is retired). The converter still degrades
+a `pattern` it cannot enforce to "any string" and warns on stderr; the serve contract rejects
+`pattern` before conversion, so no request reaches that path. `common_chat_params::grammar` (the
+template-emitted grammar) remains unconsumed. Likewise, `chat-auto-parser.h` is needed for
+`autoparser::generation_params`, but the analysis/generator implementations are excluded and
+stubbed.
 
 ## Re-vendoring
 

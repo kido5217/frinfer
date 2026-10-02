@@ -111,7 +111,11 @@ The endpoint supports:
 - `temperature`, `top_p`, presence/frequency penalties, and signed integer `seed`;
 - the compatible `top_k` (`0..20`) and `min_p` (`0..1`) sampler extensions;
 - up to four non-empty stop strings, applied to both reasoning and answer output;
-- `n:1`, text-only `modalities`, and `response_format: {"type":"text"}`;
+- `n:1`, text-only `modalities`, and `response_format` `{"type":"text"}`, `{"type":"json_object"}`,
+  and `{"type":"json_schema"}` (see [Constrained output](#constrained-output));
+- llama.cpp-compatible `grammar` GBNF text, which constrains the answer stream (the reasoning
+  region stays unconstrained; the MTP and ordinary backends are supported, DFlash is rejected);
+  `grammar` and a constraining `response_format` cannot be combined;
 - non-streaming responses and server-sent event streams;
 - `stream_options.include_usage`;
 - llama.cpp-compatible terminal `timings`, plus opt-in `timings_per_token` and
@@ -125,20 +129,59 @@ The endpoint supports:
 - Assistant `reasoning_content` and `reasoning` history aliases.
 
 Options whose observable behavior the Engine cannot provide are rejected when they request that
-behavior. This includes JSON constrained output, nonzero `logit_bias`, requested log probabilities,
+behavior. This includes nonzero `logit_bias`,
+requested log probabilities,
 audio/file input or audio output, `strict:true`, required or named tool choice,
 `parallel_tool_calls:false` with enabled tools, explicit low/high image detail, web search,
 moderation, low/high verbosity, stored Chat Completions, and non-empty legacy `functions`.
 Each capability rejection identifies the affected field and the guarantee NInfer cannot provide.
-Known constrained-decoding aliases (`grammar`, `structured_outputs`, `guided_json`, `guided_regex`,
-`guided_choice`, and `guided_grammar`) receive the same explicit rejection instead of being treated
-as unknown hints.
+Known constrained-decoding aliases other than `grammar` and `response_format`
+(`structured_outputs`, `guided_json`, `guided_regex`, `guided_choice`, and `guided_grammar`)
+receive the same explicit rejection instead of being treated as unknown hints.
 
 Semantically neutral fields do not make an otherwise executable request fail. All-zero
 `logit_bias`, `logprobs:false`, `top_logprobs:0`, `verbosity:"medium"`, empty legacy tool controls,
 text-only `audio` configuration, and `prediction` are accepted without changing Engine execution.
 Metadata, user/safety identifiers, service-tier and prompt-cache hints are likewise advisory.
 Unknown top-level fields are ignored.
+
+### Constrained output
+
+`grammar` and `response_format` constrain the answer region only (the reasoning region stays
+unconstrained), exactly one constraint kind per request, and never together with a `tools` field
+(even an empty one).
+
+- llama.cpp-compatible `grammar` GBNF text is compiled by the Engine at submission. Text the
+  Engine cannot compile, or a grammar whose initial mask admits nothing, is rejected with
+  `grammar_invalid`.
+- `response_format` accepts `{"type":"text"}`, `{"type":"json_object"}`, and
+  `{"type":"json_schema"}`; the last is the OpenAI wrapper (`.json_schema.schema`, with
+  `name`/`description`/`strict` accepted as metadata) or a bare schema under `.json_schema`.
+  Malformed wrappers or documents are rejected with `json_schema_invalid`.
+- Only keywords the vendored converter genuinely enforces are accepted, and only in the context
+  where it enforces them: `type`, `properties`, `required`, `additionalProperties`,
+  `items`/`prefixItems`, `anyOf`, `const`, `enum`, `$ref`/`$defs`/`definitions`, plus annotations
+  such as `title`, `description`, `default`, `examples`, `deprecated`, `readOnly`, `writeOnly`,
+  `$id`, and `$schema`. `minItems`/`maxItems` require `type:"array"`, `minLength`/`maxLength` and
+  `format` require `type:"string"`, and `minimum`/`exclusiveMinimum`/`maximum`/`exclusiveMaximum`
+  require `type:"integer"` (the converter drops them elsewhere); `minimum` cannot be combined with
+  `exclusiveMinimum`, nor `maximum` with `exclusiveMaximum`. Enforced `format` values are `date`,
+  `time`, `date-time`, and `uuid` (the versioned forms do not enforce their version nibble).
+  `pattern` (the converter would silently degrade it to "any string"), `allOf` and `oneOf`
+  (dropped or approximated), and every other keyword are rejected with `json_schema_unsupported`
+  naming the keyword. A nullable union (`type: ["string","null"]`) is accepted: the keyword is
+  enforced in the alternative that matches its primitive, except that numeric bounds reject any
+  union containing `number` (its alternative would drop them). `minItems`/`maxItems` are rejected
+  with tuple `items`/`prefixItems`, `items` and `prefixItems` cannot be combined, and a dispatching
+  keyword (`$ref`, `anyOf`, `const`, `enum`) admits no structural sibling because the converter
+  drops it (`type` may still constrain `const`/`enum` values, including through a union when every
+  value matches a member). Malformed documents inside accepted keywords (`required` not an array of non-empty
+  strings, an empty `enum`, a `const`/`enum` value that contradicts its `type`) are rejected with
+  `json_schema_invalid`.
+- Grammar and schema payloads are limited to 64 KiB and schema nesting to 64 levels; beyond that
+  the request is rejected with `constraint_too_large`.
+- Grammar completion ends generation. `max_tokens` truncation may cut a constrained answer
+  mid-JSON, and the streaming envelope makes no per-prefix parseability promise.
 
 A string `name` on a `tool` message is accepted as an ignored, output-neutral compatibility
 extension for clients that mirror the function name onto tool results. It does not participate in
@@ -171,7 +214,8 @@ case-insensitive boolean text is normalized to `true` or `false`. A nonempty sch
 a structured call: valid JSON retains its represented type and other text becomes a JSON string so
 the tool consumer can report the validation error and continue the agent loop. Schemas without a
 supported explicit type retain untyped inference. NInfer does not apply defaults, enforce required
-properties, perform recursive JSON Schema validation, or use constrained decoding.
+properties, perform recursive JSON Schema validation, or honor JSON Schema constrained decoding
+(a `grammar` GBNF constraint is applied to the answer stream instead).
 
 String parameters preserve function/tool-call markers and balanced nested
 `<parameter=...>...</parameter>` text as value bytes. The Qwen wire format has no delimiter escape,
@@ -526,7 +570,9 @@ undeclared model output remains ordinary text. `allowed_tools` with mode `auto` 
 without changing declaration order, while `tool_choice:"none"` disables structured tool output even
 when the history contains earlier calls.
 
-NInfer does not execute functions or enforce JSON Schema through constrained decoding, so
+NInfer does not execute functions or enforce tool JSON Schemas through constrained decoding
+(constraints apply only through the caller-supplied `grammar`/`response_format` fields, never to
+tool schemas), so
 `strict:true`, required or named tool choice, hosted tools, remote MCP tools, and custom free-form
 tools are rejected. Deferred loading, output schemas, and caller restrictions that exclude direct
 invocation are also rejected because their semantics cannot be honored.
@@ -1011,8 +1057,9 @@ a following compatible turn can reuse it. Output-limit and context-capacity fini
 `length`/ `max_tokens`; ordinary model or string stops map to `stop`/ `end_turn`.
 
 Function tools are rendered into the model prompt and generated calls are parsed into protocol
-responses. NInfer does not execute tools and does not enforce client JSON Schema through constrained
-decoding.
+responses. NInfer does not execute tools and does not enforce client tool JSON Schemas through
+constrained decoding (constraints apply only through the caller-supplied
+`grammar`/`response_format` fields, never to tool schemas).
 
 Prompt-token usage includes chat-template and expanded media tokens. Generated-token usage comes
 from accepted output token IDs, including a stop token whose decoded text may be withheld.

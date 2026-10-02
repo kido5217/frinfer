@@ -253,9 +253,29 @@ CompiledGrammar::compile(std::string_view gbnf, std::shared_ptr<const GrammarVoc
     // fresh-round chain shape the rule graph can reach. Serving walks are pure
     // steady state from here on.
     impl->producer = std::make_shared<detail::Producer>();
-    impl->producer->build(*impl->backbone->vocabulary);
-    impl->producer->prepare(impl->backbone->master->rules, impl->root_rule);
-    return std::shared_ptr<const CompiledGrammar>(new CompiledGrammar(std::move(impl)));
+    std::shared_ptr<const CompiledGrammar> compiled;
+    try {
+        impl->producer->build(*impl->backbone->vocabulary);
+        impl->producer->prepare(impl->backbone->master->rules, impl->root_rule);
+        compiled = std::shared_ptr<const CompiledGrammar>(new CompiledGrammar(std::move(impl)));
+        // A constraint whose initial mask admits nothing (no token and no end-of-generation)
+        // would sample a rejected token and fail closed mid-request; reject the grammar here.
+        const GrammarState initial = compiled->initial_state();
+        const GrammarMaskRow first = compiled->row_for(initial);
+        bool admits_any            = false;
+        for (const std::uint32_t word : first) { admits_any = admits_any || word != 0U; }
+        if (!admits_any) {
+            if (error) { *error = "grammar cannot produce any token with this vocabulary"; }
+            return nullptr;
+        }
+    } catch (const std::exception& failure) {
+        // Producer structural guards (expansion seen/stack caps) reject a pathological
+        // user-supplied grammar here, as a validation failure, instead of throwing in the
+        // serving worker mid-generation.
+        if (error) { *error = failure.what(); }
+        return nullptr;
+    }
+    return compiled;
 }
 
 std::shared_ptr<const CompiledGrammar>

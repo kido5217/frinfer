@@ -822,10 +822,11 @@ void test_row_cache() {
                   "dedup: initial row allows branches");
             check(!row_bit(first_span, y) && !row_bit(second_span, x),
                   "dedup: branch rows are exact");
-            // Every shape here is unique, so the producer computes all three and caches none
-            // (the shape cache stores only repeated shapes).
+            // The compile-time initial-row validation computes the initial shape once, and
+            // one-shot shapes are not stored, so this test's own initial-state fill computes it
+            // again; the two branch shapes are unique and computed once each: four fills.
             const frontend::CompiledGrammar::Stats stats = grammar->stats();
-            check(stats.row_fills == 3, "dedup: one fill per unique shape",
+            check(stats.row_fills == 4, "dedup: one fill per unique shape",
                   std::to_string(stats.row_fills));
             check(stats.row_hits == 0, "dedup: no repeated shape to serve from the cache",
                   std::to_string(stats.row_hits));

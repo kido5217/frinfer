@@ -38,7 +38,7 @@ struct RequestLifetime {
     std::chrono::steady_clock::time_point deadline;
 };
 
-ApiError request_error_to_api_error(const ninfer::RequestError& exception) {
+ApiError request_error_to_api_error(const ninfer::RequestError& exception, ConstraintSource source) {
     ApiError error;
     error.param   = "messages";
     error.message = exception.what();
@@ -59,6 +59,16 @@ ApiError request_error_to_api_error(const ninfer::RequestError& exception) {
     case ninfer::RequestErrorKind::InvalidMedia:
         error.status = 400;
         error.code   = "invalid_media";
+        break;
+    case ninfer::RequestErrorKind::InvalidConstraint:
+        error.status = 400;
+        if (source == ConstraintSource::JsonSchema) {
+            error.param = "response_format";
+            error.code  = "json_schema_invalid";
+        } else {
+            error.param = "grammar";
+            error.code  = "grammar_invalid";
+        }
         break;
     case ninfer::RequestErrorKind::Overloaded:
         error.param.clear();
@@ -186,8 +196,9 @@ ninfer::OwnedMedia acquire_media(const ContentPart& part, Clock::time_point dead
     return media;
 }
 
-[[noreturn]] void throw_request_error(const ninfer::RequestError& exception) {
-    throw ApiException(request_error_to_api_error(exception));
+[[noreturn]] void throw_request_error(const ninfer::RequestError& exception,
+                                      ConstraintSource source = ConstraintSource::None) {
+    throw ApiException(request_error_to_api_error(exception, source));
 }
 
 void check_preparation_control(Clock::time_point deadline,
@@ -357,7 +368,7 @@ PreparedRequest GenerationService::prepare_impl(const GenerationRequest& request
                                               observation, prepared.lifetime->deadline);
         prepared.sampling   = prepared.generation.resolved_sampling();
     } catch (const ApiException&) { throw; } catch (const ninfer::RequestError& exception) {
-        throw_request_error(exception);
+        throw_request_error(exception, request.constraint_source);
     } catch (const std::invalid_argument& exception) {
         throw_invalid_input(exception, "invalid_prompt");
     }

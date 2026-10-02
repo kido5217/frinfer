@@ -21,7 +21,7 @@ documented patch set. Every maintained file below is reproduced exactly by apply
 | Path | Upstream path | sha256 of the maintained copy | Role |
 |---|---|---|---|
 | `llama-grammar.h` | `src/llama-grammar.h` | `b71d3d34a9afde788533e96472efe763dd3ca27392963129e70269ac69b16ceb` | Grammar element/stacks data model, parser and runtime entry points |
-| `llama-grammar.cpp` | `src/llama-grammar.cpp` | `f174dbc9249cbc145a2a126a38567deb6df257c61f0ece424a33238a43813aac` | Parser, expansion, stack advance/accept, rejection walk |
+| `llama-grammar.cpp` | `src/llama-grammar.cpp` | `772cc4d5c9fab5285f4d6813e0335023cefd43ae71b4cb4b05a20e5abe389c2e` | Parser, expansion, stack advance/accept, rejection walk |
 | `LICENSE` | `LICENSE` | `94f29bbed6a22c35b992c5c6ebf0e7c92f13b836b90f36f461c9cf2f0f1d010d` | MIT, "Copyright (c) 2023-2026 The ggml authors" |
 
 Include roots: this directory first (vendored includes resolve to the vendored files), then
@@ -34,6 +34,7 @@ it is used; `compat/llama-sampler.h` exists so the include needs no patch.
 |---|---|---|
 | `0001-repetition-bound.patch` | `llama-grammar.{h,cpp}` | Raises the repetition sanity bound from upstream's internal 2000 to the exported `LLAMA_GRAMMAR_MAX_REPETITION_BOUND = 65536` (declared in `llama-grammar.h`) and **removes the silent degradation**: upstream rewrites a finite `max_times > 2000` to "unbounded", so `maxLength: 2400` and similar JSON-schema bounds are not enforced; this port keeps the parsed bound and fails the parse above the exported limit instead. The bound is exported so the serve layer can fail closed before conversion. |
 | `0002-parser-last-error.patch` | `llama-grammar.{h,cpp}` | Adds `llama_grammar_parser::last_error`, set by `parse()` on failure, so a caller can surface the diagnostic instead of scraping stderr. |
+| `0003-quiet-parse-errors.patch` | `llama-grammar.cpp` | Removes the parse-failure `fprintf(stderr, ...)` that wrote the caller-supplied grammar text to stderr; the diagnostic stays available through `last_error` (patch 0002). NInfer rejects client grammars with a 400 and must not echo client bytes into server logs. |
 
 No other deviation exists: everything else is upstream's code. In particular the engine's mask
 semantics (empty/zero pieces rejected, `-INFINITY` write-back, EOG allowed only where a stack is

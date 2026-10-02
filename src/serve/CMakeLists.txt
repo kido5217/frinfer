@@ -1,6 +1,7 @@
 add_library(ninfer_serve STATIC
   http_transport.cpp
   request_validation.cpp
+  constraint_contract.cpp
   openai_chat_request.cpp
   openai_chat_response.cpp
   openai_chat_http.cpp
@@ -24,4 +25,4 @@ add_library(ninfer_serve STATIC
 ninfer_internal_includes(ninfer_serve)
 target_link_libraries(ninfer_serve
   PUBLIC ninfer_engine Threads::Threads ninfer::json ninfer::httplib
-  PRIVATE ninfer_media_acquire ninfer_product_logging CUDA::cudart)
+  PRIVATE ninfer_media_acquire ninfer_product_logging ninfer_llama_chat CUDA::cudart)

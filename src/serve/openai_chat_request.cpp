@@ -1,3 +1,4 @@
+#include "serve/constraint_contract.h"
 #include "serve/openai_chat.h"
 #include "serve/openai_common.h"
 #include "serve/request_validation.h"
@@ -131,19 +132,6 @@ void validate_standard_output_controls(const Json& body) {
         }
     }
 
-    if (body.contains("response_format") && !body.at("response_format").is_null()) {
-        const Json& format = body.at("response_format");
-        if (!format.is_object() || !format.contains("type") || !format.at("type").is_string()) {
-            bad_request("response_format must contain a string type", "response_format");
-        }
-        if (format.at("type").get<std::string>() != "text") {
-            bad_request(
-                "this response_format requires constrained output, which NInfer cannot guarantee; "
-                "only {\"type\":\"text\"} is available",
-                "response_format", "response_format_not_supported");
-        }
-    }
-
     if (body.contains("modalities") && !body.at("modalities").is_null()) {
         const Json& modalities = body.at("modalities");
         if (!modalities.is_array() || modalities.empty()) {
@@ -201,23 +189,120 @@ void validate_standard_output_controls(const Json& body) {
     }
 }
 
-void validate_constrained_decoding_extensions(const Json& body) {
-    // llama.cpp exposes grammar; vLLM uses structured_outputs and previously exposed the
-    // guided_* spellings. Each promises constrained generation rather than an advisory hint.
-    static constexpr const char* fields[] = {
-        "grammar",      "structured_outputs", "guided_json",
-        "guided_regex", "guided_choice",      "guided_grammar",
-    };
-    for (const char* field : fields) {
-        if (!body.contains(field) || body.at(field).is_null()) { continue; }
-        const Json& value = body.at(field);
-        if (std::string_view(field) == "grammar" && value.is_string() &&
-            value.get_ref<const std::string&>().empty()) {
-            continue;
+const Json& parse_json_schema_wrapper(const Json& format) {
+    // The OpenAI wrapper carries the document under `.json_schema.schema`; a bare schema is the
+    // `.json_schema` object itself when no `.schema` member exists (design #48).
+    const Json& wrapper = format.at("json_schema");
+    if (!wrapper.is_object()) {
+        bad_request("response_format.json_schema must be an object",
+                    "response_format.json_schema", "json_schema_invalid");
+    }
+    for (const char* key : {"name", "description"}) {
+        if (wrapper.contains(key) && !wrapper.at(key).is_string()) {
+            const std::string param = std::string("response_format.json_schema.") + key;
+            bad_request(param + " must be a string", param, "json_schema_invalid");
         }
+    }
+    if (wrapper.contains("strict") && !wrapper.at("strict").is_boolean()) {
+        bad_request("response_format.json_schema.strict must be a boolean",
+                    "response_format.json_schema.strict", "json_schema_invalid");
+    }
+    if (wrapper.contains("schema")) {
+        if (!wrapper.at("schema").is_object()) {
+            bad_request("response_format.json_schema.schema must be a JSON Schema object",
+                        "response_format.json_schema.schema", "json_schema_invalid");
+        }
+        return wrapper.at("schema");
+    }
+    // Without `.schema`, `.json_schema` is the bare document; wrapper-only metadata with no
+    // document at all is a malformed wrapper rather than an empty schema.
+    if (wrapper.contains("name") || wrapper.contains("strict")) {
+        bad_request("response_format.json_schema is missing its schema document",
+                    "response_format.json_schema", "json_schema_invalid");
+    }
+    return wrapper;
+}
+
+void parse_constraints(const Json& body, GenerationRequest& output) {
+    // Explicit rejections for the constrained-decoding spellings NInfer does not provide:
+    // vLLM's structured_outputs and the retired guided_* family promise constraint semantics a
+    // hint cannot provide.
+    static constexpr const char* rejected_fields[] = {
+        "structured_outputs", "guided_json", "guided_regex", "guided_choice", "guided_grammar",
+    };
+    for (const char* field : rejected_fields) {
+        if (!body.contains(field) || body.at(field).is_null()) { continue; }
         bad_request(std::string(field) +
-                        " requests constrained decoding, which NInfer does not provide",
+                        " requests a constrained-decoding spelling that NInfer does not provide; "
+                        "use grammar with GBNF text or response_format json_schema",
                     field, "constrained_decoding_not_supported");
+    }
+
+    // llama.cpp-compatible GBNF text; empty means no constraint.
+    std::optional<std::string> grammar;
+    if (body.contains("grammar") && !body.at("grammar").is_null()) {
+        const Json& value = body.at("grammar");
+        if (!value.is_string()) {
+            bad_request("grammar must be GBNF text", "grammar", "grammar_invalid");
+        }
+        std::string text = value.get<std::string>();
+        if (!text.empty()) {
+            if (text.size() > kConstraintPayloadLimit) {
+                bad_request("grammar exceeds " + std::to_string(kConstraintPayloadLimit) +
+                                " bytes",
+                            "grammar", "constraint_too_large");
+            }
+            grammar = std::move(text);
+        }
+    }
+
+    // response_format: text keeps no constraint, json_object constrains to an object, and
+    // json_schema converts through the v1 schema contract.
+    std::optional<std::string> schema_grammar;
+    if (body.contains("response_format") && !body.at("response_format").is_null()) {
+        const Json& format = body.at("response_format");
+        if (!format.is_object() || !format.contains("type") || !format.at("type").is_string()) {
+            bad_request("response_format must contain a string type", "response_format",
+                        "json_schema_invalid");
+        }
+        const std::string type = format.at("type").get<std::string>();
+        if (type == "json_object") {
+            schema_grammar = json_schema_constraint_grammar(Json{{"type", "object"}});
+        } else if (type == "json_schema") {
+            if (!format.contains("json_schema") || format.at("json_schema").is_null()) {
+                bad_request("response_format.json_schema is required for type json_schema",
+                            "response_format.json_schema", "json_schema_invalid");
+            }
+            schema_grammar = json_schema_constraint_grammar(parse_json_schema_wrapper(format));
+        } else if (type != "text") {
+            bad_request(
+                "this response_format requires constrained output, which NInfer cannot guarantee; "
+                "only text, json_object, and json_schema are available",
+                "response_format", "response_format_not_supported");
+        }
+    }
+
+    // Exactly one constraint kind per request (vLLM semantics).
+    if (grammar && schema_grammar) {
+        bad_request("grammar cannot be combined with a constraining response_format",
+                    "response_format", "constrained_decoding_conflict");
+    }
+    if (grammar) {
+        output.grammar           = std::move(*grammar);
+        output.constraint_source = ConstraintSource::Grammar;
+    } else if (schema_grammar) {
+        output.grammar           = std::move(*schema_grammar);
+        output.constraint_source = ConstraintSource::JsonSchema;
+    }
+    // A `tools` field together with structured output is a fail-closed rejection (design #48):
+    // the tool-call parser owns the turn when tools are declared, so even an empty tools array is
+    // rejected rather than interpreted.
+    const bool declares_tools = body.contains("tools") && !body.at("tools").is_null();
+    if (output.grammar && declares_tools) {
+        bad_request("tools with a constrained response is not supported",
+                    output.constraint_source == ConstraintSource::JsonSchema ? "response_format"
+                                                                             : "grammar",
+                    "constrained_decoding_not_supported");
     }
 }
 
@@ -882,7 +967,6 @@ void parse_output_limit(const Json& body, const RequestLimits& limits, OpenAICha
 OpenAIChatRequest parse_chat_completion_request(const Json& body, const RequestLimits& limits) {
     require_object(body, "request body must be a JSON object");
     validate_standard_output_controls(body);
-    validate_constrained_decoding_extensions(body);
     validate_compatibility_hints(body);
 
     OpenAIChatRequest output;
@@ -900,6 +984,7 @@ OpenAIChatRequest parse_chat_completion_request(const Json& body, const RequestL
     parse_messages(body, output.generation);
     parse_stop(body, output.generation);
     parse_sampling(body, output.generation);
+    parse_constraints(body, output.generation);
     parse_stream_options(body, output);
     parse_response_observations(body, output);
     parse_output_limit(body, limits, output);

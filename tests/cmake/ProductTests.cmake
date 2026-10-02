@@ -28,6 +28,14 @@ ninfer_add_test(ninfer_openai_schema_test
   SOURCES "${CMAKE_CURRENT_LIST_DIR}/../test_openai_schema.cpp"
   LIBRARIES ninfer_serve)
 
+ninfer_add_test(ninfer_serve_constrained_real_test
+  SOURCES "${CMAKE_CURRENT_LIST_DIR}/../test_serve_constrained_real.cpp"
+  LIBRARIES ninfer_serve)
+
+set_tests_properties(
+  ninfer_serve_constrained_real_test
+  PROPERTIES SKIP_RETURN_CODE 77)
+
 ninfer_add_test(ninfer_openai_responses_test
   SOURCES "${CMAKE_CURRENT_LIST_DIR}/../test_openai_responses.cpp"
   LIBRARIES ninfer_serve)
