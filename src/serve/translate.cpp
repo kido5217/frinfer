@@ -188,6 +188,15 @@ ResolvedPromptSemantics resolve_prompt_semantics(const GenerationRequest& reques
             break;
         }
     }
+    // A constraining request (response_format/grammar) defaults to non-thinking: only an
+    // explicit request-level enable (enable_thinking or a non-none reasoning_effort) turns
+    // thinking on, regardless of the server and template defaults (issue #86). Server flags
+    // keep their documented behavior; unconstrained requests resolve as before.
+    const bool explicitly_enabled =
+        (thinking && *thinking) || (effort && *effort != RequestedReasoningEffort::None);
+    if (request.constraint_source != ConstraintSource::None && !explicitly_enabled) {
+        result.enable_thinking = false;
+    }
     if (request.continuation == ninfer::PromptContinuationMode::ContinueFinalAssistant &&
         result.enable_thinking == true) {
         invalid_prompt_option("assistant prefill cannot be combined with enabled thinking",

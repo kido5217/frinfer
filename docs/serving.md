@@ -183,6 +183,17 @@ unconstrained), exactly one constraint kind per request, and never together with
 - Grammar completion ends generation. `max_tokens` truncation may cut a constrained answer
   mid-JSON, and the streaming envelope makes no per-prefix parseability promise.
 
+Constraining requests default to non-thinking: a request carrying a `grammar` or a constraining
+`response_format` resolves thinking off for that request unless it explicitly enables thinking
+(`enable_thinking: true` or a non-`none` `reasoning_effort`). The default replaces both the
+server and the template default for the thinking on/off decision — `--no-thinking` is consistent
+with it, and no server flag can force thinking on for a constraining request. An explicit enable
+still overrides the constrained default: thinking runs and the answer region remains
+grammar-constrained. `--default-thinking-budget` keeps its documented behavior, so a
+defaulted-off constraining request receives no cap while an explicitly enabled one inherits it.
+Unconstrained requests are untouched: request fields, then server defaults, then the template's
+default.
+
 A string `name` on a `tool` message is accepted as an ignored, output-neutral compatibility
 extension for clients that mirror the function name onto tool results. It does not participate in
 tool identity, prompt rendering, or output. Non-string values are malformed; non-empty names on
