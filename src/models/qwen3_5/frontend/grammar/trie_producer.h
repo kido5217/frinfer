@@ -316,6 +316,22 @@ private:
     static constexpr std::size_t kShapeCacheMax = 1024;   // rows, <= 31 MB (D3 bound)
     static constexpr std::size_t kShapeSeenMax = 8192;    // signatures, 128 KB (D3 bound)
 
+    // Per-depth scratch for the recursive trie walk. The position sets are producer-owned
+    // and indexed by codepoint depth (sized by the trie's depth in build()), so one visit()
+    // frame stays small: folding them into the frame costs sizeof(PosSet) * (1 + 4) bytes
+    // per level (~128 KiB), and a real vocabulary's pieces descend up to their codepoint
+    // length (measured 66+ frames on Qwen3.8-27B), overflowing an 8 MiB worker stack. The
+    // arena is pre-sized once, so references into it survive the recursive calls.
+    static constexpr int kVisitSigCache = 4;
+    struct VisitScratch {
+        std::uint64_t sigs[kVisitSigCache] = {};
+        PosSet sets[kVisitSigCache];
+        PosSet local;
+        int nsigs = 0;
+    };
+    std::uint32_t trie_depth_ = 0;
+    std::vector<VisitScratch> visit_scratch_;
+
     // --- static trie (built in build()) ---
     std::uint32_t token_count_ = 0;
     std::uint32_t row_words_ = 0;
