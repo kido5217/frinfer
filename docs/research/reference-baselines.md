@@ -693,4 +693,3 @@ differ (the `qwen3_xml` parser name and the `qwen3` reasoning parser exist in
 both). Where official docs were silent on an opencode-relevant detail (e.g.,
 llama.cpp queue-depth limits, vLLM wait-queue bounds), this doc says so
 rather than inferring.
-</think>
