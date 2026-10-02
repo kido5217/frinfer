@@ -1,0 +1,13 @@
+variant=a grammar_bytes=2144 token_count=248077 row_words=7753 unmaskable_ids=1 compile_us=76837
+tokens reasoning=14 close=1("</think>" ) ws=1 space=1 brace=1("{" ) answer=518
+first_non_full_row phase=reasoning step=1: unset_maskable=165 first=[94="\xa1" 95="\xa2" 96="\xa3" 97="\xa4" 98="\xa5" ]
+first_row_hash=7b36a807e8af53b0
+phase=reasoning steps=14 full_rows=0 non_full=14 fills=3 hits=11 fill_ms=721.08 wall_ms=721.41 per_call_us(min=1.48 p50=2.88 p90=27056.53 max=686406.78)
+after_close: can_end=0 ws_admitted=1 space_admitted=1 brace_admitted=0 unset_maskable=247652 first=[0="!" 1=""" 2="#" 3="$" 4="%" ]
+close_row_hash=d28f17f464ef9f4f
+phase=ws steps=1 full_rows=0 non_full=0 fills=1 hits=0 fill_ms=0.72 wall_ms=0.73 per_call_us(min=723.12 p50=723.12 p90=723.12 max=723.12)
+after_ws: can_end=0 first_answer_token_admitted=1 unset_maskable=247650 first=[0="!" 1=""" 2="#" 3="$" 4="%" ]
+schema_root_row_hash=4875b0fc0f4d9417
+phase=answer steps=518 full_rows=0 non_full=0 fills=175 hits=343 fill_ms=1808.05 wall_ms=1810.89 per_call_us(min=0.95 p50=1.55 p90=702.91 max=137420.22)
+end: can_end=1
+stats: fills=182 hits=354 distinct=57 fill_ms=2550.27 compile_ms=1770.10

@@ -1,0 +1,19 @@
+{
+  "extracted_entities": [
+    {"name": "User", "entity_type_id": 0},
+    {"name": "Lake Baikal", "entity_type_id": 0},
+    {"name": "Canyon Ultimate CF", "entity_type_id": 0},
+    {"name": "Angara River B&B", "entity_type_id": 0},
+    {"name": "Irkutsk", "entity_type_id": 0},
+    {"name": "Altai mountains", "entity_type_id": 0},
+    {"name": "road cycling", "entity_type_id": 0}
+  ],
+  "edges": [
+    {"source_entity_name": "User", "target_entity_name": "Lake Baikal", "relation_type": "TOOK_TRIP_AROUND", "fact": "The user recently completed a cycling trip around Lake Baikal and found the weather perfect.", "episode_indices": [0]},
+    {"source_entity_name": "User", "target_entity_name": "Canyon Ultimate CF", "relation_type": "OWNS", "fact": "The user owns a new road bike called the Canyon Ultimate CF, which made long climbs easier during their trip.", "episode_indices": [0]},
+    {"source_entity_name": "User", "target_entity_name": "Angara River B&B", "relation_type": "STAYED_AT", "fact": "The user stayed at the Angara River B&B near Irkutsk during the north loop of their cycling trip.", "episode_indices": [0]},
+    {"source_entity_name": "User", "target_entity_name": "Irkutsk", "relation_type": "VISITED_NEAR", "fact": "The user visited the area near Irkutsk while staying at the Angara River B&B.", "episode_indices": [0]},
+    {"source_entity_name": "User", "target_entity_name": "Altai mountains", "relation_type": "PLANS_TO_VISIT", "fact": "The user is planning a trip to the Altai mountains in July.", "episode_indices": [0]},
+    {"source_entity_name": "User", "target_entity_name": "road cycling", "relation_type": "ENGAGES_IN", "fact": "The user engages in road cycling, including completing a 120 km stage on the north loop of Lake Baikal.", "episode_indices": [0]}
+  ]
+}

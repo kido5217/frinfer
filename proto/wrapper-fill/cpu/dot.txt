@@ -1,0 +1,3 @@
+variant=dot grammar_bytes=12 token_count=248077 row_words=7753 unmaskable_ids=1 compile_us=77018
+tokens reasoning=1903 close=1("</think>" ) ws=1 space=1 brace=1("{" ) answer=518
+plain_root: can_end=1 ws_admitted=1 brace_admitted=1 unset_maskable=165 row_hash=7b36a807e8af53b0
