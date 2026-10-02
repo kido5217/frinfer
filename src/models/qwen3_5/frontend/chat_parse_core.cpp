@@ -795,16 +795,6 @@ bool ChatParseCore::in_reasoning() const noexcept {
     return impl_->committed_.phase == ParseState::Phase::Reasoning;
 }
 
-ChatParseResult ChatParseCore::preview(std::string_view round_text) {
-    begin_preview();
-    return preview_feed(round_text);
-}
-
-ChatParseResult ChatParseCore::preview_terminal() {
-    begin_preview();
-    return preview_finish();
-}
-
 void ChatParseCore::commit() {
     Impl& impl = *impl_;
     if (!impl.preview_ready_) {

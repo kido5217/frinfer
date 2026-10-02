@@ -87,9 +87,11 @@ Parsed parse(const std::vector<std::string>& definitions, const std::string& tex
     }
     ChatParseCore core(contract, ChatParseOptions{.thinking_enabled     = false,
                                                   .tool_name_max_length = max_name_length});
-    (void)core.preview(text);
+    core.begin_preview();
+    (void)core.preview_feed(text);
     core.commit();
-    (void)core.preview_terminal();
+    core.begin_preview();
+    (void)core.preview_finish();
     core.commit();
     return Parsed{.calls = core.tool_calls(), .diagnostics = core.diagnostics()};
 }

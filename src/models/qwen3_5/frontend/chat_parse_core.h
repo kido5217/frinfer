@@ -57,9 +57,9 @@ struct ChatParseResult {
 // prompt is not part of the feed). It keeps the reasoning/content channels append-only, withholds
 // bytes whose interpretation is not yet decided, and publishes tool calls only at terminal.
 //
-// Preview purity: preview()/preview_terminal() (and the streaming begin_preview()/preview_feed()/
-// preview_finish() trio they are built from) evaluate from the last committed snapshot and never
-// mutate committed state; a preview that is not committed has no effect.
+// Preview purity: the preview protocol (begin_preview() / preview_feed() / preview_finish(),
+// with commit() accepting a preview) evaluates from the last committed snapshot and never
+// mutates committed state; a preview that is not committed has no effect.
 class ChatParseCore {
 public:
     ChatParseCore(std::shared_ptr<const ToolCallOutputContract> contract, ChatParseOptions options);
@@ -70,21 +70,16 @@ public:
     ChatParseCore(const ChatParseCore&)            = delete;
     ChatParseCore& operator=(const ChatParseCore&) = delete;
 
-    // Evaluates the next round's decoded text without committing.
-    [[nodiscard]] ChatParseResult preview(std::string_view round_text);
-    // Evaluates the terminal flush: held bytes resolve, tool calls publish.
-    [[nodiscard]] ChatParseResult preview_terminal();
-    // Commits the effect of the last preview.
-    void commit();
-
-    // Streaming form of preview(): begin_preview() starts (or restarts) a preview from the
-    // committed state, preview_feed() publishes the deltas of the bytes just fed, and
-    // preview_finish() resolves the preview as a terminal flush. The session integration drives
-    // one feed per decoded token so that stop policy, reasoning accounting and the thinking
-    // budget observe the same channel boundary as the published deltas.
+    // The preview protocol: begin_preview() starts (or restarts) a preview from the committed
+    // state, preview_feed() publishes the deltas of the bytes just fed, and preview_finish()
+    // resolves the preview as a terminal flush. The session integration drives one feed per
+    // decoded token so that stop policy, reasoning accounting and the thinking budget observe the
+    // same channel boundary as the published deltas.
     void begin_preview();
     [[nodiscard]] ChatParseResult preview_feed(std::string_view text);
     [[nodiscard]] ChatParseResult preview_finish();
+    // Commits the active preview; a preview that is never committed has no effect.
+    void commit();
     // Channel phase of the active preview / of the committed state.
     [[nodiscard]] bool preview_in_reasoning() const noexcept;
     [[nodiscard]] bool in_reasoning() const noexcept;
