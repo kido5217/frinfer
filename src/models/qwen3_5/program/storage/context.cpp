@@ -1035,15 +1035,18 @@ void ProgramImpl::clear_execution_failure_lanes(std::span<const std::uint32_t> l
 }
 
 void ProgramImpl::set_constraint(std::uint32_t lane,
-                                 std::shared_ptr<const frontend::CompiledGrammar> grammar) {
+                                 std::shared_ptr<const frontend::CompiledGrammar> grammar,
+                                 bool carries_reasoning) {
     if (lane >= max_concurrency) { throw std::out_of_range("constraint lane is out of range"); }
     RequestControl& request   = requests[lane];
     request.pending_mask_plan = {};
     if (grammar == nullptr) {
         request.grammar.reset();
         request.grammar_runtime.reset();
+        request.grammar_carries_reasoning = false;
         return;
     }
+    request.grammar_carries_reasoning = carries_reasoning;
     // Every admitted request starts from the grammar's initial state, even when an earlier request
     // on this lane shared the same compiled grammar.
     request.grammar = std::move(grammar);
@@ -1061,6 +1064,7 @@ std::span<const TokenId> ProgramImpl::draft_tokens(SequenceHandle sequence) cons
 void ProgramImpl::clear_constraint(RequestControl& request) noexcept {
     request.grammar.reset();
     request.grammar_runtime.reset();
+    request.grammar_carries_reasoning = false;
     request.pending_mask_plan = {};
 }
 

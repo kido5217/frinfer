@@ -348,7 +348,9 @@ ninfer::RequestOptions to_request_options(const GenerationRequest& request,
                             " speculative backend; use the ordinary or MTP backend";
             throw ApiException(std::move(error));
         }
-        options.constraint.emplace(ninfer::GrammarConstraint{.gbnf = *request.grammar});
+        options.constraint.emplace(ninfer::GrammarConstraint{
+            .gbnf = *request.grammar,
+            .thinking_enabled = semantics.enable_thinking.value_or(false)});
     }
     options.output.raw                     = false;
     options.output.preserve_special_tokens = request.uses_tools() || request.has_tool_history();

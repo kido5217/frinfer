@@ -113,9 +113,10 @@ The endpoint supports:
 - up to four non-empty stop strings, applied to both reasoning and answer output;
 - `n:1`, text-only `modalities`, and `response_format` `{"type":"text"}`, `{"type":"json_object"}`,
   and `{"type":"json_schema"}` (see [Constrained output](#constrained-output));
-- llama.cpp-compatible `grammar` GBNF text, which constrains the answer stream (the reasoning
-  region stays unconstrained; the MTP and ordinary backends are supported, DFlash is rejected);
-  `grammar` and a constraining `response_format` cannot be combined;
+- llama.cpp-compatible `grammar` GBNF text, which constrains the answer stream; under explicitly
+  enabled thinking the Engine wraps the constraint so it carries the reasoning stream to the close
+  (see [Constrained output](#constrained-output)); the MTP and ordinary backends are supported,
+  DFlash is rejected; `grammar` and a constraining `response_format` cannot be combined;
 - non-streaming responses and server-sent event streams;
 - `stream_options.include_usage`;
 - llama.cpp-compatible terminal `timings`, plus opt-in `timings_per_token` and
@@ -147,9 +148,12 @@ Unknown top-level fields are ignored.
 
 ### Constrained output
 
-`grammar` and `response_format` constrain the answer region only (the reasoning region stays
-unconstrained), exactly one constraint kind per request, and never together with a `tools` field
-(even an empty one).
+`grammar` and `response_format` constrain the answer. On a request that resolves thinking enabled
+(see below) the Engine applies the constraint to the whole turn through the thinking wrapper: a
+reasoning body that can never contain the wire-format close marker, the close marker itself, the
+format whitespace the chat parser's close rule requires, then the answer grammar. On every other
+request the constraint governs the answer stream alone. Exactly one constraint kind per request,
+and never together with a `tools` field (even an empty one).
 
 - llama.cpp-compatible `grammar` GBNF text is compiled by the Engine at submission. Text the
   Engine cannot compile, or a grammar whose initial mask admits nothing, is rejected with
@@ -183,13 +187,35 @@ unconstrained), exactly one constraint kind per request, and never together with
 - Grammar completion ends generation. `max_tokens` truncation may cut a constrained answer
   mid-JSON, and the streaming envelope makes no per-prefix parseability promise.
 
+Thinking-on constrained requests (the wrapper):
+
+- The wrapper applies automatically when the request carries a constraint, resolves thinking
+  enabled, and the rendered prompt starts in reasoning. There is no request field or server flag
+  for it; a thinking-off or non-reasoning request compiles and applies the constraint exactly as
+  before.
+- The reasoning stream stays free-form. The wrapper's body admits every byte except the close
+  marker, which is taken from the chat wire format (`</think>` in the pinned format): the full
+  marker sequence always closes the reasoning phase wherever it appears, so a "quoted" `</think>`
+  is not representable as reasoning text. After the close the masked stream requires at least one
+  format-whitespace byte, which is what the chat parser's close rule needs, and then the answer
+  grammar.
+- A partial close-marker prefix must be resolved before the close. If the reasoning text ends
+  mid-prefix (for example with a trailing `<`), the close token is not admissible at that column;
+  the model continues with one more reasoning byte and then closes. The wrapper admits
+  end-of-generation at every completed reasoning element, so a turn may also abort during
+  reasoning with an empty answer instead of being forced to complete the schema; once the close is
+  taken, generation can end only after a complete answer value.
+- The thinking-budget cap composes with the wrapper: the injected control suffix is admitted by
+  the wrapper's body, close, and whitespace rules, and the grammar continues from the forced close
+  into the answer grammar. The served `reasoning_content`/`content` split is unchanged (R2).
+
 Constraining requests default to non-thinking: a request carrying a `grammar` or a constraining
 `response_format` resolves thinking off for that request unless it explicitly enables thinking
 (`enable_thinking: true` or a non-`none` `reasoning_effort`). The default replaces both the
 server and the template default for the thinking on/off decision — `--no-thinking` is consistent
 with it, and no server flag can force thinking on for a constraining request. An explicit enable
-still overrides the constrained default: thinking runs and the answer region remains
-grammar-constrained. `--default-thinking-budget` keeps its documented behavior, so a
+still overrides the constrained default: thinking runs and the constraint carries the whole turn
+through the wrapper. `--default-thinking-budget` keeps its documented behavior, so a
 defaulted-off constraining request receives no cap while an explicitly enabled one inherits it.
 Unconstrained requests are untouched: request fields, then server defaults, then the template's
 default.

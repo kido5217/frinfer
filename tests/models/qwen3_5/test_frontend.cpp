@@ -2032,6 +2032,72 @@ int test_grammar_constraints(const Frontend& frontend) {
     failures += check(invalid == nullptr && !error.empty(),
                       "an invalid grammar compiled without a diagnostic");
 
+    // The thinking wrapper compiles through the frontend seam with the wire-format close marker
+    // (ChatParseWireFormat) and keeps its own cache identity.
+    {
+        const auto bare = frontend.compile_grammar("root ::= \"hello\"");
+        const auto wrapped = frontend.compile_grammar(
+            "root ::= \"hello\"", Frontend::ConstraintScope::Thinking, &error);
+        if (wrapped == nullptr) { std::cerr << "wrapper compile error: " << error << '\n'; }
+        failures += check(wrapped != nullptr, "a thinking-wrapper grammar did not compile");
+        if (wrapped != nullptr && bare != nullptr) {
+            failures += check(wrapped != bare,
+                              "the thinking wrapper reused the answer-only compilation");
+            failures += check(frontend.compile_grammar("root ::= \"hello\"",
+                                                       Frontend::ConstraintScope::Thinking) ==
+                                  wrapped,
+                              "wrapped grammars are not shared by grammar identity");
+            const auto admits = [](fi::GrammarMaskRow row, ninfer::TokenId id) {
+                return (row[static_cast<std::size_t>(id) >> 5U] &
+                        (1U << (static_cast<unsigned>(id) & 31U))) != 0U;
+            };
+            const std::vector<ninfer::TokenId> hello  = fixture_tokenizer().encode("hello");
+            const std::vector<ninfer::TokenId> less   = fixture_tokenizer().encode("<");
+            const std::vector<ninfer::TokenId> closer = fixture_tokenizer().encode("</think>");
+            failures += check(!hello.empty() && !less.empty() && closer.size() == 1,
+                              "the fixture tokenizer did not produce the corner pieces");
+            const auto wrapped_row = wrapped->row_for(wrapped->initial_state());
+            const auto bare_row    = bare->row_for(bare->initial_state());
+            failures += check(!hello.empty() && admits(wrapped_row, hello.front()) &&
+                                  admits(bare_row, hello.front()),
+                              "the wrapper grammars do not admit the shared answer start");
+            failures += check(!less.empty() && !admits(bare_row, less.front()) &&
+                                  admits(wrapped_row, less.front()),
+                              "the wrapper did not admit reasoning bytes the answer-only grammar "
+                              "rejects");
+
+            // Real-tokenization corner: after a trailing `<`, the single `</think>` token is
+            // rejected; a fallback byte resolves the prefix and the close then fires.
+            fi::GrammarState state = wrapped->initial_state();
+            const auto feed        = [&](fi::GrammarState& target, std::string_view text) {
+                for (const ninfer::TokenId id : fixture_tokenizer().encode(text)) {
+                    if (!admits(wrapped->row_for(target), id) || !target.accept(id)) {
+                        return false;
+                    }
+                }
+                return true;
+            };
+            failures +=
+                check(feed(state, "reasoning<"), "the wrapper did not admit reasoning text");
+            failures += check(closer.size() == 1 &&
+                                  !admits(wrapped->row_for(state), closer.front()),
+                              "the close token was admitted mid-prefix");
+            failures += check(feed(state, "x") && feed(state, "</think>") &&
+                                  feed(state, "\n\nhello") && state.can_end(),
+                              "the wrapper did not recover from the mid-prefix corner");
+
+            // Budget-cap interplay: the canonical thinking-control span (guidance text, close,
+            // whitespace) is admissible from a mid-prefix reasoning state and hands off to the
+            // answer grammar.
+            fi::GrammarState controlled = wrapped->initial_state();
+            failures += check(feed(controlled, "reasoning<") && feed(controlled, kThinkingControl),
+                              "the wrapper did not admit the thinking-control span mid-prefix");
+            failures += check(feed(controlled, "hello") && controlled.can_end(),
+                              "the wrapper did not continue into the answer after thinking "
+                              "control");
+        }
+    }
+
     // The cache is weak by contract: once every holder drops its reference, the next compile of
     // the same text is fresh - the row cache is rebuilt rather than retained forever.
     {

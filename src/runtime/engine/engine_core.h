@@ -49,6 +49,8 @@ public:
     using PendingBatch       = typename ModelContract::PendingBatch;
     using MaskPlan           = typename ModelContract::MaskPlan;
     using CompiledGrammar    = typename ModelContract::CompiledGrammar;
+    using Frontend           = typename ModelContract::Frontend;
+    using ConstraintScope    = typename Frontend::ConstraintScope;
     using PreparedPrompt     = typename ModelContract::PreparedPrompt;
     using OutputSession      = typename ModelContract::OutputSession;
     using PublishedOutput    = typename ModelContract::PublishedOutput;
@@ -181,14 +183,23 @@ public:
         }
 
         std::shared_ptr<const CompiledGrammar> grammar;
+        bool grammar_carries_reasoning = false;
         if (options.constraint) {
             const SpeculativeBackend backend = instance_.program->speculative_backend();
             if (backend != SpeculativeBackend::None && backend != SpeculativeBackend::Mtp) {
                 throw RequestError(RequestErrorKind::InvalidConstraint,
                                    "grammar constraints need the ordinary or MTP backend");
             }
+            // A constrained request that resolves thinking enabled and whose rendered prompt
+            // starts in reasoning gets the full-stream thinking wrapper: the constraint then
+            // carries the reasoning stream and hands off to the answer grammar at the close.
+            grammar_carries_reasoning =
+                options.constraint->thinking_enabled && prompt_summary.starts_in_reasoning;
             std::string diagnostic;
-            grammar = instance_.frontend.compile_grammar(options.constraint->gbnf, &diagnostic);
+            grammar = instance_.frontend.compile_grammar(
+                options.constraint->gbnf,
+                grammar_carries_reasoning ? ConstraintScope::Thinking : ConstraintScope::Answer,
+                &diagnostic);
             if (grammar == nullptr) {
                 throw RequestError(RequestErrorKind::InvalidConstraint,
                                    "grammar constraint rejected: " + diagnostic);
@@ -231,7 +242,8 @@ public:
                                                 std::move(output), prompt_summary, prepare_seconds,
                                                 std::move(options), consumer_mode, observation,
                                                 pending_deadline, submitted);
-            request->grammar = std::move(grammar);
+            request->grammar                   = std::move(grammar);
+            request->grammar_carries_reasoning = grammar_carries_reasoning;
         } catch (...) {
             release_reserved_capacity();
             throw;
@@ -1413,9 +1425,12 @@ private:
         ProgramCallScope program_call(*this);
         MaskPlan plan{};
         if (request->grammar) {
-            const std::vector<std::uint8_t> regions = request->output.preview_reasoning_flags({});
-            plan.column_count                       = 1;
-            plan.reasoning_mask                     = regions.empty() ? 1U : regions.front();
+            // A constrained request's grammar covers its stream from token 0: the thinking
+            // wrapper admits the reasoning bytes and hands off at the close, and an
+            // answer-only grammar is already at its answer position. The old phase-dependent
+            // deferral no longer applies to constrained requests.
+            plan.column_count   = 1;
+            plan.reasoning_mask = 0;
         }
         auto progress = instance_.program->advance_prefill(*request->sequence, plan,
                                                            &program_call.failed_timing());
@@ -1551,7 +1566,8 @@ private:
                     const SequenceHandle sequence = activation.sequence();
                     resources_.adopt(*instance_.program, std::move(activation));
                     request->sequence.emplace(sequence);
-                    instance_.program->set_constraint(sequence, request->grammar);
+                    instance_.program->set_constraint(sequence, request->grammar,
+                                                      request->grammar_carries_reasoning);
                     request->budget.emplace(std::move(control.budget));
                     request->lane.emplace(control.destination);
                     request->remaining_service_work      = control.summary.service_work_quanta;
@@ -1837,18 +1853,13 @@ private:
         for (std::size_t row = 0; row < membership.size; ++row) {
             const auto& record = slots_[membership.lanes[row]];
             if (record == nullptr || !record->grammar) { continue; }
-            // The mask governs the token a column produces, so each column's region is read after
-            // the columns before it: the session feeds the round's draft span and returns one flag
-            // per column plus the bonus column's tail flag.
-            const std::span<const TokenId> drafts = instance_.program->draft_tokens(*record->sequence);
-            const std::vector<std::uint8_t> regions =
-                record->output.preview_reasoning_flags(drafts);
-            plans[row].column_count = static_cast<std::uint8_t>(regions.size());
-            for (std::size_t column = 0; column < plans[row].column_count; ++column) {
-                if (regions[column] != 0) {
-                    plans[row].reasoning_mask |= static_cast<std::uint8_t>(1U << column);
-                }
-            }
+            // A constrained request's grammar governs every column of the round from token 0
+            // (reasoning stream included under the thinking wrapper), and the round's columns
+            // are the draft span plus the bonus column. No region preview is consulted: the
+            // phase-dependent deferral no longer applies to constrained requests.
+            const std::span<const TokenId> drafts =
+                instance_.program->draft_tokens(*record->sequence);
+            plans[row].column_count = static_cast<std::uint8_t>(drafts.size() + 1U);
         }
         auto pending = instance_.program->decode(
             membership.sequence_span(), membership.budget_span(),

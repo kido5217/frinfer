@@ -59,6 +59,16 @@ private:
 
 class Frontend {
 public:
+    // Constraint compilation scope. `Answer` compiles the grammar as the answer grammar (the
+    // pre-wrapper behavior). `Thinking` first wraps the grammar in the family's full-stream
+    // thinking wrapper - a marker-avoiding reasoning body, the wire-format close marker, forced
+    // format whitespace, then the answer grammar - so a request whose rendered prompt starts in
+    // reasoning is constrained from token 0 and hands off at the close.
+    enum class ConstraintScope : std::uint8_t {
+        Answer,
+        Thinking,
+    };
+
     Frontend(const Frontend&);
     Frontend& operator=(const Frontend&);
     Frontend(Frontend&&) noexcept;
@@ -91,6 +101,9 @@ public:
     [[nodiscard]] std::shared_ptr<const frontend::GrammarVocabulary> grammar_vocabulary() const;
     [[nodiscard]] std::shared_ptr<const frontend::CompiledGrammar>
     compile_grammar(std::string_view gbnf, std::string* error = nullptr) const;
+    // The same compilation under an explicit scope (see ConstraintScope).
+    [[nodiscard]] std::shared_ptr<const frontend::CompiledGrammar>
+    compile_grammar(std::string_view gbnf, ConstraintScope scope, std::string* error = nullptr) const;
 
 private:
     class Impl;

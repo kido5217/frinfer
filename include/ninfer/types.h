@@ -262,10 +262,16 @@ struct OutputOptions {
 
 // Grammar-constrained generation: GBNF text whose root symbol is "root". The protocol adapter
 // converts JSON Schema documents before submitting; the engine compiles, validates and applies
-// the text itself. The tool-parser's own thinking region stays unconstrained - the grammar only
-// governs the published answer stream.
+// the text itself.
+//
+// `thinking_enabled` is the request's resolved thinking flag (the protocol adapter's #86 rule
+// included). Combined with a rendered prompt that starts in reasoning, the engine wraps the
+// grammar in the full-stream thinking wrapper so the constraint carries the reasoning stream and
+// hands off to the answer grammar at the wire-format close; otherwise the grammar governs the
+// answer stream as before.
 struct GrammarConstraint {
     std::string gbnf;
+    bool thinking_enabled = false;
 };
 
 struct RequestOptions {
