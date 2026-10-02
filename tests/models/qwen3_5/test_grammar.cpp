@@ -1208,6 +1208,29 @@ void test_thinking_wrapper() {
         }
     }
 
+    // Token references (`<[id]>`, `<text>`) are operands: the rename leaves their inner text
+    // untouched while a bare `root` rule is still renamed.
+    {
+        std::string error;
+        const std::string input = "root ::= <[42]> <root> <root_x>\nroots ::= \"z\"\n";
+        const std::optional<std::string> wrapped =
+            frontend::wrap_thinking_constraint_grammar(input, kClose, &error);
+        check(wrapped.has_value(), "wrapper: token-reference grammar wraps", error);
+        if (wrapped) {
+            check(wrapped->find("tcw0-answer ::= <[42]> <root> <root_x>") != std::string::npos,
+                  "wrapper: token references are left untouched");
+            check(wrapped->find("roots ::= \"z\"") != std::string::npos,
+                  "wrapper: a rule name that only starts with root is untouched");
+        }
+    }
+
+    // Token references survive the wrap and compile in the answer grammar.
+    {
+        std::shared_ptr<const frontend::CompiledGrammar> grammar;
+        (void)wrap_and_compile("root ::= <[42]>", kClose, vocabulary, &grammar);
+        check(grammar != nullptr, "wrapper: a token-reference answer grammar compiles");
+    }
+
     // Construction errors.
     {
         std::string error;

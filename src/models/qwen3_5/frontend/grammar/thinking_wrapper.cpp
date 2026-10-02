@@ -124,6 +124,16 @@ bool rename_root(std::string_view gbnf, const std::string& answer_name, std::str
             while (index < gbnf.size() && gbnf[index] != '\n') { out->push_back(gbnf[index++]); }
             continue;
         }
+        if (byte == '<') {
+            // A token reference: `<[id]>` or `<text>` (llama-grammar parse_token). It is an
+            // operand whose inner text is a token name, never a rule name, so the whole span is
+            // copied verbatim.
+            const std::size_t end  = gbnf.find('>', index + 1);
+            const std::size_t stop = end == std::string_view::npos ? gbnf.size() : end + 1;
+            out->append(gbnf.substr(index, stop - index));
+            index = stop;
+            continue;
+        }
         if (is_word_char(byte)) {
             const std::size_t begin = index;
             while (index < gbnf.size() && is_word_char(gbnf[index])) { ++index; }

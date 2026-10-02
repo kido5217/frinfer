@@ -7,6 +7,7 @@
 #include "ninfer/types.h"
 #include "runtime/contract/execution.h"
 #include "runtime/contract/resources.h"
+#include "runtime/engine/constraint_selection.h"
 #include "runtime/engine/request_record.h"
 #include "runtime/engine/context_cache/resource_manager.h"
 #include "runtime/engine/scheduler.h"
@@ -193,8 +194,15 @@ public:
             // A constrained request that resolves thinking enabled and whose rendered prompt
             // starts in reasoning gets the full-stream thinking wrapper: the constraint then
             // carries the reasoning stream and hands off to the answer grammar at the close.
+            //
+            // Configuration corner: when thinking resolves off while the template still renders
+            // into reasoning (not reachable through the supported serve routes, which only start
+            // in reasoning with thinking on), the request compiles the plain answer grammar and
+            // engages it from token 0 (constraint_mask_engagement), so the reasoning stream must
+            // satisfy the answer grammar. That is deliberate: the old reasoning-region deferral
+            // no longer exists for constrained requests.
             grammar_carries_reasoning =
-                options.constraint->thinking_enabled && prompt_summary.starts_in_reasoning;
+                constraint_carries_reasoning(options.constraint, prompt_summary.starts_in_reasoning);
             std::string diagnostic;
             grammar = instance_.frontend.compile_grammar(
                 options.constraint->gbnf,
@@ -1425,12 +1433,9 @@ private:
         ProgramCallScope program_call(*this);
         MaskPlan plan{};
         if (request->grammar) {
-            // A constrained request's grammar covers its stream from token 0: the thinking
-            // wrapper admits the reasoning bytes and hands off at the close, and an
-            // answer-only grammar is already at its answer position. The old phase-dependent
-            // deferral no longer applies to constrained requests.
-            plan.column_count   = 1;
-            plan.reasoning_mask = 0;
+            const ConstraintMaskEngagement engagement = constraint_mask_engagement(1);
+            plan.column_count                         = engagement.column_count;
+            plan.reasoning_mask                       = engagement.reasoning_mask;
         }
         auto progress = instance_.program->advance_prefill(*request->sequence, plan,
                                                            &program_call.failed_timing());
@@ -1859,7 +1864,10 @@ private:
             // phase-dependent deferral no longer applies to constrained requests.
             const std::span<const TokenId> drafts =
                 instance_.program->draft_tokens(*record->sequence);
-            plans[row].column_count = static_cast<std::uint8_t>(drafts.size() + 1U);
+            const ConstraintMaskEngagement engagement =
+                constraint_mask_engagement(drafts.size() + 1U);
+            plans[row].column_count   = engagement.column_count;
+            plans[row].reasoning_mask = engagement.reasoning_mask;
         }
         auto pending = instance_.program->decode(
             membership.sequence_span(), membership.budget_span(),
