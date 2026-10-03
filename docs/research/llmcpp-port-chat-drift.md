@@ -22,13 +22,18 @@ map #145's tickets (#145–#151) and PRs #153–#155. No builds, no GPU work.
 ## Delta overview
 
 `05af0d2b` → `1537a0a8b2` is **77 commits / 267 files repo-wide** (2026-09-30 → 2026-10-03). The
-chat + grammar surface — `common/` (recursive), `src/llama-grammar.{h,cpp}`, `include/`, plus a
-full-range sweep for `grammars/`, `tools/`, `ggml/`, `tests/`, `models/templates/` — changed in
-exactly **15 files**: the PEG grammar engine (`src/llama-grammar.{h,cpp}`), every vendored parse
-mechanism (`peg-parser.*`, `chat-peg-parser.*`, `chat.h`, `json*`, `json-schema*`,
-`json-schema-to-grammar*`, `trie.*`, `unicode.*`, `chat-auto-parser*`, `parsers/qwen3-coder.cpp`,
-`parsers/parsers.cpp`), the jinja caps layer, `common/llguidance.cpp` and the `grammars/` corpus
-are **all byte-identical** at both commits. What changed: (1) one new specialized parser for the
+chat + grammar surface — `common/` (recursive), `src/llama-grammar.{h,cpp}`, `include/` —
+exactly **15 files** changed, all under `common/` (`arg.cpp`, `chat.cpp`, `common.cpp/h`,
+`download.cpp`, `jinja/runtime.cpp`, `log.cpp`, `parsers/{ling3,llm-jp-harmony}.cpp`,
+`parsers/{parsers.h,sources.cmake}`, `sampling.cpp/h`, `speculative.cpp/h` — the per-file table
+below). Everything else on the surface is **byte-identical** at both commits: the PEG grammar
+engine (`src/llama-grammar.{h,cpp}`), every vendored parse mechanism (`peg-parser.*`,
+`chat-peg-parser.*`, `chat.h`, `json*`, `json-schema*`, `json-schema-to-grammar*`, `trie.*`,
+`unicode.*`, `chat-auto-parser*`, `parsers/qwen3-coder.cpp`, `parsers/parsers.cpp`), the jinja
+caps layer, `common/llguidance.cpp`, `include/`, and the `grammars/` corpus. A full-range sweep
+over `tools/`, `ggml/`, `tests/`, `models/templates/`, `examples/` found no further
+chat/grammar-surface changes beyond the excluded-subsystem rows in the table (which account for
+the rest of the repo-wide 267 files). What changed: (1) one new specialized parser for the
 **LLM-jp-4.1** Japanese family (GPT-OSS-style channel dialect, `b8f96c3e8` / #29681) — the only
 commit touching the vendored set (`common/chat.cpp` +6 registration, `common/parsers/parsers.h` +2
 declaration; the 164-line parser file itself is outside the vendored set); (2) **Ling-3.0**
@@ -53,7 +58,7 @@ vectors (LLM-jp dialect; Ling response-format) — no new generic mechanism.
 | `common/arg.cpp` | +18 | `1fb7ef3e3` (#27694), `feb9a3d6d` (#28977) | no |
 | `common/common.{h,cpp}`, `log.cpp`, `download.cpp` | plumbing | `edd6e2bbd` (#29860), `f1cee9941` (#29816) | no |
 | `models/templates/llm-jp-llm-jp-4.1-8b-thinking.jinja` | new | `b8f96c3e8` (#29681) | no |
-| `tests/test-chat.cpp` | +95 (family vectors) | `b8f96c3e8` (#29681), `9bf55f4a3` (#29813) | no |
+| `tests/test-chat.cpp` | +86 (family vectors) | `b8f96c3e8` (#29681, +70), `9bf55f4a3` (#29813, +16) | no |
 | `examples/{simple-chat,retrieval,llama.android}` | sampler API | `1fb7ef3e3` (#27694) | no |
 
 Cross-check on map #147's measurement: `05af0d2b` → `bed0a85660` (2026-10-02) is 68 commits with
@@ -73,10 +78,11 @@ them touch the vendored set.
   `until("\n</parameter>\n")` value semantics rejected (it fails a value carrying a balanced
   newline-framed nested pair, a shape that works today); the second-chance raw-value parse
   (strict-first, raw bytes to a newline-framed close, LF/CRLF) landed in the same PR #154.
-  Corpus now 48 vectors (42 + 4 rewritten + 4 new) with the upstream prefix-stability gate
-  (`tool-call-unmatched-nested-parameter`, `tool-call-standalone-parameter-close`, both
-  `later-candidate-must-consume-the-end` variants rewritten; live-876/live-907/complete-call-before-cut/
-  later-call-not-swallowed added).
+  Corpus now 48 vectors (42 pre-#154: 4 rewritten in place + 6 new, net +6) with the upstream
+  prefix-stability gate (`tool-call-unmatched-nested-parameter`, `tool-call-standalone-parameter-close`,
+  both `later-candidate-must-consume-the-end` variants rewritten; `complete-call-before-cut`,
+  `inline-fragment-live-shape` (live-876), `later-call-not-swallowed`, `raw-crlf-framing`,
+  `salvage-adapter-failure-stays-fail-closed`, `truncated-mid-parameter` (live-907) added).
 - **M3 — `tag_with_safe_content`: parked.** Unused upstream (no callers at the pinned baseline)
   and incomplete for the marker-at-chunk-boundary case; needed only if M1+M2 leave a residual
   gap. No open ticket; map #145 closed with #151 verification done.
@@ -149,26 +155,32 @@ performance.
 
 **Vehicle.** NInfer-side selective adoption into the maintained jinja fork
 (`third_party/llama-jinja`) — the fork README's stated policy ("adopts upstream fixes
-selectively"). The fork's `runtime.cpp` is byte-identical to fork base `76098465` (diffed this
-session), and `76098465` is a verified ancestor of `def4d406a`, so the 3 lines apply verbatim.
-Not a re-vendor: the runbook explicitly keeps `third_party/llama-jinja` on its own baseline,
-outside the chat procedure.
+selectively"). **Not a verbatim apply:** the fork's `runtime.cpp` is NInfer-reformatted relative
+to fork base `76098465` (~850-line diff — checkpoint calls, includes, style; its blob matches no
+upstream commit in the range), so `def4d406a`'s patch lands only with fuzz 1 against the fork
+file — a small manual 2-hunk port placed by hand, then verified by the fork's jinja test suite.
+`76098465` is a verified ancestor of `def4d406a`, so the change is semantics-compatible with the
+fork's base. Not a re-vendor: the runbook explicitly keeps `third_party/llama-jinja` on its own
+baseline, outside the chat procedure.
 
-**Cost + contract impact.** 3 lines + README adoption note + the existing template parity gate
-(`NINFER_PARITY_TEMPLATE=<froggeric> ctest -R chat_templates`). No parse-corpus impact (the 48
-vectors exercise the parse side, not rendering); no demotion-class impact.
+**Cost + contract impact.** Small manual port (2 hunks in the reformatted fork file) + README
+adoption note + the existing template parity gate (`NINFER_PARITY_TEMPLATE=<froggeric> ctest -R
+chat_templates`) plus the fork's jinja test suite to confirm semantics. No parse-corpus impact
+(the 48 vectors exercise the parse side, not rendering); no demotion-class impact.
 
 **Axis.** (b) performance — template rendering runs once per request on CPU, not per token; the
 gain scales with loop iterations (message/tool count in the prompt), so it is small at current
 deployment shapes but free to take.
 
-**Verdict: port (low priority)** — trivial verified-semantics-preserving 3-line adoption via the
-fork's own documented policy. **Flagged for the map:** it belongs to the `llama-jinja` fork
+**Verdict: port (low priority)** — verified-semantics-preserving adoption via the fork's own
+documented policy; the port is manual (fuzz-1 patch) rather than verbatim, but still small. **Flagged for the map:** it belongs to the `llama-jinja` fork
 family, not the chat/grammar vendored set — routing is the map's call.
 
-**Evidence needed.** Fork `runtime.cpp` byte-identical to base `76098465` except the moved
-`context loop_scope(scope);` line; froggeric parity test unchanged; optional: template-render
-microbenchmark on a long multi-tool conversation to make the (b) claim measurable.
+**Evidence needed.** Post-port fork file: the `context loop_scope(scope);` construction moved
+inside the `select && test` branch (the diff against base `76098465` then shows only the NInfer
+reformatting plus that move); fork jinja test suite green; froggeric parity test unchanged;
+optional: template-render microbenchmark on a long multi-tool conversation to make the (b) claim
+measurable.
 
 ### C4 — Speculative rejection sampling for MTP draft acceptance
 
@@ -240,7 +252,7 @@ re-armed, or fold it into the next content-bearing re-vendor.
 |---|---|---|---|---|
 | C1 LLM-jp-4.1 Harmony (#29681) | no | — (re-vendor byproduct only) | — | new Japanese model family; NInfer serves the Qwen3.5 `.ninfer` family only |
 | C2 Ling-3.0 `json_schema` (#29813) | no | — | — | excluded family-specific parser; schema-enforced responses are NInfer's own constrained-decoding product |
-| C3 jinja `for`-loop scope (#29776) | port (low priority) | NInfer-side selective adoption into `third_party/llama-jinja` | (b) | 3-line, verified semantics-preserving perf fix; fork `runtime.cpp` byte-identical to base so it applies verbatim |
+| C3 jinja `for`-loop scope (#29776) | port (low priority) | NInfer-side selective adoption into `third_party/llama-jinja` | (b) | 3-line upstream, verified semantics-preserving perf fix; manual 2-hunk port into the NInfer-reformatted fork file (patch lands with fuzz 1) |
 | C4 spec rejection sampling (#27694) | no | — | — | excluded sampler stack; NInfer's MTP acceptance is its own product path |
 | C5 baseline advance to `1537a0a8b2` | defer | re-vendor (runbook `docs/maintainer/llama-chat-vendor.md`) | (c) | buys nothing functional (grammar engine unchanged, 3 patches re-apply); near-zero cost; do when the drift alert needs re-arming |
 
