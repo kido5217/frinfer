@@ -309,7 +309,7 @@ routed to the converter/tooling family).
   print format, `common/arg.cpp:2519-2531`, `tools/perplexity/perplexity.cpp:431-435`);
   `--context-file/--chunk-size/--chunk-separator/--junk/--pos` are the needle-in-haystack
   passkey test, not perplexity chunking (`common/arg.cpp:3105-3144`,
-  `examples/retrieval/README.md`).
+  `examples/passkey/README.md`).
 - **NInfer state (verified):** `--context`, `--stride`, `--quick` (one stream per domain),
   `--corpus` manifest or `--text` file; per-window unrounded values in `report.json`
   (`3e0ff840:docs/perplexity.md`, `apps/perplexity/main.cpp:92-133`).
@@ -367,8 +367,10 @@ routed to the converter/tooling family).
 - **llama.cpp state:** `--log-jsonl` (JSONL operational log to stdout), `--log-file`,
   `--log-disable` (pause at runtime), `--log-colors/--log-prefix/--log-timestamps`,
   `-lv/--verbosity N` (`eec18f5d32:common/arg.cpp:3873-3970`).
-- **NInfer state (verified):** `--log-level trace|debug|info|warning|error|critical|off` on all
-  binaries (spdlog, stderr-only human logs); the serve writes machine-readable full-precision
+- **NInfer state (verified):** `--log-level trace|debug|info|warning|error|critical|off` on the
+  CLI, serve, and perplexity binaries (spdlog, stderr-only human logs; `ninfer_bench` has no
+  log-level flag — its full option set is
+  `bench/inference/ninfer_bench_support.cpp:282-313`); the serve writes machine-readable full-precision
   request records via `--request-log-jsonl` (schema v24) and human operational lifecycle events
   (warmup/ready/request/throughput) via the operational log
   (`3e0ff840:src/serve/operational_log.h`, `tools/README.md`).
@@ -395,7 +397,7 @@ routed to the converter/tooling family).
 - **NInfer state (verified):** `artifact_id` is a **random `uuid4()`** minted at conversion
   (`3e0ff840:tools/artifact/writer.py:141`) — no content integrity in the artifact;
   `tools/artifact/inspect.py` has no hash mode. Artifacts are downloaded from Hugging Face
-  (`README.md` quick start) and upgraded v2→v3 in place
+  (`README.md` quick start) and upgraded v2→v3 to a new output path
   (`docs/weight-conversion.md`).
 - **Port shape + cost:** extend `tools/artifact/inspect.py` with `--hash` (whole-entry +
   per-object sha256, manifest lines) and `--check MANIFEST` (verify). Stdlib-only Python,
@@ -410,17 +412,18 @@ routed to the converter/tooling family).
 
 - **llama.cpp state:** the `gguf` example prints version/alignment/data offset, the full KV
   metadata, and a per-tensor table (name/dims/type), with key lookup
-  (`eec18f5d32:examples/gguf/gguf.cpp:86-140`).
+  (`eec18f5d32:examples/gguf/gguf.cpp:86-140` tensor name/size/offset in `gguf_ex_read_0`;
+  type/dims in `gguf_ex_read_1`, `:151-230`).
 - **NInfer state (verified):** `tools/artifact/inspect.py` prints a richer summary (artifact_id,
-  components, file/payload bytes, object/tensor counts, formats, layouts) plus `--objects`
-  (offset/bytes/kind/storage per object) and `--bindings`/`--json`
-  (`3e0ff840:tools/artifact/inspect.py`). Gap: the per-component **model config** objects
-  (validated at `tools/artifact/schema.py:318-320`) are never printed.
-- **Port shape + cost:** `inspect.py --config` (dump each component's config) or include it in
-  the default summary. **Trivial**.
-- **Verdict:** **port (c).** "What does this artifact say its config is?" is the first
-  introspection question (e.g. native `max_position_embeddings` before choosing
-  `--max-context`/YaRN), and the data is already in the directory JSON.
+  components — including each component's **config**, a required directory member that lands in
+  the default output via `artifact_summary`'s `"components": artifact.directory.components`
+  (`tools/artifact/inspect.py:21`, `schema.py:313-320`) — file/payload bytes, object/tensor
+  counts, formats, layouts) plus `--objects` (offset/bytes/kind/storage per object) and
+  `--bindings`/`--json` (`3e0ff840:tools/artifact/inspect.py`). Verified by running the decode
+  path: the default summary emits each component's `config` (e.g. `max_position_embeddings`).
+- **Verdict:** **no (c), parity.** "What does this artifact say its config is?" is already
+  answered by the default summary; the llama-gguf print parity items (KV metadata, per-tensor
+  table) are covered at artifact level by `--objects`/`--bindings`. No port.
 
 ## C22 — `llama-results` (logits NMSE regression check)
 
@@ -498,13 +501,14 @@ Surveyed and closed individually (all `no`):
 | C18 JSONL ops log / file log | **defer** | c | Request JSONL (v24) already covers machine-readable; no consumer for the rest |
 | C19 `--check-tensors` | **no** | c | Integrity belongs on the download path (C20); startup NaN scan is not product behavior |
 | C20 Artifact integrity hashing | **port** | c | `artifact_id` is a random UUID; downloaded + upgraded artifacts need verifiable integrity |
-| C21 Config dump (gguf print parity) | **port** | c | Component configs are in the directory JSON but never printed |
+| C21 Config dump (gguf print parity) | **no** (parity) | c | The default `inspect.py` summary already prints per-component `config` (verified by running the decode path); object/tensor-level parity is covered by `--objects`/`--bindings` |
 | C22 `llama-results` logits NMSE | **defer** | c | Oracle tests own regression; cross-engine parity is one-off research |
 | C23 Tensor/activation dumps | **flag** | — | Op/maintainer machinery, not QoL — route to the Op family |
 | C24 Micro-flags (color, escape, prompt-cache, …) | **no** | — | No consumer; parity items covered elsewhere |
 
-**Ports (7, all small):** C1, C3 (axis a), C4, C5, C11, C17, C20 (+C21 trivial). No candidate
-on axis (b): this family is QoL by construction, and nothing here changes 5090 performance.
+**Ports (7):** C1, C3 (axis a), C4, C5, C11 (small–medium, 2–4 d), C17, C20 — the rest small.
+No candidate on axis (b): this family is QoL by construction, and nothing here changes 5090
+performance.
 
 ## Flagged for the map (boundary-crossing + out-of-family)
 
