@@ -1,4 +1,4 @@
-// NInfer compat: small self-contained helpers the vendored chat layer calls whose
+// FrInfer compat: small self-contained helpers the vendored chat layer calls whose
 // upstream definitions live in excluded translation units (common/common.cpp,
 // common/chat-auto-parser-helpers.cpp). Bodies match upstream semantics.
 

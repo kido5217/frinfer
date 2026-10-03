@@ -23,7 +23,7 @@ RUN cmake -S . -B /build -G Ninja \
         -DNINFER_BUILD_APPS=ON \
         -DBUILD_TESTING=OFF \
         -DNINFER_BUILD_BENCHMARKS=OFF \
-    && cmake --build /build --parallel --target ninfer-yarn ninfer-yarn-serve
+    && cmake --build /build --parallel --target frinfer frinfer-serve
 
 FROM nvidia/cuda:13.1.2-runtime-ubuntu24.04
 
@@ -38,11 +38,11 @@ RUN apt-get update \
         libswscale7 \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=build /build/apps/ninfer-yarn /usr/local/bin/ninfer-yarn
-COPY --from=build /build/apps/ninfer-yarn-serve /usr/local/bin/ninfer-yarn-serve
+COPY --from=build /build/apps/frinfer /usr/local/bin/frinfer
+COPY --from=build /build/apps/frinfer-serve /usr/local/bin/frinfer-serve
 
 WORKDIR /workspace
 EXPOSE 8080
 STOPSIGNAL SIGTERM
 
-CMD ["ninfer-yarn-serve", "--help"]
+CMD ["frinfer-serve", "--help"]

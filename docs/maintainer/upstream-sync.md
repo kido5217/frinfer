@@ -1,6 +1,6 @@
 # Upstream sync
 
-How this fork (`kido5217/ninfer-yarn`) stays current with upstream `Neroued/ninfer` while keeping
+How this fork (`kido5217/frinfer`) stays current with upstream `Neroued/ninfer` while keeping
 its own patches. Every fact below was verified during the first sync (2026-09-26, upstream tip
 `e31bc99b`) and re-confirmed during the second sync (2026-09-30, upstream tip `d44ab584`).
 
@@ -13,7 +13,7 @@ its own patches. Every fact below was verified during the first sync (2026-09-26
   plus required linear history and rebase-only PRs), so the merge base cannot be invalidated under
   us.
 - **`gh` resolves to `upstream` once that remote exists.** Keep
-  `gh repo set-default kido5217/ninfer-yarn` set and pass `--repo kido5217/ninfer-yarn` on every
+  `gh repo set-default kido5217/frinfer` set and pass `--repo kido5217/frinfer` on every
   scripted `gh` call.
 - **Never rebase or force-push `master`.** A sync is a merge; our patches stay ordinary commits on
   top.
@@ -26,7 +26,7 @@ its own patches. Every fact below was verified during the first sync (2026-09-26
 - Ruleset `protect-master` (id 24025442): `pull_request.allowed_merge_methods = ["merge","squash"]`.
   The repo setting alone is not enough — a squash-only rule rejects merge commits with
   *"Merge commits are not allowed on this repository"*.
-- `gh repo set-default kido5217/ninfer-yarn`.
+- `gh repo set-default kido5217/frinfer`.
 
 ## The sync
 
@@ -63,7 +63,7 @@ its own patches. Every fact below was verified during the first sync (2026-09-26
    differ across a sync while every oracle-based suite still passes. Report such differences
    instead of treating them as failures.
 6. Land as a **true merge commit**: push the branch, open a PR
-   (`gh pr create --repo kido5217/ninfer-yarn ...`), merge with `--merge` — **not squash** (a
+   (`gh pr create --repo kido5217/frinfer ...`), merge with `--merge` — **not squash** (a
    squash would drop the upstream ancestry and the next sync would re-apply the same commits) — and
    delete the branch.
 7. Record: update the drift baseline below to the new upstream tip and note the sync, its

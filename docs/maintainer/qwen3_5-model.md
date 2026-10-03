@@ -1,6 +1,6 @@
 # Qwen3.5 model reference
 
-This reference describes the Qwen3.5 Dense and MoE mathematics implemented by NInfer, including
+This reference describes the Qwen3.5 Dense and MoE mathematics implemented by FrInfer, including
 Text, MTP, Vision and their state semantics. The Qwen3.6 and Qwen3.8 releases used by the official
 artifacts are instances of these architectures. Their release names do not choose another graph.
 

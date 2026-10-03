@@ -1,4 +1,4 @@
-# Vendored llama.cpp chat-parsing stack; provenance and adaptation map: README.ninfer.md.
+# Vendored llama.cpp chat-parsing stack; provenance and adaptation map: README.frinfer.md.
 add_library(ninfer_llama_chat STATIC
   common/chat.cpp
   common/chat-peg-parser.cpp
@@ -14,7 +14,7 @@ add_library(ninfer_llama_chat STATIC
   compat/compat.cpp
   compat/excluded_stubs.cpp)
 
-# compat/ carries the NInfer-owned shims (common.h, log.h, ggml.h, jinja/caps.h,
+# compat/ carries the FrInfer-owned shims (common.h, log.h, ggml.h, jinja/caps.h,
 # jinja/value.h); common/ is the verbatim upstream include root and must come first
 # so vendored includes resolve to vendored files.
 target_include_directories(ninfer_llama_chat

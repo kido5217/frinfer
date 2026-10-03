@@ -1,6 +1,6 @@
-# NInfer Paged KV Context Store
+# FrInfer Paged KV Context Store
 
-本文定义 NInfer growing KV 的物理存储与消费合同。它是 typed KV pools、logical pages、
+本文定义 FrInfer growing KV 的物理存储与消费合同。它是 typed KV pools、logical pages、
 Device/Host replicas、address spaces、reservations、block tables 和 GPU consumer views 的维护者权威。
 
 本文只回答两个问题：

@@ -1,6 +1,6 @@
 #pragma once
 
-// NInfer compat shim for llama.cpp's src/llama-impl.h, reduced to the logging and
+// FrInfer compat shim for llama.cpp's src/llama-impl.h, reduced to the logging and
 // assertion macros llama-grammar.cpp uses. The macro bodies mirror
 // third_party/llama-chat/compat/ggml.h, which the in-tree consumer of vendored llama.cpp
 // sources already uses.

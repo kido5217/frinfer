@@ -2,7 +2,7 @@
 //
 // Builds a Qwen3-Coder-shaped PEG parser for a froggeric-like XML tool contract and
 // parses one canonical froggeric turn into a structured tool call; a malformed turn
-// (undeclared function) must fail. Links only the vendored library — no NInfer core,
+// (undeclared function) must fail. Links only the vendored library — no FrInfer core,
 // no CUDA. The upstream model for this test is tests/test-chat-peg-parser.cpp
 // (hand-built qwen3-coder-shaped parsers) plus common/parsers/qwen3-coder.cpp, whose
 // builder chain the parser below mirrors.

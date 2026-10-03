@@ -7,7 +7,7 @@ operational producers follow this contract.
 
 ## 1. Output classes
 
-NInfer has four distinct output classes. A shared destination such as stderr does not make them the
+FrInfer has four distinct output classes. A shared destination such as stderr does not make them the
 same contract.
 
 | Class | Examples | Owner and representation |
@@ -27,8 +27,8 @@ but neither consumes the other renderer's text.
 
 ## 2. Dependency and ownership
 
-NInfer vendors the compiled spdlog library under `third_party/spdlog`. Configuration never fetches
-network content or selects a system version. The `ninfer_product_logging` target is the only NInfer
+FrInfer vendors the compiled spdlog library under `third_party/spdlog`. Configuration never fetches
+network content or selects a system version. The `ninfer_product_logging` target is the only FrInfer
 library that owns logger construction policy.
 
 An application entry point creates one `product::LoggingRuntime` with its executable name and owns
@@ -166,7 +166,7 @@ explicit emergency cases above remain direct outputs because they are different 
 
 ## 7. Verification policy
 
-Logging tests protect NInfer-owned observable semantics, not private object shape. The request-log
+Logging tests protect FrInfer-owned observable semantics, not private object shape. The request-log
 test covers the consumed JSONL schema, representative request/throughput pretty records, Serve
 failure severity, and exclusion of arbitrary client error text. The pretty-logging test covers the
 observable Service and Tool prefixes. The corpus consumer test protects its exact schema-version

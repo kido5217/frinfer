@@ -1,6 +1,6 @@
-# NInfer Perplexity Corpus
+# FrInfer Perplexity Corpus
 
-`ninfer-ppl-1m-v1` is the fixed text corpus for NInfer causal-perplexity evaluation. It contains
+`ninfer-ppl-1m-v1` is the fixed text corpus for FrInfer causal-perplexity evaluation. It contains
 16 independent UTF-8 streams from four domains. The streams are not concatenated during scoring;
 the first token of each stream is the only token without a causal score.
 

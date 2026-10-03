@@ -78,7 +78,7 @@ python3 tools/bench/make_bench_corpus.py --check
 `--tokens` is the exact committed corpus size and the ceiling on prefill length; increase it (and
 optionally use `--source-text`) to benchmark longer prefills, memory permitting.
 
-## NInfer performance matrix
+## FrInfer performance matrix
 
 `run_ninfer_bench_matrix.py` runs the layered public-Engine `ninfer_bench` matrix against the native
 `.ninfer` artifact and stores its local reports under `profiles/bench/`. Its defaults are:

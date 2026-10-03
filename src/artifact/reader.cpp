@@ -31,7 +31,7 @@ struct Reader::Impl {
                     ": NInfer v2 artifact is not supported. Upgrade to v3 with: "
                     "python3 tools/upgrade_ninfer_v2_to_v3.py INPUT.ninfer OUTPUT.ninfer");
             }
-            throw ArtifactError(entry.string() + ": expected NInfer v3 entry magic");
+            throw ArtifactError(entry.string() + ": expected FrInfer v3 entry magic");
         }
         const auto json_bytes = read_u64_le(header.data() + 8);
         if (!json_bytes || json_bytes > file->bytes() - kHeaderBytes ||

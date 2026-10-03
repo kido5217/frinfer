@@ -20,7 +20,7 @@ void validate_options(const EngineOptions& options) {
         throw std::invalid_argument("Engine artifact_path must not be empty");
     }
     if (options.artifact_path.extension() != ".ninfer") {
-        throw std::invalid_argument("NInfer accepts only .ninfer artifacts");
+        throw std::invalid_argument("FrInfer accepts only .ninfer artifacts");
     }
     if (options.max_context == 0) {
         throw std::invalid_argument("Engine max_context must be nonzero");

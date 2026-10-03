@@ -1,8 +1,8 @@
 #pragma once
 
-// NInfer compat shim for llama.cpp's common/log.h.
+// FrInfer compat shim for llama.cpp's common/log.h.
 // The vendored sources log through these macros; DBG/INF compile out, WRN/ERR go to
-// stderr with a prefix. NInfer's own logging does not consume these messages.
+// stderr with a prefix. FrInfer's own logging does not consume these messages.
 
 #include <cstdio>
 

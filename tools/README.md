@@ -1,4 +1,4 @@
-# NInfer tools
+# FrInfer tools
 
 `tools/` contains artifact conversion and inspection, benchmark orchestration, and serving smoke
 checks. To download and run an existing artifact, start with the [project README](../README.md).
@@ -94,7 +94,7 @@ artifacts. See [`tools/bench/ttft/README.md`](bench/ttft/README.md).
 
 ## Serving smoke
 
-After starting `ninfer-yarn-serve` in another terminal:
+After starting `frinfer-serve` in another terminal:
 
 ```bash
 python3 -m tools.smoke.serve_contract \

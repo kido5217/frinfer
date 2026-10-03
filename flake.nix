@@ -1,5 +1,5 @@
 {
-  description = "NInfer development environment (CUDA 13.1, Python 3.13)";
+  description = "FrInfer development environment (CUDA 13.1, Python 3.13)";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05";
 

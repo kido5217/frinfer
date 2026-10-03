@@ -2,7 +2,7 @@
 
 DFlash backends propose several tokens with one masked-block forward, conditioned on committed
 target hidden features. The target verifies the proposal causally and remains the output authority.
-NInfer implements DFlash and DFlash2 as optional components of the
+FrInfer implements DFlash and DFlash2 as optional components of the
 [Qwen3.5 model](qwen3_5-model.md). Their private config and bindings select the stored weights;
 startup chooses one backend, draft width and proposal head.
 

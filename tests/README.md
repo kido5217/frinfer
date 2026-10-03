@@ -187,7 +187,7 @@ PYTHONPATH=eval eval/.venv/bin/python -m unittest discover \
 Run the serving contract manually after starting a resident server in another terminal:
 
 ```bash
-./build/apps/ninfer-yarn-serve out/qwen3_6_27b.ninfer \
+./build/apps/frinfer-serve out/qwen3_6_27b.ninfer \
   --host 127.0.0.1 --port 18080
 ```
 
@@ -222,14 +222,14 @@ The shared messages are in
 [`fixtures/serve/qwen3_6_thinking_preservation.json`](fixtures/serve/qwen3_6_thinking_preservation.json).
 
 The chat-parsing acceptance gate drives the ported Qwen3.5/froggeric parsing path end to end:
-`ninfer-yarn-serve` on the Qwen3.8-27B NVFP4 artifact with the fetched froggeric template, driven
+`frinfer-serve` on the Qwen3.8-27B NVFP4 artifact with the fetched froggeric template, driven
 by `opencode run --format json --thinking` through a locally served provider. It fails fast while
 the 5090 is busy, asserts that the model's quoted `</think>` in reasoning never reaches visible
 text and that its `bash` call arrives structured exactly once, and records the serve log, template
 digest and decode rate as evidence:
 
 ```bash
-nix develop -c cmake --build build --target ninfer-yarn-serve
+nix develop -c cmake --build build --target frinfer-serve
 tools/fetch_froggeric_template.py /tmp/opencode/froggeric_chat_template.jinja
 tools/e2e/chat_parsing_e2e.sh --model <provider>/<model-id>
 ```

@@ -1,4 +1,4 @@
-"""Shared public-wire client for ninfer-yarn-serve benchmark requests."""
+"""Shared public-wire client for frinfer-serve benchmark requests."""
 
 from __future__ import annotations
 
@@ -209,7 +209,7 @@ class PreparedServeExchange:
         )
 
 
-class NInferServeClient:
+class FrInferServeClient:
     def __init__(self, base_url: str, timeout_seconds: float, api_key: str | None = None) -> None:
         self._http = StreamingHttpClient(base_url, timeout_seconds)
         self._api_key = api_key
@@ -252,8 +252,8 @@ class NInferServeClient:
         value = self.get_json("/v1/models")
         entries = value.get("data")
         if not isinstance(entries, list) or len(entries) != 1:
-            raise ServeProtocolError("ninfer-yarn-serve must expose exactly one resident model")
+            raise ServeProtocolError("frinfer-serve must expose exactly one resident model")
         model = entries[0].get("id") if isinstance(entries[0], dict) else None
         if not isinstance(model, str) or not model:
-            raise ServeProtocolError("ninfer-yarn-serve model listing has no valid model id")
+            raise ServeProtocolError("frinfer-serve model listing has no valid model id")
         return model

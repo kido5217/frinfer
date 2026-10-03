@@ -1,11 +1,11 @@
-# NInfer
+# FrInfer
 
-## This fork: `kido5217/ninfer-yarn`
+## This fork: `kido5217/frinfer`
 
 This repository is a fork of [Neroued/ninfer](https://github.com/Neroued/ninfer), kept current
 through periodic true-merge syncs (last sync: `d44ab584`, 2026-09-30). It adds YaRN context
 extension, a llama.cpp-derived chat/tool-call parsing stack, and constrained decoding, and ships
-`ninfer-yarn`-named product binaries. The rest of this README describes the combined product
+the `frinfer` product binaries. The rest of this README describes the combined product
 (fork + upstream).
 
 ### Fork constraints
@@ -17,7 +17,7 @@ extension, a llama.cpp-derived chat/tool-call parsing stack, and constrained dec
   artifacts. The upstream `groupwise-int` artifacts remain loadable but are not a fork-validated
   configuration.
 - **Built for opencode.** The primary intended client is the opencode agent harness: the serve is
-  the opencode backend (compatibility study: [wayfinder map #139](https://github.com/kido5217/ninfer-yarn/issues/139)).
+  the opencode backend (compatibility study: [wayfinder map #139](https://github.com/kido5217/frinfer/issues/139)).
   One-shot CLI use also works.
 
 ### Changes from upstream
@@ -27,20 +27,20 @@ Last updated 2026-10-03 (`r5`, `3e0ff840`).
 
 | What | Why | How | Status | Source |
 |---|---|---|---|---|
-| YaRN context extension — `--max-context` beyond the model's native `max_position_embeddings` (β_fast=32, β_slow=1, ext_factor=1) | Long-context agent sessions (opencode compaction, 200K+ contexts) exceed the model's native capacity on 32 GB VRAM | YaRN correction in the RoPE op, golden-vector tested; unsupported by the DFlash draft backend | shipped | NInfer (implementation); spec cross-checked against the YaRN original, llama.cpp, HF transformers, and vLLM |
+| YaRN context extension — `--max-context` beyond the model's native `max_position_embeddings` (β_fast=32, β_slow=1, ext_factor=1) | Long-context agent sessions (opencode compaction, 200K+ contexts) exceed the model's native capacity on 32 GB VRAM | YaRN correction in the RoPE op, golden-vector tested; unsupported by the DFlash draft backend | shipped | FrInfer (implementation); spec cross-checked against the YaRN original, llama.cpp, HF transformers, and vLLM |
 | llama.cpp-derived chat/tool-call parsing stack for Qwen3.5 turns (reasoning / content / tool-call regions) | Agent tool-call parsing must survive quoted markers, truncation, and degenerate loops without silent demotion | Vendored llama.cpp subset (chat params, PEG grammar runtime) under `third_party/`, re-vendor runbook with drift alert, 48-vector parse corpus + e2e gate | shipped (vendored baseline `05af0d2b`) | llama.cpp (vendored subset) |
-| Tool-call demotion recovery + client signaling (G1) | A malformed or truncated tool call demoted to plain text, stalling the agent silently | Partial-AST salvage + second-chance raw-value parse (llama.cpp-derived, in-core); lost calls signal a retryable in-band error (SSE error frame / 409 + `x-should-retry`) with per-class codes (ADR-0002) | shipped | Salvage: llama.cpp-derived; signaling: NInfer (verified against the opencode client's error classifier; llama.cpp-flush and vLLM close-at-end alternatives rejected) |
-| Constrained decoding — per-request GBNF grammar + `response_format` `json_object`/`json_schema` | Agents depend on guaranteed structured output (tool arguments, JSON) | Engine GBNF mask via an in-tree token-trie producer (differential-verified); serve enforcement with a context-accurate schema allowlist and fail-closed codes; thinking-aware wrapper grammar; grammar A/B perf-neutral (±0.24 ms/step) | shipped | GBNF language, PEG runtime, and JSON-schema converter: llama.cpp (vendored + 3 fork patches); mask producer and serve contract: NInfer |
-| Realized reasoning tokens in the request log (schema v24) + CLI summary | Clients must distinguish realized thinking tokens from the thinking budget | `reasoning_tokens` in `request_done.result`, `model_thinking_tokens` → `budget_thinking_tokens`, realized tokens in the CLI generation summary | shipped (r5) | NInfer (opencode-deployment driven) |
-| Benchmark extensions | Measure fork features at their claimed scope | `ninfer_bench --grammar` (constrained-decoding mode); Qwen3.8 GPQA context-window comparison | shipped | GPQA-Diamond (public benchmark); runners: NInfer |
+| Tool-call demotion recovery + client signaling (G1) | A malformed or truncated tool call demoted to plain text, stalling the agent silently | Partial-AST salvage + second-chance raw-value parse (llama.cpp-derived, in-core); lost calls signal a retryable in-band error (SSE error frame / 409 + `x-should-retry`) with per-class codes (ADR-0002) | shipped | Salvage: llama.cpp-derived; signaling: FrInfer (verified against the opencode client's error classifier; llama.cpp-flush and vLLM close-at-end alternatives rejected) |
+| Constrained decoding — per-request GBNF grammar + `response_format` `json_object`/`json_schema` | Agents depend on guaranteed structured output (tool arguments, JSON) | Engine GBNF mask via an in-tree token-trie producer (differential-verified); serve enforcement with a context-accurate schema allowlist and fail-closed codes; thinking-aware wrapper grammar; grammar A/B perf-neutral (±0.24 ms/step) | shipped | GBNF language, PEG runtime, and JSON-schema converter: llama.cpp (vendored + 3 fork patches); mask producer and serve contract: FrInfer |
+| Realized reasoning tokens in the request log (schema v24) + CLI summary | Clients must distinguish realized thinking tokens from the thinking budget | `reasoning_tokens` in `request_done.result`, `model_thinking_tokens` → `budget_thinking_tokens`, realized tokens in the CLI generation summary | shipped (r5) | FrInfer (opencode-deployment driven) |
+| Benchmark extensions | Measure fork features at their claimed scope | `ninfer_bench --grammar` (constrained-decoding mode); Qwen3.8 GPQA context-window comparison | shipped | GPQA-Diamond (public benchmark); runners: FrInfer |
 | Upstream sync process | Keep the fork current while preserving upstream ancestry | True merge commits per the sync runbook; drift alert on the vendored subset; last sync `d44ab584` (2026-09-30) | ongoing | Neroued/ninfer (upstream) |
-| Product executables renamed to the `ninfer-yarn` family | Distinguish the fork's binaries from upstream's | CMake target rename (`ninfer-yarn`, `ninfer-yarn-serve`, `ninfer-yarn-perplexity`) | shipped | NInfer |
+| Product executables renamed to the `frinfer` family | Distinguish the fork's binaries from upstream's | CMake target rename (`frinfer`, `frinfer-serve`, `frinfer-perplexity`) | shipped | FrInfer |
 | Nix flake dev environment | Reproducible build environment | `flake.nix` at the repo root: CUDA 13.1, C++20, CMake/Ninja, FFmpeg, libcurl, Python 3.13 + torch; builds run in `nix develop` | shipped | nixpkgs (CUDA 13.1 `cudaPackages_13_1`) |
-| Agent/governance documentation | The fork is developed with LLM agents in the loop | `AGENTS.md` (product boundaries, verification, reporting), issue tracker + triage-label conventions, branch→commit→push→PR→merge→rebase landing pipeline; the LLM is permitted to open and merge PRs | ongoing | NInfer |
+| Agent/governance documentation | The fork is developed with LLM agents in the loop | `AGENTS.md` (product boundaries, verification, reporting), issue tracker + triage-label conventions, branch→commit→push→PR→merge→rebase landing pipeline; the LLM is permitted to open and merge PRs | ongoing | FrInfer |
 
 ### Bug reporting
 
-Bugs in this fork are reported in [this repository's issue tracker](https://github.com/kido5217/ninfer-yarn/issues).
+Bugs in this fork are reported in [this repository's issue tracker](https://github.com/kido5217/frinfer/issues).
 Do not report bugs to the upstream [Neroued/ninfer](https://github.com/Neroued/ninfer) project unless the
 bug is verified to reproduce on the original NInfer — an upstream master build with none of this fork's
 changes applied (no YaRN, no chat parsing stack, no constrained decoding, and no other row in the table
@@ -67,7 +67,7 @@ project or its maintainer. Use at your own risk.
 
 > Selected checkpoints. Maximum single-GPU inference performance.
 
-NInfer is a from-scratch C++/CUDA inference engine for Qwen3.5 Dense and MoE architectures on a
+FrInfer is a from-scratch C++/CUDA inference engine for Qwen3.5 Dense and MoE architectures on a
 single NVIDIA GeForce RTX 5090. It runs text, image, and video prompts through a local CLI or
 OpenAI-/Anthropic-compatible HTTP APIs. The runtime is deliberately specialized: one GPU, one
 resident model, and a startup-fixed capacity of one to eight active requests.
@@ -93,7 +93,7 @@ the weights again.
 
 ## Quick start
 
-NInfer requires 64-bit Linux, an NVIDIA GeForce RTX 5090, a CUDA toolkit supporting `sm_120a`,
+FrInfer requires 64-bit Linux, an NVIDIA GeForce RTX 5090, a CUDA toolkit supporting `sm_120a`,
 CMake 3.28 or newer, a C++20 host compiler, Ninja, `pkg-config`, FFmpeg development libraries
 (`libavformat`, `libavcodec`, `libavutil`, and `libswscale`), and `libcurl >= 7.85`.
 CUDA 13.1 is the validated development toolkit; CMake does not impose a CUDA version floor.
@@ -102,8 +102,8 @@ The build rejects CUDA architectures other than `sm_120a`.
 Build the product binaries:
 
 ```bash
-git clone https://github.com/kido5217/ninfer-yarn.git
-cd ninfer-yarn
+git clone https://github.com/kido5217/frinfer.git
+cd frinfer
 
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j
@@ -115,7 +115,7 @@ Python 3 interpreter. Both presets use `build/` and explicitly reset the build o
 Machine-specific compiler and Python paths belong in the ignored `CMakeUserPresets.json`.
 See [build organization and configuration](docs/maintainer/build-system.md) for details.
 
-There is no install target or packaged binary distribution; run NInfer from its source build tree.
+There is no install target or packaged binary distribution; run FrInfer from its source build tree.
 Python tools run independently of CMake; the standalone HBM probe has its own
 [build command](tools/README.md#standalone-hbm-probe).
 
@@ -131,7 +131,7 @@ Start a long-running text/agent server with two active-request lanes and explici
 checkpoint capacity:
 
 ```bash
-./build/apps/ninfer-yarn-serve models/qwen3_8_27b_nvfp4.ninfer \
+./build/apps/frinfer-serve models/qwen3_8_27b_nvfp4.ninfer \
   --max-context 240000 \
   --kv-capacity 240000 \
   --max-concurrency 2 \
@@ -164,7 +164,7 @@ curl http://127.0.0.1:8080/v1/chat/completions \
 Run a one-shot CLI request with a 32,768-token allocation:
 
 ```bash
-./build/apps/ninfer-yarn models/qwen3_8_27b_nvfp4.ninfer \
+./build/apps/frinfer models/qwen3_8_27b_nvfp4.ninfer \
   --prompt "Explain prefill and decode, then give a concise conclusion." \
   --max-context 32768 \
   --max-new 8192 \
@@ -232,7 +232,7 @@ linked from each model below.
 
 ## Evaluation
 
-Capability scores were measured through NInfer's OpenAI-compatible serving route with thinking
+Capability scores were measured through FrInfer's OpenAI-compatible serving route with thinking
 enabled, MTP3, and EvalScope 1.9.0 (0-shot, rule scoring, one sample per problem):
 
 | Model profile | AIME 2025 | AIME 2026 | GPQA-Diamond | ERQA | RealWorldQA |
@@ -271,7 +271,7 @@ docker run --rm \
   --publish 8080:8080 \
   --volume "$PWD/models:/models:ro" \
   ninfer:local \
-  ninfer-yarn-serve /models/qwen3_8_27b_nvfp4.ninfer \
+  frinfer-serve /models/qwen3_8_27b_nvfp4.ninfer \
   --host 0.0.0.0 \
   --max-context 240000 \
   --kv-capacity 240000 \
@@ -313,11 +313,11 @@ The product boundary remains intentionally small:
   distributed serving;
 - one shared startup-fixed KV pool across active requests and retained prefixes;
 - model architectures and format/shape combinations use explicitly implemented native paths;
-- parsed tool calls are returned to the client; NInfer does not execute tools;
+- parsed tool calls are returned to the client; FrInfer does not execute tools;
 - the in-tree C++ headers are not distributed as an installed SDK.
 
 `--max-context` is each sequence's logical limit. When it exceeds the model's native position
-capacity (`max_position_embeddings`), NInfer activates the YaRN context extension (spec defaults
+capacity (`max_position_embeddings`), FrInfer activates the YaRN context extension (spec defaults
 β_fast=32, β_slow=1, ext_factor=1), which the DFlash draft backend does not support. `--kv-capacity`
 sizes the shared Main Text KV pool used by active requests and retained prefixes; `auto` resolves
 the largest legal capacity at startup from the memory remaining after weights while keeping 1 GiB
@@ -340,7 +340,7 @@ Run the relevant `--help` for the exact current option contract.
 
 ## Support
 
-NInfer is a personal project that I develop out of interest. If you find it useful and would like
+FrInfer is a personal project that I develop out of interest. If you find it useful and would like
 to support its continued development, you can [support the project on Ko-fi](https://ko-fi.com/neroued).
 
 Support is entirely voluntary. It is not a purchase or investment and does not come with financial
@@ -350,7 +350,7 @@ maintainer.
 
 ## License
 
-NInfer is licensed under the [Apache License 2.0](LICENSE).
+FrInfer is licensed under the [Apache License 2.0](LICENSE).
 
 The published artifacts are derived from
 [Qwen/Qwen3.6-27B](https://huggingface.co/Qwen/Qwen3.6-27B),

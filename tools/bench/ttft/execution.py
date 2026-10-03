@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Iterable
 
 from tools.ninfer_serve.client import (
-    NInferServeClient,
+    FrInferServeClient,
     PreparedServeExchange,
     ProtocolEvent,
     ProtocolRequest,
@@ -423,7 +423,7 @@ class RequestHandle:
 class CaseContext:
     def __init__(
         self,
-        client: NInferServeClient,
+        client: FrInferServeClient,
         model: str,
         timeout_seconds: float,
         on_progress: ProgressCallback | None = None,

@@ -75,7 +75,7 @@ void validate_standard_output_controls(const Json& body) {
         if (!functions.empty()) {
             bad_request(
                 "non-empty legacy functions require the legacy prompt and single-function-call "
-                "response contract, which NInfer does not expose; use tools instead",
+                "response contract, which FrInfer does not expose; use tools instead",
                 "functions", "legacy_tools_not_supported");
         }
     }
@@ -89,7 +89,7 @@ void validate_standard_output_controls(const Json& body) {
             }
         } else if (choice.is_object()) {
             bad_request(
-                "a named legacy function_call requires forced tool invocation, which NInfer "
+                "a named legacy function_call requires forced tool invocation, which FrInfer "
                 "cannot guarantee",
                 "function_call", "legacy_tools_not_supported");
         } else {
@@ -107,7 +107,7 @@ void validate_standard_output_controls(const Json& body) {
             const double value = iterator.value().get<double>();
             if (!std::isfinite(value) || value != 0.0) {
                 bad_request(
-                    "nonzero logit_bias requires per-token logit modification, which NInfer "
+                    "nonzero logit_bias requires per-token logit modification, which FrInfer "
                     "does not provide",
                     "logit_bias", "logit_bias_not_supported");
             }
@@ -119,7 +119,7 @@ void validate_standard_output_controls(const Json& body) {
         }
         if (body.at("logprobs").get<bool>()) {
             bad_request("logprobs=true requires per-token log probabilities in the response, which "
-                        "NInfer does not provide",
+                        "FrInfer does not provide",
                         "logprobs", "logprobs_not_supported");
         }
     }
@@ -127,7 +127,7 @@ void validate_standard_output_controls(const Json& body) {
         if (*top_logprobs != 0) {
             bad_request(
                 "nonzero top_logprobs requires alternative-token probabilities in the response, "
-                "which NInfer does not provide",
+                "which FrInfer does not provide",
                 "top_logprobs", "logprobs_not_supported");
         }
     }
@@ -143,7 +143,7 @@ void validate_standard_output_controls(const Json& body) {
             }
             if (modality.get<std::string>() != "text") {
                 bad_request(
-                    "the requested output modality requires non-text generation, while NInfer "
+                    "the requested output modality requires non-text generation, while FrInfer "
                     "produces text only",
                     "modalities", "modality_not_supported");
             }
@@ -152,13 +152,13 @@ void validate_standard_output_controls(const Json& body) {
 
     if (body.contains("web_search_options") && !body.at("web_search_options").is_null()) {
         bad_request(
-            "web_search_options requests hosted web search and citations, which NInfer does not "
+            "web_search_options requests hosted web search and citations, which FrInfer does not "
             "provide",
             "web_search_options", "web_search_not_supported");
     }
     if (body.contains("moderation") && !body.at("moderation").is_null()) {
         bad_request(
-            "moderation requests input/output moderation behavior, which NInfer does not provide",
+            "moderation requests input/output moderation behavior, which FrInfer does not provide",
             "moderation", "moderation_not_supported");
     }
     if (body.contains("verbosity") && !body.at("verbosity").is_null()) {
@@ -172,7 +172,7 @@ void validate_standard_output_controls(const Json& body) {
         if (value != "medium") {
             bad_request(
                 "verbosity='" + value +
-                    "' requires an output-length style constraint that NInfer cannot guarantee; "
+                    "' requires an output-length style constraint that FrInfer cannot guarantee; "
                     "the default 'medium' value is accepted",
                 "verbosity", "verbosity_not_supported");
         }
@@ -182,7 +182,7 @@ void validate_standard_output_controls(const Json& body) {
         if (!body.at("store").is_boolean()) { bad_request("store must be a boolean", "store"); }
         if (body.at("store").get<bool>()) {
             bad_request(
-                "store=true requires a retrievable stored Chat Completion, which NInfer does not "
+                "store=true requires a retrievable stored Chat Completion, which FrInfer does not "
                 "provide",
                 "store", "store_not_supported");
         }
@@ -224,7 +224,7 @@ const Json& parse_json_schema_wrapper(const Json& format) {
 }
 
 void parse_constraints(const Json& body, GenerationRequest& output) {
-    // Explicit rejections for the constrained-decoding spellings NInfer does not provide:
+    // Explicit rejections for the constrained-decoding spellings FrInfer does not provide:
     // vLLM's structured_outputs and the retired guided_* family promise constraint semantics a
     // hint cannot provide.
     static constexpr const char* rejected_fields[] = {
@@ -233,7 +233,7 @@ void parse_constraints(const Json& body, GenerationRequest& output) {
     for (const char* field : rejected_fields) {
         if (!body.contains(field) || body.at(field).is_null()) { continue; }
         bad_request(std::string(field) +
-                        " requests a constrained-decoding spelling that NInfer does not provide; "
+                        " requests a constrained-decoding spelling that FrInfer does not provide; "
                         "use grammar with GBNF text or response_format json_schema",
                     field, "constrained_decoding_not_supported");
     }
@@ -276,7 +276,7 @@ void parse_constraints(const Json& body, GenerationRequest& output) {
             schema_grammar = json_schema_constraint_grammar(parse_json_schema_wrapper(format));
         } else if (type != "text") {
             bad_request(
-                "this response_format requires constrained output, which NInfer cannot guarantee; "
+                "this response_format requires constrained output, which FrInfer cannot guarantee; "
                 "only text, json_object, and json_schema are available",
                 "response_format", "response_format_not_supported");
         }
@@ -307,7 +307,7 @@ void parse_constraints(const Json& body, GenerationRequest& output) {
 }
 
 void validate_compatibility_hints(const Json& body) {
-    // vLLM exposes repetition_penalty, but NInfer's Engine intentionally has no such sampler.
+    // vLLM exposes repetition_penalty, but FrInfer's Engine intentionally has no such sampler.
     // The neutral value is accepted so common client defaults remain harmless.
     if (body.contains("repetition_penalty") && !body.at("repetition_penalty").is_null()) {
         if (!body.at("repetition_penalty").is_number()) {
@@ -316,13 +316,13 @@ void validate_compatibility_hints(const Json& body) {
         const double value = body.at("repetition_penalty").get<double>();
         if (!std::isfinite(value) || value != 1.0) {
             bad_request(
-                "a non-neutral repetition_penalty requires a sampler transform that NInfer does "
+                "a non-neutral repetition_penalty requires a sampler transform that FrInfer does "
                 "not provide; only repetition_penalty=1 is accepted",
                 "repetition_penalty", "repetition_penalty_not_supported");
         }
     }
 
-    // vLLM/SGLang expose processor-specific kwargs. They cannot be honored by NInfer's fixed
+    // vLLM/SGLang expose processor-specific kwargs. They cannot be honored by FrInfer's fixed
     // Vision frontend, so only omitted/null-valued overrides are semantically neutral.
     if (body.contains("mm_processor_kwargs") && !body.at("mm_processor_kwargs").is_null()) {
         if (!body.at("mm_processor_kwargs").is_object()) {
@@ -332,7 +332,7 @@ void validate_compatibility_hints(const Json& body) {
              iterator != body.at("mm_processor_kwargs").end(); ++iterator) {
             if (!iterator.value().is_null()) {
                 bad_request(
-                    "mm_processor_kwargs contains a non-null preprocessing override that NInfer's "
+                    "mm_processor_kwargs contains a non-null preprocessing override that FrInfer's "
                     "fixed Vision frontend cannot apply",
                     "mm_processor_kwargs", "mm_processor_kwargs_not_supported");
             }
@@ -363,7 +363,7 @@ ninfer::product::media_acquire::Source parse_media_url(const Json& part, const c
             if (detail != "auto") {
                 bad_request(
                     "image_url.detail='" + detail +
-                        "' requests an explicit preprocessing profile that NInfer's fixed Vision "
+                        "' requests an explicit preprocessing profile that FrInfer's fixed Vision "
                         "frontend cannot apply; use 'auto'",
                     "messages", "image_detail_not_supported");
             }
@@ -427,7 +427,7 @@ void parse_content_parts(const Json& content, ChatTurn& turn, std::size_t index)
             parsed.source = parse_media_url(part, "image_url", true);
         } else if (type == "video_url") {
             // Qwen, vLLM, and SGLang use video_url as a Chat Completions extension for
-            // multimodal models. NInfer maps it to the Engine's native Video input.
+            // multimodal models. FrInfer maps it to the Engine's native Video input.
             if (turn.role != ChatRole::User) {
                 bad_request("video_url is only supported on user messages", "messages",
                             "modality_not_supported");
@@ -527,7 +527,7 @@ void validate_message_name(const Json& item, ChatRole role) {
     // that non-standard field as an ignored compatibility hint; it never reaches the Engine or
     // prompt renderer.
     if (!name.empty() && role != ChatRole::Tool) {
-        bad_request("a non-empty message name changes participant identity, which NInfer's chat "
+        bad_request("a non-empty message name changes participant identity, which FrInfer's chat "
                     "template cannot represent",
                     "messages", "message_name_not_supported");
     }
@@ -593,7 +593,7 @@ ChatTurn parse_tool_message(const Json& item, std::size_t index, bool legacy_fun
 ChatTurn parse_assistant_message(const Json& item, std::size_t index) {
     if (item.contains("audio") && !item.at("audio").is_null()) {
         bad_request("assistant audio history requires resolving a previous audio response, which "
-                    "NInfer cannot provide",
+                    "FrInfer cannot provide",
                     "messages", "assistant_history_not_supported");
     }
 
@@ -684,7 +684,7 @@ void parse_tools(const Json& body, GenerationRequest& output) {
         if (type != "function") {
             bad_request(
                 "tool type '" + type +
-                    "' requires a non-function output contract that NInfer does not provide",
+                    "' requires a non-function output contract that FrInfer does not provide",
                 "tools", "tool_type_not_supported");
         }
         if (!item.contains("function") || !item.at("function").is_object()) {
@@ -714,7 +714,7 @@ void parse_tools(const Json& body, GenerationRequest& output) {
             if (function.at("strict").get<bool>()) {
                 bad_request(
                     "strict=true requires generated function arguments to satisfy the declared "
-                    "JSON Schema, which NInfer cannot guarantee",
+                    "JSON Schema, which FrInfer cannot guarantee",
                     "tools", "strict_tools_not_supported");
             }
         }
@@ -745,7 +745,7 @@ void apply_allowed_tools(const Json& config, GenerationRequest& output) {
         }
         if (item.at("type").get<std::string>() != "function") {
             bad_request(
-                "allowed_tools can select only function tools because NInfer does not provide "
+                "allowed_tools can select only function tools because FrInfer does not provide "
                 "custom tool output",
                 "tool_choice", "tool_type_not_supported");
         }
@@ -764,7 +764,7 @@ void apply_allowed_tools(const Json& config, GenerationRequest& output) {
     if (mode == "required") {
         bad_request(
             "tool_choice.allowed_tools mode='required' requires at least one tool call, which "
-            "NInfer cannot guarantee",
+            "FrInfer cannot guarantee",
             "tool_choice", "tool_choice_not_supported");
     }
 
@@ -786,7 +786,7 @@ void parse_tool_choice(const Json& body, GenerationRequest& output) {
             output.tool_choice.mode = ToolChoiceMode::None;
         } else if (value == "required") {
             bad_request(
-                "tool_choice='required' requires at least one tool call, which NInfer cannot "
+                "tool_choice='required' requires at least one tool call, which FrInfer cannot "
                 "guarantee",
                 "tool_choice", "tool_choice_not_supported");
         } else {
@@ -808,11 +808,11 @@ void parse_tool_choice(const Json& body, GenerationRequest& output) {
             const std::string name = require_function_name(choice.at("function"), "tool_choice");
             bad_request(
                 "tool_choice for function '" + name +
-                    "' requires that exact function to be called, which NInfer cannot guarantee",
+                    "' requires that exact function to be called, which FrInfer cannot guarantee",
                 "tool_choice", "tool_choice_not_supported");
         } else if (type == "custom") {
             bad_request(
-                "custom tool_choice requires custom tool output, which NInfer does not provide",
+                "custom tool_choice requires custom tool output, which FrInfer does not provide",
                 "tool_choice", "tool_type_not_supported");
         } else {
             bad_request("unsupported tool_choice type: " + type, "tool_choice");
@@ -832,7 +832,7 @@ void parse_parallel_tool_calls(const Json& body, const GenerationRequest& output
     if (!body.at("parallel_tool_calls").get<bool>() && output.uses_tools()) {
         bad_request(
             "parallel_tool_calls=false requires the model to emit at most one tool call, which "
-            "NInfer cannot guarantee while tools are enabled",
+            "FrInfer cannot guarantee while tools are enabled",
             "parallel_tool_calls", "parallel_tool_calls_not_supported");
     }
 }
@@ -866,13 +866,13 @@ void parse_sampling(const Json& body, GenerationRequest& output) {
     sampling.seed              = get_seed(body);
 
     // vLLM and SGLang expose top_k/min_p on their OpenAI-compatible endpoints; both map directly
-    // to NInfer's native sampler and are useful for Qwen's published sampling presets.
+    // to FrInfer's native sampler and are useful for Qwen's published sampling presets.
     sampling.top_k = optional_int(body, "top_k");
     sampling.min_p = get_number(body, "min_p");
 
     if (const std::optional<int> count = optional_int(body, "n")) {
         if (*count != 1) {
-            bad_request("n requests multiple completions, while NInfer produces one completion per "
+            bad_request("n requests multiple completions, while FrInfer produces one completion per "
                         "request; only n=1 is supported",
                         "n", "n_not_supported");
         }

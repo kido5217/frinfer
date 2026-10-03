@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Verify that the maintained llama-grammar copies are exactly the pristine upstream files at
-# the recorded baseline plus the documented patch set in patches/ (see README.ninfer.md).
+# the recorded baseline plus the documented patch set in patches/ (see README.frinfer.md).
 #
 # Usage: [LLAMA_CPP_REF=<path to a llama.cpp clone>] third_party/llama-grammar/verify-vendor.sh
 # The reference must contain the baseline commit; a blob-filtered clone works.

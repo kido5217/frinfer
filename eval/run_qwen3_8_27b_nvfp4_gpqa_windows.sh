@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# GPQA-Diamond context-window comparison (map kido5217/ninfer-yarn#129):
+# GPQA-Diamond context-window comparison (map kido5217/frinfer#129):
 # run the same artifact and serving flags at the native context window
 # (262,144) and the deployed YaRN window (446,902); only --max-context
 # differs. nvfp4 KV is required for the 446,902 arm to fit the RTX 5090.
@@ -23,7 +23,7 @@ cd -- "${repo_dir}"
 # The locally built server links the toolkit's CUDA stubs; the NixOS driver
 # libraries must be reachable or CUDA init fails with cudaErrorStubLibrary.
 export LD_LIBRARY_PATH="/run/opengl-driver/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
-server_bin="${repo_dir}/build/apps/ninfer-yarn-serve"
+server_bin="${repo_dir}/build/apps/frinfer-serve"
 artifact_hub="${NINFER_ARTIFACT_HUB:-/home/kido/trash/ai/models/hf/hub}"
 artifact="${NINFER_EVAL_ARTIFACT:-${artifact_hub}/models--neroued--Qwen3.8-27B-nvfp4-NInfer/snapshots/f0b43ad436b9fa8142c6ed6647c470a6fe409484/qwen3_8_27b_nvfp4.ninfer}"
 config="${repo_dir}/eval/configs/qwen3_8_27b_nvfp4_gpqa_windows.yaml"
@@ -89,7 +89,7 @@ for required_file in "${server_bin}" "${artifact}" "${config}" "${eval_python}";
     fi
 done
 if [[ ! -x "${server_bin}" || ! -x "${eval_python}" ]]; then
-    echo "ninfer-yarn-serve and the evaluation Python must be executable" >&2
+    echo "frinfer-serve and the evaluation Python must be executable" >&2
     exit 1
 fi
 if ! command -v curl >/dev/null 2>&1; then
@@ -153,13 +153,13 @@ run_tier() {
         fi
         if ! kill -0 "${server_pid}" 2>/dev/null; then
             wait "${server_pid}" || true
-            echo "ninfer-yarn-serve exited before becoming ready; see ${server_log}" >&2
+            echo "frinfer-serve exited before becoming ready; see ${server_log}" >&2
             exit 1
         fi
         sleep 1
     done
     if [[ "${ready}" -ne 1 ]]; then
-        echo "ninfer-yarn-serve did not become ready within 180 seconds; see ${server_log}" >&2
+        echo "frinfer-serve did not become ready within 180 seconds; see ${server_log}" >&2
         exit 1
     fi
 

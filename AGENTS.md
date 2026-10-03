@@ -38,7 +38,7 @@ approval requirements beyond the user's instructions and the actual execution en
 
 ## Product and architecture
 
-NInfer is a from-scratch C++/CUDA inference engine for maximum single-GPU performance. It implements
+FrInfer is a from-scratch C++/CUDA inference engine for maximum single-GPU performance. It implements
 `Qwen3_5ForCausalLM` and `Qwen3_5MoeForCausalLM`; official Qwen3.6/3.8 artifacts and user recipes
 use the same architecture, binding and execution path. The implementation targets `sm_120a` and
 is tuned on NVIDIA GeForce RTX 5090.
@@ -57,7 +57,7 @@ local workflow. Do not derive requirements from a different deployment or trust 
 Keep these ownership boundaries visible when selecting a design:
 
 - v3 `.ninfer` is the only C++ product artifact; CLI, serving, and inference benchmarks use the public
-  Engine. NInfer has no Python model-inference route or installed/exported C++ SDK.
+  Engine. FrInfer has no Python model-inference route or installed/exported C++ SDK.
 - Core owns physical primitives and raw transfers; artifact owns generic framing and
   materialization; Ops own closed mathematical and state-transition implementations.
 - Models own fixed mathematics, config interpretation, logical parameter binding, frontend
@@ -222,7 +222,7 @@ All changes land on `master` only through the pipeline: `branch → commit → p
 
 ### Issue tracker
 
-Issues live as GitHub issues in `kido5217/ninfer-yarn`, driven through the `gh` CLI. See `docs/agents/issue-tracker.md`.
+Issues live as GitHub issues in `kido5217/frinfer`, driven through the `gh` CLI. See `docs/agents/issue-tracker.md`.
 
 ### Triage labels
 

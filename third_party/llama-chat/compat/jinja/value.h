@@ -1,6 +1,6 @@
 #pragma once
 
-// NInfer compat shim for the maintained jinja fork's jinja/value.h.
+// FrInfer compat shim for the maintained jinja fork's jinja/value.h.
 //
 // Upstream's jinja/value.h declares jinja::global_from_json (a context seeder used by
 // chat.cpp's render path); the fork vendored at third_party/llama-jinja does not have

@@ -12,11 +12,11 @@ target_include_directories(ninfer::json INTERFACE
 # Source base for the custom-template frontend; consumers will link it explicitly.
 add_subdirectory(third_party/llama-jinja EXCLUDE_FROM_ALL)
 
-# Vendored llama.cpp chat-parsing stack (parser-only subset, see its README.ninfer.md);
+# Vendored llama.cpp chat-parsing stack (parser-only subset, see its README.frinfer.md);
 # consumers will link it explicitly.
 add_subdirectory(third_party/llama-chat EXCLUDE_FROM_ALL)
 
-# Vendored llama.cpp GBNF runtime (see its README.ninfer.md); consumers will link it
+# Vendored llama.cpp GBNF runtime (see its README.frinfer.md); consumers will link it
 # explicitly.
 add_subdirectory(third_party/llama-grammar EXCLUDE_FROM_ALL)
 

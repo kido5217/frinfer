@@ -1,4 +1,4 @@
-# NInfer llama.cpp chat-parsing source base
+# FrInfer llama.cpp chat-parsing source base
 
 This maintained implementation originates from [llama.cpp](https://github.com/ggml-org/llama.cpp),
 source paths under `common/`, under the MIT license; see [LICENSE](LICENSE). The current recorded
@@ -10,10 +10,10 @@ per file). The set was first vendored at
 (2026-09-26); the 2026-09-30 baseline advance verified no vendored path had changed in between.
 
 It is the **minimal parser-only port** decided by wayfinder map
-[#25](https://github.com/kido5217/ninfer-yarn/issues/25) and design ticket
-[#28](https://github.com/kido5217/ninfer-yarn/issues/28): the PEG engine, the chat-layer
+[#25](https://github.com/kido5217/frinfer/issues/25) and design ticket
+[#28](https://github.com/kido5217/frinfer/issues/28): the PEG engine, the chat-layer
 mapper and builder, JSON-schema tool typing, and the specialized Qwen3-Coder parser that serves
-the Qwen3.5/3.6/3.8 wire format, including the froggeric template. NInfer renders prompts with
+the Qwen3.5/3.6/3.8 wire format, including the froggeric template. FrInfer renders prompts with
 its own maintained jinja fork (`third_party/llama-jinja`); this subtree is the parse side.
 
 ## File map
@@ -38,10 +38,10 @@ checkout); all adaptation lives in `compat/`.
 | `LICENSE` | `LICENSE` | MIT, "Copyright (c) 2023-2026 The ggml authors" |
 
 Include roots: `common/` first (vendored includes resolve to vendored files), then `compat/`
-(NInfer shims), then `third_party/llama-jinja` and repo nlohmann via `ninfer_jinja` /
+(FrInfer shims), then `third_party/llama-jinja` and repo nlohmann via `ninfer_jinja` /
 `ninfer::json`.
 
-## Adaptations (all NInfer-owned, under `compat/`)
+## Adaptations (all FrInfer-owned, under `compat/`)
 
 | Path | Adaptation |
 |---|---|
@@ -79,7 +79,7 @@ file map and adaptation table above current.
 
 The library target is `ninfer_llama_chat` (wired in `cmake/Dependencies.cmake`); the smoke test
 is `ninfer_llama_chat_parse_test` (`tests/text/test_llama_chat_parse.cpp`), which links only
-this library — no NInfer core, no CUDA. It parses a canonical froggeric turn both through a
+this library — no FrInfer core, no CUDA. It parses a canonical froggeric turn both through a
 hand-built Qwen3-Coder-shaped arena and through `common_chat_params_init_qwen3_coder` (template
 route, arena serialization, grammar emission), and asserts that an undeclared function name
 fails while the same turn with a declared name parses.

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the native NInfer product performance matrix.
+"""Run the native FrInfer product performance matrix.
 
 The matrix is intentionally layered instead of fully factorial:
 

@@ -10,7 +10,7 @@
 #include <set>
 #include <stdexcept>
 
-// NInfer adaptation (patch 0001): raised sanity bound, kept in sync with the exported
+// FrInfer adaptation (patch 0001): raised sanity bound, kept in sync with the exported
 // llama-grammar.h constant; a repetition beyond it fails the parse instead of being
 // silently loosened to an unbounded repetition.
 #define MAX_REPETITION_THRESHOLD LLAMA_GRAMMAR_MAX_REPETITION_BOUND
@@ -717,7 +717,7 @@ bool llama_grammar_parser::parse(const char * src) {
             }
         }
     } catch (const std::exception & err) {
-        // NInfer adaptation (see README.ninfer.md, patch 0003): the diagnostic is exposed
+        // FrInfer adaptation (see README.frinfer.md, patch 0003): the diagnostic is exposed
         // through last_error; never write the client-supplied grammar to stderr.
         last_error = err.what();
         rules.clear();
