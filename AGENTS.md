@@ -90,6 +90,10 @@ Keep stable requirements in their existing active reference. Temporary plans are
 active work; remove them when completed or abandoned. Maintain one current authority rather than
 parallel `final`, `v2`, or `new-design` documents.
 
+The "This fork" section of `README.md` (fork constraints, changes-from-upstream table,
+bug-reporting policy, disclaimer) is maintained documentation: add or update a table row — and
+refresh its last-updated stamp — whenever a fork feature changes or its status changes.
+
 ## Verification and completion
 
 Select evidence to support the changed behavior and material claims. Tests should protect supported
