@@ -60,6 +60,13 @@ the use of this fork or its artifacts. This fork is an independent derivative pr
 endorsed by, sponsored by, or affiliated with the upstream [Neroued/ninfer](https://github.com/Neroued/ninfer)
 project or its maintainer. Use at your own risk.
 
+---
+
+> **End of the fork section.** Everything below documents the product: this content is synced from
+> the upstream [Neroued/ninfer](https://github.com/Neroued/ninfer) README and describes the
+> combined product (fork + upstream). Fork-specific changes, constraints, and the bug-reporting
+> policy are in the fork section above.
+
 NInfer is a from-scratch C++/CUDA inference engine for Qwen3.5 Dense and MoE architectures on a
 single NVIDIA GeForce RTX 5090. It runs text, image, and video prompts through a local CLI or
 OpenAI-/Anthropic-compatible HTTP APIs. The runtime is deliberately specialized: one GPU, one
