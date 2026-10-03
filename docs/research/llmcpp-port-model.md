@@ -82,8 +82,10 @@ surface. Verdict axes (user-fixed): (a) exposed contract/protocol gap >
   split per projection (attn q/k/v/o separate), matching NInfer's logical
   projection names better than fused HF tensors.
 - Base conversion (`convert_hf_to_gguf.py:60`) writes `f32/f16/bf16/q8_0/tq1_0/tq2_0/auto`;
-  fine-grained ftypes (Q2_K…Q6_K, IQ*, TQ, MXFP4, NVFP4 — `include/llama.h:117-162`)
-  come from the C++ `llama-quantize` tool.
+  fine-grained ftypes (Q2_K…Q6_K, IQ*, TQ, MXFP4 — `include/llama.h:117-162`)
+  come from the C++ `llama-quantize` tool; NVFP4 is **not** among its
+  `QUANT_OPTIONS` (`tools/quantize/quantize.cpp`) — NVFP4 GGUFs arise only from
+  the Python repack flow below.
 - **NVFP4 GGUFs are repacks of already-NVFP4 checkpoints**, not requants:
   `conversion/base.py:849` `_repack_nvfp4` writes `GGML_TYPE_NVFP4` blocks plus
   sidecar tensors `<name>.weight_scale_2` (global scale) and
@@ -142,10 +144,10 @@ Registry `ggml/include/ggml.h:390-432`; families NInfer does not cover:
 
 | Family | Types | Codec notes |
 |---|---|---|
-| Legacy blocks | `Q4_0/Q4_1/Q5_0/Q5_1/Q8_0/Q8_1`, `Q1_0/Q2_0` | plain 32-block, FP32 scale (`Q8_0` = int8 codes) |
+| Legacy blocks | `Q4_0/Q4_1/Q5_0/Q5_1/Q8_0/Q8_1` (32-block), `Q1_0` (128-block) / `Q2_0` (64-block) | plain block, FP16 (binary16) scale (`Q8_0` = full int8 codes, 8.5 bpw; `ggml-common.h:252-255`) |
 | K-quants | `Q2_K`…`Q8_K` | 256-elem super-block, shared FP16/FP32 scales, d_min; Q3_K/Q5_K/Q6_K carry sub-block fields (Q4_K/Q6_K-derived); each has a dequant reference (`ggml-quants.h:58-63`) |
-| IQ-quants | `IQ1_S/IQ1_M/IQ2_XXS/IQ2_XS/IQ2_S/IQ3_XXS/IQ3_S/IQ4_NL/IQ4_XS` | 2.06–4.25 bits/weight; scale arrays stored outside blocks (`qscales`/`scales`), LUT-based codes with permute masks |
-| Tersey / MX | `TQ1_0/TQ2_0` (256-block, 54/67 B), `MXFP4` (32-block, E8M0 scale) | `gguf-py/gguf/constants.py:6105-6108` |
+| IQ-quants | `IQ1_S/IQ1_M/IQ2_XXS/IQ2_XS/IQ2_S/IQ3_XXS/IQ3_S/IQ4_NL/IQ4_XS` | 1.56–4.50 bits/weight (IQ1_S 1.56 … IQ4_NL 4.50, `tools/quantize/quantize.cpp`); scale arrays stored outside blocks (`qscales`/`scales`), LUT-based codes with permute masks |
+| Tersey / MX | `TQ1_0/TQ2_0` (256-block, 54/66 B), `MXFP4` (32-block, E8M0 scale) | `gguf-py/gguf/constants.py:6105-6108` |
 
 CUDA support is broad (mmvq/mmq template instances per type; NVFP4/MXFP4
 Blackwell paths at `ggml/src/ggml-cuda/mmq.cu:128`), i.e. upstream runs these
@@ -154,8 +156,11 @@ on-device.
 ### NInfer state
 
 Nine formats (verified above). The grouped-int family (g64/g32, FP16 scales)
-covers 4/5/6/8 bits; `q8_g32_fp16` is *not* Q8_0 (FP16 scale per 32 vs FP32
-per 32); no K-quants, IQ, TQ, MXFP4.
+covers 4/5/6/8 bits; `q8_g32_fp16` is *not* Q8_0: same 8-bit codes + one
+binary16 scale per 32 (8.5 bpw), but the code domain differs — NInfer restricts
+codes to `[-127, 127]` (the `0x80` pattern is outside the valid artifact
+language, `docs/maintainer/tensor-formats.md` §5.2) while Q8_0's dequantizer
+accepts the full int8 range; no K-quants, IQ, TQ, MXFP4.
 
 ### What a port means for NInfer's boundaries
 
@@ -174,7 +179,7 @@ codec natively in a `.ninfer`.
 
 ### Port shape + cost (per family)
 
-- **Q8_0**: cheapest — 32-block FP32-scale int8; codec + one dequant/GEMM
+- **Q8_0**: cheapest — 32-block FP16-scale int8; codec + one dequant/GEMM
   variant near the existing `q8_g32` family; low (≤2 days + qualification).
 - **Q*_K**: one new kernel family per bit-width (Q4_K/Q5_K/Q6_K) + super-block
   codec; medium each (~3–5 days), high for all three.
@@ -186,7 +191,7 @@ codec natively in a `.ninfer`.
 ### Verdict
 
 - **IQ-quants (i1–i4): no** — no (a) gap; no (b) case on a 32 GB 5090 where
-  27B dense runs in NVFP4 and MoE in groupwise-int (the 2.06–4.25-bit quality
+  27B dense runs in NVFP4 and MoE in groupwise-int (the 1.56–4.50-bit quality
   tradeoff is a CPU-VRAM-scarcity device); the highest-cost family; the (c)
   ingest value is fully served by C-A.
 - **Q*_K family: defer** — (b) is weak on sm_120a today (K-quants are the
@@ -203,8 +208,9 @@ FP32 weight divisor) as upstream's `GGML_TYPE_NVFP4`
 (`ggml/include/ggml.h:430`; block `ggml/src/ggml-common.h:221-227`; ftype
 `MOSTLY_NVFP4 = 39`, `include/llama.h:157`). Upstream additions that matter:
 
-- **CUDA GEMMs for NVFP4**: A16 (`mmvq.cu:81-86`) and a **W4A4 Blackwell
-  instance** (`ggml/src/ggml-cuda/mmq-instance-nvfp4.cu:3-5`
+- **CUDA GEMMs for NVFP4**: A16 (`mmvq.cu:79`, `VDR_NVFP4_Q8_1_MMVQ` dispatch)
+  and a **W4A4 Blackwell instance**
+  (`ggml/src/ggml-cuda/template-instances/mmq-instance-nvfp4.cu:7`
   `DECL_MMQ_CASE_W4A4(GGML_TYPE_NVFP4)`, gated on `blackwell_mma_available`,
   `mmq.cu:128`) — this is the upstream reference for C1 (perf ticket #173,
   already verdicted "port"); recorded here only for the map's intersection.
