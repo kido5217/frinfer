@@ -1,6 +1,8 @@
 # FrInfer
 
-## This fork: `kido5217/frinfer`
+> It’s alive. It just OOMs.
+
+## This fork: `kido5217/frinfer` stands for `Frankenstein + ninfer`
 
 This repository is a fork of [Neroued/ninfer](https://github.com/Neroued/ninfer), kept current
 through periodic true-merge syncs (last sync: `d44ab584`, 2026-09-30). It adds YaRN context
