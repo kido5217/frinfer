@@ -214,28 +214,34 @@ own purpose codes (`kSamplePurposeSpeculativeAccept/Correction/Bonus`,
 - **llama.cpp state:** one penalties sampler, `penalty_last_n` window (default 64,
   0 disables) over **accepted generated tokens only** (the sampler's own ring
   starts empty — prompt tokens never enter it), `src/llama-sampler.cpp:2919-2948`
-  (accept) + `:2856-2896` (struct). Repeat is **multiplicative contrast** over the
-  logits: active (in-window) tokens ÷ `penalty_repeat`, inactive × `penalty_repeat`
-  (`:3090-3107`); freq subtracts `penalty_freq·count(in window)`; presence
-  subtracts `penalty_present` for any in-window occurrence. GPU backend variant
-  included (`:3031-3130`).
+  (accept) + `:2856-2896` (struct). Repeat is a **sign-gated multiplicative
+  contrast** applied only to in-window tokens: logit > 0 → ÷ `penalty_repeat`,
+  logit ≤ 0 → × `penalty_repeat` (the "common fix" for divide-only on negative
+  logits, `:2968-2974`); out-of-window tokens are left unchanged (the GPU path
+  scales inactive entries by 1 to avoid -INF×0, `:3092-3101`). Freq subtracts
+  `penalty_freq·count(in window)`; presence subtracts `penalty_present` for any
+  in-window occurrence (`:2976`). GPU backend variant included (`:3031-3130`).
 - **NInfer state:** one fused adjustment in the sampling Op:
   `adjusted = logits − presence·(c>0) − frequency·c`, `c` = committed occurrence
   count over the **entire generation**, no window, no prompt tokens, no
   multiplicative repeat term (`3e0ff840:include/ninfer/ops/sampling.h:52-59`).
   `repetition_penalty` is fail-closed at the serve (`openai_chat_request.cpp:310-319`).
-- **Comparison:** presence is window-independent by definition (both are exact).
-  Frequency diverges on long generations: NInfer's count grows unbounded while
-  llama.cpp's saturates at the 64-token window; neither spec (OpenAI: "based on
-  their existing frequency in the text so far") pins a window, and neither
-  implementation counts prompt tokens. Shipped Qwen presets use frequency 0 /
-  presence ≤1.5, so the divergence is unobservable on the deployed presets; it
-  only matters if a client sets `frequency_penalty > 0` on a long turn.
+- **Comparison:** presence and frequency use the SAME count mechanism on both
+  sides, so they share the same divergence: NInfer's count is the committed
+  whole-generation count (no window) while llama.cpp's saturates at the
+  64-token window — a token seen earlier but outside the window triggers
+  NInfer's `presence·(c>0)`/`frequency·c` terms but not llama.cpp's. Neither
+  spec (OpenAI: "based on their existing frequency in the text so far") pins a
+  window, and neither implementation counts prompt tokens. Shipped Qwen presets
+  use frequency 0 / presence ≤1.5 (non-zero), so the presence divergence is
+  observable on the deployed presets for long turns (presence fires in NInfer
+  for any earlier token, in llama.cpp only within 64 tokens); the frequency
+  divergence additionally needs a client to set `frequency_penalty > 0`.
   Repeat (multiplicative) is absent in NInfer by design and is not an OpenAI or
   Anthropic slot (verified: no `repetition_penalty`/`repeat_penalty` in either
   spec).
 - **Port shape + cost:** a windowed frequency variant is a small Op change
-  (bounded sliding count); a repeat term is a one-line multiplicative pass —
+  (bounded sliding count); a repeat term is a sign-gated multiplicative pass —
   both inside the existing fused Op.
 - **Contract impact:** none (no spec slot; llama.cpp-native + vLLM-style
   extensions).
@@ -357,6 +363,11 @@ own purpose codes (`kSamplePurposeSpeculativeAccept/Correction/Bonus`,
     `grammar_first` to apply the mask before sampling; prefill of
     output-format/tool-call grammars from the generation prompt
     (`common.h:220-224`, `common/sampling.cpp:282-312`).
+  - **Repetition handling** (ticket example, explicitly dispositioned) — no
+    distinct extension: PEG `{m,n}` repetition bounds are core GBNF (already in
+    the vendored engine; patch 0001 raises the bound to 65536, #169), and
+    repetition *avoidance* is the DRY sampler (C4 zoo → no). Nothing separate
+    to port.
 - **NInfer state:** GBNF + `response_format` json_object/json_schema on the chat
   route, applied by the in-tree token-trie **mask producer** (the constraint is
   applied to the logits every step — there is no sample-then-resample path and
@@ -500,8 +511,9 @@ listed here so the summary table matches the candidate list.
 |---|---|---|---|
 | `logprobs`/`top_logprobs` | **port** (cross-ref #170) | a | Official OpenAI slot on chat + Responses that 400s today; port to the spec shape, not llama.cpp's non-OAI-compatible one |
 | `logit_bias` | **defer** (cross-ref #170) | a | Official slot, 400 today, but lowest-frequency field with the highest Engine cost (per-request bias tables + graph capture) |
-| Penalties (repeat/freq/presence) engine-level | **no** | c | Presence is exact in both; frequency window divergence is unobservable on shipped presets (freq 0) and unregulated by any spec; repeat has no slot and is fail-closed by design |
-| Sampler zoo (DRY/mirostat/XTC/typical/dynatemp/adaptive/top_n_sigma/min_keep) | **no** (cross-ref #170) | c | No contract slot; ignore-or-fail-closed is already safe; Qwen presets need none of it |
+| Penalties (repeat/freq/presence) engine-level | **no** | c | Window divergence (whole-gen vs 64-token) affects presence + frequency equally — observable on long turns for the presence ≤1.5 presets, unregulated by any spec; repeat (sign-gated ÷/×, in-window only) has no slot and NInfer's absence is fail-closed by design |
+| Sampler zoo (DRY/mirostat/XTC/typical/dynatemp/adaptive/top_n_sigma) | **no** (cross-ref #170) | c | No contract slot; ignore-or-fail-closed is already safe; Qwen presets need none of it |
+| `min_keep` / `ignore_eos` | **defer** (c) | c | Small real QoL items (NInfer already ≙ `min_keep=1`; `ignore_eos` absent) — build if a consumer appears (cross-ref #170) |
 | Chain order override (`--samplers`/`--sampling-seq`) | **no** | c | NInfer's single fused device Op is structurally cheaper than llama.cpp's per-sampler chain; reordering adds nothing measurable |
 | `backend_sampling` | **no** | b (negative) | NInfer's sampling already runs fully on-device — the end-state that flag offloads toward |
 | `min_p`, `top_k`/`top_p` | **no** | — | Parity verified (semantics match; NInfer's documented `top_k ≤ 20` cap is intentional) |
