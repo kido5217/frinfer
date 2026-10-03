@@ -313,7 +313,7 @@ own purpose codes (`kSamplePurposeSpeculativeAccept/Correction/Bonus`,
   `tools/server/server-task.h:44-49`) and `stop` maps to `finish_reason:"stop"`,
   `end_turn`, or `tool_calls` per route (`server-task.cpp:383-384, 423-424,
   465-466, 732-734`); the chat template may add stops
-  (`server-common.cpp:1385-1388`, `chat_params.additional_stops`).
+  (`server-common.cpp:1403-1405`, `chat_params.additional_stops`).
 - **NInfer state:** Engine-side (model frontend) per the surface section:
   token stops (model defaults + caller) and string stops with UTF-8 reassembly
   and suffix-prefix withholding — the same split-token-boundary semantics as
@@ -343,7 +343,7 @@ own purpose codes (`kSamplePurposeSpeculativeAccept/Correction/Bonus`,
     `common/sampling.cpp:224-276`; `llama_sampler_init_grammar_lazy_patterns`
     at `src/llama-sampler.cpp:2843`): the grammar applies only after a trigger
     is seen; the OAI chat path derives lazy tool-call grammars from the chat
-    template (`server-common.cpp:1381-1392`,
+    template (`server-common.cpp:1394-1404`,
     `llama_params["grammar_lazy"]`/`["grammar_triggers"]`).
   - **llguidance grammars** — `%llguidance`-prefixed grammar values select
     Lark-based parsing behind the `LLAMA_USE_LLGUIDANCE` build flag
