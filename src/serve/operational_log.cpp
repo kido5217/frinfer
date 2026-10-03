@@ -282,11 +282,15 @@ OperationalRecord render_request_done(const RequestLogContext& context,
     }
     if (outcome.thinking.configured_budget) {
         out << " | thinking "
-            << product::format_pretty_count(outcome.thinking.model_thinking_tokens) << '/'
+            << product::format_pretty_count(outcome.thinking.budget_thinking_tokens) << '/'
             << product::format_pretty_count(*outcome.thinking.configured_budget);
         if (outcome.thinking.injected_tokens != 0) {
             out << ", control " << product::format_pretty_count(outcome.thinking.injected_tokens);
         }
+    }
+    if (outcome.reasoning_tokens > 0) {
+        out << " | reasoning "
+            << product::format_pretty_count(static_cast<std::uint64_t>(outcome.reasoning_tokens));
     }
     return {.severity = OperationalSeverity::Info, .message = out.str()};
 }

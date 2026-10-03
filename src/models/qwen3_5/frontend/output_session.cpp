@@ -154,10 +154,10 @@ struct DecoderState {
 
 struct ThinkingSessionState {
     std::optional<std::uint32_t> budget;
-    std::uint32_t model_thinking_tokens = 0;
-    std::uint32_t injected_tokens       = 0;
-    bool control_pending                = false;
-    bool applied                        = false;
+    std::uint32_t budget_thinking_tokens = 0;
+    std::uint32_t injected_tokens        = 0;
+    bool control_pending                 = false;
+    bool applied                         = false;
 };
 
 struct StopMatch {
@@ -514,8 +514,8 @@ runtime::OutputDecision OutputSession::preview_model(std::span<const TokenId> to
         const bool in_reasoning = impl_->core.preview_in_reasoning();
         if (in_reasoning && impl_->split_reasoning) { ++impl_->preview_state.reasoning_tokens; }
         if (impl_->preview_thinking.budget && in_reasoning) {
-            ++impl_->preview_thinking.model_thinking_tokens;
-            if (impl_->preview_thinking.model_thinking_tokens > *impl_->preview_thinking.budget) {
+            ++impl_->preview_thinking.budget_thinking_tokens;
+            if (impl_->preview_thinking.budget_thinking_tokens > *impl_->preview_thinking.budget) {
                 throw std::logic_error("model output exceeded the licensed thinking budget");
             }
         }
@@ -567,7 +567,7 @@ runtime::OutputDecision OutputSession::preview_model(std::span<const TokenId> to
         return complete(count, limit_reason);
     }
     if (impl_->core.preview_in_reasoning() && impl_->preview_thinking.budget &&
-        impl_->preview_thinking.model_thinking_tokens == *impl_->preview_thinking.budget) {
+        impl_->preview_thinking.budget_thinking_tokens == *impl_->preview_thinking.budget) {
         impl_->preview_thinking.control_pending = true;
         return complete(count, FinishReason::None, runtime::ContinuationAction::ApplyTargetControl);
     }
@@ -581,11 +581,11 @@ OutputSession::model_token_budget_remaining(std::uint32_t total_budget_remaining
         return total_budget_remaining;
     }
     if (impl_->thinking.control_pending ||
-        impl_->thinking.model_thinking_tokens >= *impl_->thinking.budget) {
+        impl_->thinking.budget_thinking_tokens >= *impl_->thinking.budget) {
         return 0;
     }
     return std::min(total_budget_remaining,
-                    *impl_->thinking.budget - impl_->thinking.model_thinking_tokens);
+                    *impl_->thinking.budget - impl_->thinking.budget_thinking_tokens);
 }
 
 std::span<const TokenId> OutputSession::pending_control_tokens() const noexcept {
@@ -712,10 +712,10 @@ std::uint32_t OutputSession::reasoning_tokens() const noexcept {
 ThinkingBudgetStats OutputSession::thinking_stats() const noexcept {
     if (impl_ == nullptr) { return {}; }
     return ThinkingBudgetStats{
-        .configured_budget     = impl_->thinking.budget,
-        .model_thinking_tokens = impl_->thinking.model_thinking_tokens,
-        .injected_tokens       = impl_->thinking.injected_tokens,
-        .applied               = impl_->thinking.applied,
+        .configured_budget      = impl_->thinking.budget,
+        .budget_thinking_tokens = impl_->thinking.budget_thinking_tokens,
+        .injected_tokens        = impl_->thinking.injected_tokens,
+        .applied                = impl_->thinking.applied,
     };
 }
 

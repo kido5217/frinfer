@@ -560,6 +560,7 @@ std::string format_request_done_json(const std::string& server_instance_id, std:
         Json{{"finish_reason", finish_reason_name(outcome.finish_reason)},
              {"prompt_tokens", outcome.prompt_tokens},
              {"completion_tokens", outcome.completion_tokens},
+             {"reasoning_tokens", outcome.reasoning_tokens},
              {"computed_prefill_tokens",
               std::max(0, outcome.prompt_tokens -
                               static_cast<int>(outcome.metrics.prefix_cache_hit_tokens))},
@@ -568,7 +569,7 @@ std::string format_request_done_json(const std::string& server_instance_id, std:
              {"thinking_budget", outcome.thinking.configured_budget
                                      ? Json(*outcome.thinking.configured_budget)
                                      : Json(nullptr)},
-             {"model_thinking_tokens", outcome.thinking.model_thinking_tokens},
+             {"budget_thinking_tokens", outcome.thinking.budget_thinking_tokens},
              {"thinking_control_tokens", outcome.thinking.injected_tokens},
              {"thinking_control_applied", outcome.thinking.applied},
              {"tool_call_count", outcome.tool_calls.size()},
