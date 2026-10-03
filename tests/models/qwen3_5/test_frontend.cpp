@@ -1688,6 +1688,7 @@ int test_structured_tool_output() {
     failures += check(session.tool_call_parse_diagnostics() ==
                           ninfer::ToolCallParseDiagnostics{
                               .marker_seen               = true,
+                              .call_attempted            = true,
                               .structured_call_count     = 1,
                               .empty_arguments_omitted   = 1,
                               .schema_mismatch_arguments = 1,

@@ -927,6 +927,7 @@
         "content": "<tool_call>\n<function=bash>\n<parameter=command>\nls\n</parameter>\n<parameter=command>\nrm -rf /\n</parameter>\n</function>\n</tool_call>",
         "tool_calls": [],
         "diagnostics": {
+          "call_attempted": true,
           "fallback_reason": "DuplicateParameter"
         }
       },
@@ -1003,6 +1004,7 @@
         "content": "<tool_call>\n<function=bash>\n<parameter=command>\nls\n</parameter>\n<parameter=command>\nls\n</parameter>\n<parameter=command>\nrm -rf /\n</parameter>\n</function>\n</tool_call>",
         "tool_calls": [],
         "diagnostics": {
+          "call_attempted": true,
           "duplicate_arguments_merged": 0,
           "fallback_reason": "DuplicateParameter"
         }
@@ -1106,25 +1108,38 @@
       "rounds": [
         {
           "feed": "<tool_call>\n<function=bash>\n<parameter=command>\nprintf 'x<parameter=y'\n</parameter>\n</function>\n</tool_call>",
-          "content": "<tool_call>\n<function=bash>\n<parameter=command>\nprintf 'x<parameter=y'\n</parameter>\n</function>\n</tool_call>"
+          "content": "",
+          "tool_calls": [
+            {
+              "name": "bash",
+              "arguments": {
+                "command": "printf 'x<parameter=y'"
+              }
+            }
+          ]
         }
       ],
       "final": {
         "reasoning": "",
-        "content": "<tool_call>\n<function=bash>\n<parameter=command>\nprintf 'x<parameter=y'\n</parameter>\n</function>\n</tool_call>",
-        "tool_calls": [],
+        "content": "",
+        "tool_calls": [
+          {
+            "name": "bash",
+            "arguments": {
+              "command": "printf 'x<parameter=y'"
+            }
+          }
+        ],
         "diagnostics": {
-          "fallback_reason": "MalformedStructure"
+          "marker_seen": true,
+          "structured_call_count": 1,
+          "salvaged_calls": 0
         }
       },
       "basis": [
-        "ninfer_master(docs/serving.md)",
-        "pr309(scoping)"
+        "ninfer(ADR-0002 M2: raw-value second chance)"
       ],
-      "diverges": [
-        "vllm(row 22): value bytes may absorb the text",
-        "llamacpp(row 22): drops the tail"
-      ]
+      "note": "Rewritten by ADR-0002 (#149): the strict B4 balanced-nesting rule rejects the inline `<parameter=` fragment, so the raw-value second chance (upstream delimiter rule) parses the call. Previously pinned as MalformedStructure."
     },
     {
       "id": "tool-call-standalone-parameter-close",
@@ -1135,22 +1150,38 @@
       "rounds": [
         {
           "feed": "<tool_call>\n<function=bash>\n<parameter=command>\necho </parameter> extra\n</parameter>\n</function>\n</tool_call>",
-          "content": "<tool_call>\n<function=bash>\n<parameter=command>\necho </parameter> extra\n</parameter>\n</function>\n</tool_call>"
+          "content": "",
+          "tool_calls": [
+            {
+              "name": "bash",
+              "arguments": {
+                "command": "echo </parameter> extra"
+              }
+            }
+          ]
         }
       ],
       "final": {
         "reasoning": "",
-        "content": "<tool_call>\n<function=bash>\n<parameter=command>\necho </parameter> extra\n</parameter>\n</function>\n</tool_call>",
-        "tool_calls": [],
+        "content": "",
+        "tool_calls": [
+          {
+            "name": "bash",
+            "arguments": {
+              "command": "echo </parameter> extra"
+            }
+          }
+        ],
         "diagnostics": {
-          "fallback_reason": "MalformedStructure"
+          "marker_seen": true,
+          "structured_call_count": 1,
+          "salvaged_calls": 0
         }
       },
       "basis": [
-        "ninfer_master(docs/serving.md)",
-        "pr309(scoping)"
+        "ninfer(ADR-0002 M2: raw-value second chance)"
       ],
-      "note": "A standalone </parameter> unbalances the value; per PR #309 this only demotes the region, later candidates are still examined."
+      "note": "Rewritten by ADR-0002 (#149): the inline `</parameter>` is not a newline-framed delimiter, so the raw-value second chance keeps it as value text; the call parses. Previously pinned as MalformedStructure (PR #309's balance rule)."
     },
     {
       "id": "tool-call-quoted-marker-before-real-call",
@@ -1250,26 +1281,43 @@
       "rounds": [
         {
           "feed": "<tool_call>\\n<function=shell>\\n<function=command>\\nbroken\\n</parameter>\\n</function>\\n</tool_call>\n<tool_call>\n<function=bash>\n<parameter=command>\necho ok\n</parameter>\n</function>\n</tool_call>\nstill explaining",
-          "content": "<tool_call>\\n<function=shell>\\n<function=command>\\nbroken\\n</parameter>\\n</function>\\n</tool_call>\n<tool_call>\n<function=bash>\n<parameter=command>\necho ok\n</parameter>\n</function>\n</tool_call>\nstill explaining"
+          "content": "<tool_call>\\n<function=shell>\\n<function=command>\\nbroken\\n</parameter>\\n</function>\\n</tool_call>\nstill explaining",
+          "tool_calls": [
+            {
+              "name": "bash",
+              "arguments": {
+                "command": "echo ok"
+              }
+            }
+          ]
         }
       ],
       "final": {
         "reasoning": "",
-        "content": "<tool_call>\\n<function=shell>\\n<function=command>\\nbroken\\n</parameter>\\n</function>\\n</tool_call>\n<tool_call>\n<function=bash>\n<parameter=command>\necho ok\n</parameter>\n</function>\n</tool_call>\nstill explaining",
-        "tool_calls": [],
+        "content": "<tool_call>\\n<function=shell>\\n<function=command>\\nbroken\\n</parameter>\\n</function>\\n</tool_call>\nstill explaining",
+        "tool_calls": [
+          {
+            "name": "bash",
+            "arguments": {
+              "command": "echo ok"
+            }
+          }
+        ],
         "diagnostics": {
-          "fallback_reason": "MalformedStructure",
-          "marker_seen": true
+          "marker_seen": true,
+          "call_attempted": true,
+          "structured_call_count": 1,
+          "salvaged_calls": 1
         }
       },
       "basis": [
-        "pr309"
+        "ninfer(ADR-0002 M1: partial-AST salvage)"
       ],
       "diverges": [
         "vllm(row 24): swallow",
         "llamacpp(row 24): drop tail"
       ],
-      "note": "PR #309 test_later_candidate_must_consume_the_end. A well-formed call followed by prose is not a structured turn: the response stays content (all-or-nothing). PR #309 asserts MalformedStructure here; see §7 item 6 on the recorded first-failure reason."
+      "note": "Rewritten by ADR-0002 (#149): the well-formed call is salvaged from the failing region and its trailing prose is published byte-exact; PR #309's all-or-nothing assertion is superseded."
     },
     {
       "id": "tool-call-marker-split-across-rounds",
@@ -1349,6 +1397,7 @@
         "tool_calls": [],
         "diagnostics": {
           "marker_seen": true,
+          "call_attempted": false,
           "fallback_reason": "MalformedStructure"
         }
       },
@@ -1424,6 +1473,7 @@
         "content": "<tool_call>\n<function=nonexistent_tool>\n<parameter=x>\n1\n</parameter>\n</function>\n</tool_call>",
         "tool_calls": [],
         "diagnostics": {
+          "call_attempted": true,
           "fallback_reason": "UndeclaredTool"
         }
       },
@@ -1453,6 +1503,7 @@
         "content": "<tool_call>\n<function=ba sh>\n<parameter=x>\n1\n</parameter>\n</function>\n</tool_call>",
         "tool_calls": [],
         "diagnostics": {
+          "call_attempted": true,
           "fallback_reason": "InvalidToolName"
         }
       },
@@ -1536,25 +1587,41 @@
       "tools": [
         "bash"
       ],
-      "note": "PR #309 test_later_candidate_must_consume_the_end, tests-only extraction. The first candidate is the escaped quoted region (structurally malformed); the real call that follows is followed by prose, so it does not consume the response to its end.",
+      "note": "PR #309 test_later_candidate_must_consume_the_end, tests-only extraction; rewritten by ADR-0002 (#149). The first candidate is the escaped quoted region (structurally malformed); the real call that follows is followed by prose, so it does not consume the response to its end — the complete call is now salvaged and the prose stays content.",
       "rounds": [
         {
           "feed": "<tool_call>\\n<function=shell>\\n<parameter=command>\\nbroken\\n</parameter>\\n</function>\\n</tool_call>\n<tool_call>\n<function=bash>\n<parameter=command>\necho ok\n</parameter>\n</function>\n</tool_call>\nstill explaining",
-          "content": "<tool_call>\\n<function=shell>\\n<parameter=command>\\nbroken\\n</parameter>\\n</function>\\n</tool_call>\n<tool_call>\n<function=bash>\n<parameter=command>\necho ok\n</parameter>\n</function>\n</tool_call>\nstill explaining",
-          "tool_calls": []
+          "content": "<tool_call>\\n<function=shell>\\n<parameter=command>\\nbroken\\n</parameter>\\n</function>\\n</tool_call>\nstill explaining",
+          "tool_calls": [
+            {
+              "name": "bash",
+              "arguments": {
+                "command": "echo ok"
+              }
+            }
+          ]
         }
       ],
       "final": {
         "reasoning": "",
-        "content": "<tool_call>\\n<function=shell>\\n<parameter=command>\\nbroken\\n</parameter>\\n</function>\\n</tool_call>\n<tool_call>\n<function=bash>\n<parameter=command>\necho ok\n</parameter>\n</function>\n</tool_call>\nstill explaining",
-        "tool_calls": [],
+        "content": "<tool_call>\\n<function=shell>\\n<parameter=command>\\nbroken\\n</parameter>\\n</function>\\n</tool_call>\nstill explaining",
+        "tool_calls": [
+          {
+            "name": "bash",
+            "arguments": {
+              "command": "echo ok"
+            }
+          }
+        ],
         "diagnostics": {
-          "fallback_reason": "MalformedStructure",
-          "marker_seen": true
+          "marker_seen": true,
+          "call_attempted": true,
+          "structured_call_count": 1,
+          "salvaged_calls": 1
         }
       },
       "basis": [
-        "pr309"
+        "ninfer(ADR-0002 M1: partial-AST salvage)"
       ]
     },
     {
@@ -1749,6 +1816,233 @@
       ],
       "diverges": [
         "vllm(row 7 in the oracle's §7): accepts <function=...> without <tool_call>"
+      ]
+    },
+    {
+      "id": "tool-call-inline-fragment-live-shape",
+      "thinking": false,
+      "tools": [
+        "bash"
+      ],
+      "note": "Added by ADR-0002 (#149), the live req-876 shape (map #145): prose quotes the marker, then a real call whose command value carries an inline `%<parameter=%` fragment. Candidate 1 fails structurally; the raw-value second chance accepts the real call; the prose before it is content.",
+      "rounds": [
+        {
+          "feed": "The probe quoted <tool_call> in its report.\n<tool_call>\n<function=bash>\n<parameter=command>\ncd /tmp && sqlite3 db \"SELECT '%<parameter=%' FROM t;\"\n</parameter>\n</function>\n</tool_call>",
+          "content": "The probe quoted <tool_call> in its report.",
+          "tool_calls": [
+            {
+              "name": "bash",
+              "arguments": {
+                "command": "cd /tmp && sqlite3 db \"SELECT '%<parameter=%' FROM t;\""
+              }
+            }
+          ]
+        }
+      ],
+      "final": {
+        "reasoning": "",
+        "content": "The probe quoted <tool_call> in its report.",
+        "tool_calls": [
+          {
+            "name": "bash",
+            "arguments": {
+              "command": "cd /tmp && sqlite3 db \"SELECT '%<parameter=%' FROM t;\""
+            }
+          }
+        ],
+        "diagnostics": {
+          "marker_seen": true,
+          "structured_call_count": 1,
+          "salvaged_calls": 0
+        }
+      },
+      "basis": [
+        "ninfer(ADR-0002 M2: live 876 shape)"
+      ]
+    },
+    {
+      "id": "tool-call-truncated-mid-parameter",
+      "thinking": false,
+      "tools": [
+        "bash"
+      ],
+      "note": "Added by ADR-0002 (#149), the live req-907 shape (map #145): a call cut by the output bound mid-parameter leaves no structurally complete call, so nothing is salvaged and the region demotes as content with fallback_reason MalformedStructure; call_attempted marks the lost call.",
+      "rounds": [
+        {
+          "feed": "<tool_call>\n<function=bash>\n<parameter=command>\nprintf 'never closed",
+          "content": "<tool_call>\n<function=bash>\n<parameter=command>\nprintf 'never closed",
+          "tool_calls": []
+        }
+      ],
+      "final": {
+        "reasoning": "",
+        "content": "<tool_call>\n<function=bash>\n<parameter=command>\nprintf 'never closed",
+        "tool_calls": [],
+        "diagnostics": {
+          "marker_seen": true,
+          "call_attempted": true,
+          "fallback_reason": "MalformedStructure",
+          "salvaged_calls": 0
+        }
+      },
+      "basis": [
+        "ninfer(ADR-0002 M1: live 907 shape)"
+      ]
+    },
+    {
+      "id": "tool-call-complete-call-before-cut",
+      "thinking": false,
+      "tools": [
+        "bash"
+      ],
+      "note": "Added by ADR-0002 (#149): a structurally complete call precedes a second call cut mid-parameter. The complete call is salvaged (salvaged_calls 1) and every byte after it publishes as content, including the truncated second call's markup.",
+      "rounds": [
+        {
+          "feed": "<tool_call>\n<function=bash>\n<parameter=command>\necho first\n</parameter>\n</function>\n</tool_call>\n<tool_call>\n<function=bash>\n<parameter=command>\nprintf 'cut",
+          "content": "\n<tool_call>\n<function=bash>\n<parameter=command>\nprintf 'cut",
+          "tool_calls": [
+            {
+              "name": "bash",
+              "arguments": {
+                "command": "echo first"
+              }
+            }
+          ]
+        }
+      ],
+      "final": {
+        "reasoning": "",
+        "content": "\n<tool_call>\n<function=bash>\n<parameter=command>\nprintf 'cut",
+        "tool_calls": [
+          {
+            "name": "bash",
+            "arguments": {
+              "command": "echo first"
+            }
+          }
+        ],
+        "diagnostics": {
+          "marker_seen": true,
+          "call_attempted": true,
+          "structured_call_count": 1,
+          "salvaged_calls": 1
+        }
+      },
+      "basis": [
+        "ninfer(ADR-0002 M1: complete call before a cut)"
+      ]
+    },
+    {
+      "id": "tool-call-later-call-not-swallowed",
+      "thinking": false,
+      "tools": [
+        "bash"
+      ],
+      "note": "Added by ADR-0002 (#149): a later candidate that consumes the region to its end wins the ordinary B2 search; the earlier complete call is not salvaged (salvaged_calls 0) and its bytes plus the stray text stay content.",
+      "rounds": [
+        {
+          "feed": "<tool_call>\n<function=bash>\n<parameter=command>\necho first\n</parameter>\n</function>\n</tool_call>\nstray text\n<tool_call>\n<function=bash>\n<parameter=command>\necho second\n</parameter>\n</function>\n</tool_call>",
+          "content": "<tool_call>\n<function=bash>\n<parameter=command>\necho first\n</parameter>\n</function>\n</tool_call>\nstray text",
+          "tool_calls": [
+            {
+              "name": "bash",
+              "arguments": {
+                "command": "echo second"
+              }
+            }
+          ]
+        }
+      ],
+      "final": {
+        "reasoning": "",
+        "content": "<tool_call>\n<function=bash>\n<parameter=command>\necho first\n</parameter>\n</function>\n</tool_call>\nstray text",
+        "tool_calls": [
+          {
+            "name": "bash",
+            "arguments": {
+              "command": "echo second"
+            }
+          }
+        ],
+        "diagnostics": {
+          "marker_seen": true,
+          "structured_call_count": 1,
+          "salvaged_calls": 0
+        }
+      },
+      "basis": [
+        "ninfer(ADR-0002 M1: accept before salvage)"
+      ]
+    },
+    {
+      "id": "tool-call-raw-crlf-framing",
+      "thinking": false,
+      "tools": [
+        "bash"
+      ],
+      "note": "Added by the ADR-0002 (#149) review fix: CRLF-framed parameters through the raw second chance must not leak the frame's carriage return; the raw delimiter covers `\\r\\n</parameter>` and `\\n</parameter>`, so B6 sees the same clean value as the strict path.",
+      "rounds": [
+        {
+          "feed": "<tool_call>\r\n<function=bash>\r\n<parameter=command>\r\necho <parameter=x ok\r\n</parameter>\r\n</function>\r\n</tool_call>",
+          "content": "",
+          "tool_calls": [
+            {
+              "name": "bash",
+              "arguments": {
+                "command": "echo <parameter=x ok"
+              }
+            }
+          ]
+        }
+      ],
+      "final": {
+        "reasoning": "",
+        "content": "",
+        "tool_calls": [
+          {
+            "name": "bash",
+            "arguments": {
+              "command": "echo <parameter=x ok"
+            }
+          }
+        ],
+        "diagnostics": {
+          "marker_seen": true,
+          "structured_call_count": 1,
+          "salvaged_calls": 0
+        }
+      },
+      "basis": [
+        "ninfer(ADR-0002 M2: raw-value second chance, CRLF frame)"
+      ]
+    },
+    {
+      "id": "tool-call-salvage-adapter-failure-stays-fail-closed",
+      "thinking": false,
+      "tools": [
+        "bash"
+      ],
+      "note": "Added by the ADR-0002 (#149) review fix: when the selected salvage set fails an adapter check (an undeclared call here), the whole region demotes fail-closed with that class; a weaker later servable candidate is not substituted, so the identity failure can never be buried.",
+      "rounds": [
+        {
+          "feed": "<tool_call>\n<function=ghost>\n<parameter=x>\n1\n</parameter>\n</function>\n</tool_call>\n<tool_call>\n<function=bash>\n<parameter=command>\necho ok\n</parameter>\n</function>\n</tool_call>\nstill explaining",
+          "content": "<tool_call>\n<function=ghost>\n<parameter=x>\n1\n</parameter>\n</function>\n</tool_call>\n<tool_call>\n<function=bash>\n<parameter=command>\necho ok\n</parameter>\n</function>\n</tool_call>\nstill explaining",
+          "tool_calls": []
+        }
+      ],
+      "final": {
+        "reasoning": "",
+        "content": "<tool_call>\n<function=ghost>\n<parameter=x>\n1\n</parameter>\n</function>\n</tool_call>\n<tool_call>\n<function=bash>\n<parameter=command>\necho ok\n</parameter>\n</function>\n</tool_call>\nstill explaining",
+        "tool_calls": [],
+        "diagnostics": {
+          "marker_seen": true,
+          "call_attempted": true,
+          "fallback_reason": "UndeclaredTool",
+          "salvaged_calls": 0
+        }
+      },
+      "basis": [
+        "ninfer(ADR-0002 M1: fail-closed salvage adapter check)"
       ]
     }
   ]
