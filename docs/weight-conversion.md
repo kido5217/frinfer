@@ -1,6 +1,6 @@
 # Weight conversion
 
-NInfer's converter creates `.ninfer` artifacts from local weights and a Python recipe. A recipe
+FrInfer's converter creates `.ninfer` artifacts from local weights and a Python recipe. A recipe
 can reuse an official conversion, change selected layers or projections, combine sources, or call
 your own conversion method. The artifact contains the resulting configuration, encoded weights,
 logical bindings and frontend resources.
@@ -11,7 +11,7 @@ Run the commands below from the repository root.
 
 The offline upgrade tool supports the official Qwen3.6/3.8-27B groupwise-int and NVFP4 artifacts,
 and Qwen3.6-35B-A3B groupwise-int. Update your checkout to the current `master` and
-[rebuild NInfer](../README.md#quick-start), then run with Python 3.11:
+[rebuild FrInfer](../README.md#quick-start), then run with Python 3.11:
 
 ```bash
 python3 tools/upgrade_ninfer_v2_to_v3.py \
@@ -360,7 +360,7 @@ and explicit application/request settings.
 The default maximum file size is 32,000,000,000 bytes, including framing. Smaller artifacts remain
 one file. Larger artifacts use an entry such as `models/my_qwen.ninfer` plus
 `my_qwen.ninfer.part-0001`, `my_qwen.ninfer.part-0002`, and so on in the same directory. Pass only the
-entry path to NInfer and keep all its recorded parts together. `--max-file-bytes` changes the limit.
+entry path to FrInfer and keep all its recorded parts together. `--max-file-bytes` changes the limit.
 
 Conversion writes `models/my_qwen.ninfer.conversion.json` alongside the artifact, recording sources,
 methods, formats, component configs, files and timing. Existing output files are not overwritten.

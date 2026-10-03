@@ -1,6 +1,6 @@
-# NInfer documentation
+# FrInfer documentation
 
-Start with the [project README](../README.md) to build NInfer, download a published artifact, and
+Start with the [project README](../README.md) to build FrInfer, download a published artifact, and
 run the CLI or HTTP server.
 
 ## User guides

@@ -1,6 +1,6 @@
-# NInfer CLI
+# FrInfer CLI
 
-`build/apps/ninfer-yarn` runs one request against one v3 `.ninfer` artifact. Build NInfer and
+`build/apps/frinfer` runs one request against one v3 `.ninfer` artifact. Build FrInfer and
 download an artifact using the [project README](../README.md) before following this guide.
 
 The examples use Qwen3.8-27B NVFP4 with FP8 KV storage.
@@ -8,7 +8,7 @@ The examples use Qwen3.8-27B NVFP4 with FP8 KV storage.
 ## Text input
 
 ```bash
-./build/apps/ninfer-yarn models/qwen3_8_27b_nvfp4.ninfer \
+./build/apps/frinfer models/qwen3_8_27b_nvfp4.ninfer \
   --prompt "Summarize the difference between prefill and decode." \
   --max-context 32768 \
   --max-new 8192 \
@@ -30,7 +30,7 @@ ANSI escapes. `--log-level debug` exposes every startup phase. Option and local 
 failures remain direct command diagnostics:
 
 ```bash
-./build/apps/ninfer-yarn models/qwen3_8_27b_nvfp4.ninfer \
+./build/apps/frinfer models/qwen3_8_27b_nvfp4.ninfer \
   --prompt "Return one sentence." \
   --max-context 4096 \
   --max-new 64 \
@@ -39,10 +39,10 @@ failures remain direct command diagnostics:
 ```
 
 `--chat-template FILE` overrides the artifact's built-in template with a local Jinja file.
-Changes to the file take effect after restarting NInfer:
+Changes to the file take effect after restarting FrInfer:
 
 ```bash
-./build/apps/ninfer-yarn models/qwen3_8_27b.ninfer \
+./build/apps/frinfer models/qwen3_8_27b.ninfer \
   --chat-template tools/chat_templates/qwen3_8.jinja --prompt "Hello"
 ```
 
@@ -71,7 +71,7 @@ For example, this allows at most 512 model-origin thinking tokens while retainin
 output capacity for the inserted suffix and the answer:
 
 ```bash
-./build/apps/ninfer-yarn models/qwen3_8_27b_nvfp4.ninfer \
+./build/apps/frinfer models/qwen3_8_27b_nvfp4.ninfer \
   --prompt "Explain speculative decoding, then give a concise conclusion." \
   --max-context 4096 \
   --max-new 1024 \
@@ -131,7 +131,7 @@ and an optional `tools` array.
 Run message files from the repository root when they contain repository-relative media paths:
 
 ```bash
-./build/apps/ninfer-yarn models/qwen3_8_27b_nvfp4.ninfer \
+./build/apps/frinfer models/qwen3_8_27b_nvfp4.ninfer \
   --messages examples/cli/messages/image_chart.json \
   --max-context 8192 \
   --max-new 128 \
@@ -168,7 +168,7 @@ may be combined with `--vision`.
 `--lm-head-draft` selects the optimized proposal head and requires a selected backend:
 
 ```bash
-./build/apps/ninfer-yarn models/qwen3_6_35b_a3b.ninfer \
+./build/apps/frinfer models/qwen3_6_35b_a3b.ninfer \
   --prompt "Write a short explanation of speculative decoding." \
   --max-context 16384 \
   --max-new 512 \
@@ -180,7 +180,7 @@ may be combined with `--vision`.
 For DFlash:
 
 ```bash
-./build/apps/ninfer-yarn models/qwen3_6_35b_a3b.ninfer \
+./build/apps/frinfer models/qwen3_6_35b_a3b.ninfer \
   --prompt "Write a short explanation of speculative decoding." \
   --max-context 16384 --max-new 512 \
   --kv-dtype fp8 \
@@ -249,7 +249,7 @@ Repeat `--stop-token-id`, `--stop`, or `--reasoning-stop` to add stop conditions
 `--raw-output` to expose the frontend's raw output stream and `--print-token-ids` to include
 generated token IDs in diagnostics.
 
-Run `./build/apps/ninfer-yarn --help` for the exact option contract.
+Run `./build/apps/frinfer --help` for the exact option contract.
 
 ## CUDA synchronization
 
@@ -260,7 +260,7 @@ the decode performance cost depends on the host. `yield` yields the CPU while wa
 uses CUDA's scheduling heuristic, not an automatic performance benchmark.
 
 ```bash
-NINFER_CUDA_SYNC=blocking ./build/apps/ninfer-yarn models/qwen3_8_27b_nvfp4.ninfer --prompt "Hello"
+NINFER_CUDA_SYNC=blocking ./build/apps/frinfer models/qwen3_8_27b_nvfp4.ninfer --prompt "Hello"
 ```
 
 The Engine-ready log reports the selected mode. Empty or unrecognized values, or failure to apply
@@ -285,7 +285,7 @@ unallocated. It does not probe allocations or resize the pool at request time. T
 CLI normally leaves the option omitted so it follows
 `--max-context`; the distinction matters primarily to a concurrent Engine or server.
 
-At Engine startup NInfer reserves model weights, persistent sequence state, one phase-reused
+At Engine startup FrInfer reserves model weights, persistent sequence state, one phase-reused
 Program workspace, and a separate CUDA Graph driver allowance. With Vision enabled, that one
 workspace contains a general execution prefix and a fixed item-output handoff region. Vision encode
 may reuse the full backing before producing the output; Text/MTP/decode work remains inside the

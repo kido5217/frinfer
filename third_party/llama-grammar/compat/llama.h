@@ -1,6 +1,6 @@
 #pragma once
 
-// NInfer compat shim for llama.cpp's include/llama.h, reduced to what the vendored
+// FrInfer compat shim for llama.cpp's include/llama.h, reduced to what the vendored
 // llama-grammar.{h,cpp} references: the llama_token typedef and the candidate-array types
 // the grammar filter writes into. Shapes mirror llama.cpp at the vendored baseline
 // (include/llama.h:69, 231-245, 05af0d2b1398394cfa67e1918fee7feabccaa9bc).

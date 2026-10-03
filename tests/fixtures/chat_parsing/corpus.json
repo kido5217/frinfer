@@ -123,7 +123,7 @@
         "ninfer_master",
         "pr309"
       ],
-      "note": "Whitespace immediately after the close is stripped, not published. llama.cpp also eats the byte after the marker via its PEG space(); NInfer publishes content after stripping leading format whitespace."
+      "note": "Whitespace immediately after the close is stripped, not published. llama.cpp also eats the byte after the marker via its PEG space(); FrInfer publishes content after stripping leading format whitespace."
     },
     {
       "id": "reasoning-close-implicit-at-tool-call",
@@ -647,7 +647,7 @@
         "ninfer_master",
         "llamacpp(row 14) only with parallel_tool_calls=true"
       ],
-      "note": "Declared by the froggeric instructions (separate closed blocks); NInfer always accepts multiple calls in one turn."
+      "note": "Declared by the froggeric instructions (separate closed blocks); FrInfer always accepts multiple calls in one turn."
     },
     {
       "id": "tool-call-consecutive-without-tool-close",
@@ -980,7 +980,7 @@
         }
       },
       "basis": [
-        "ninfer_yarn(map #40)"
+        "frinfer(map #40)"
       ],
       "diverges": [
         "llamacpp(row 20): a repeated required argument drops the turn"
@@ -1011,7 +1011,7 @@
       },
       "basis": [
         "ninfer_master",
-        "ninfer_yarn(map #40)"
+        "frinfer(map #40)"
       ],
       "diverges": [
         "vllm(row 20): last value wins (this call would dispatch as rm -rf /)",

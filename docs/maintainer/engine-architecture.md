@@ -1,6 +1,6 @@
-# NInfer Engine 架构
+# FrInfer Engine 架构
 
-本文定义 NInfer 的模型实例、执行所有权与顶层控制面，说明权重如何进入固定模型实现，以及请求、
+本文定义 FrInfer 的模型实例、执行所有权与顶层控制面，说明权重如何进入固定模型实现，以及请求、
 资源和输出如何共同提交。它是全局架构、请求生命周期和跨模块提交关系的维护者权威。
 
 本文只规定长期稳定的边界：
@@ -19,7 +19,7 @@
 
 ## 1. 产品执行模型
 
-Generation purpose 的 NInfer Engine 固定运行：
+Generation purpose 的 FrInfer Engine 固定运行：
 
 - 一张 GPU；
 - 一个常驻模型实例；
@@ -588,7 +588,7 @@ checkpoint catalog。
 这些路径用于定位当前 authority，不把文件拆分固化为外部接口。
 
 `include/ninfer/engine.h` 与 `include/ninfer/types.h` 是 in-tree application 使用的 opaque Engine
-interface 和 owning host values；NInfer 当前不安装或导出 C++ SDK。`include/ninfer/ops/` 是
+interface 和 owning host values；FrInfer 当前不安装或导出 C++ SDK。`include/ninfer/ops/` 是
 repository-internal semantic Op contracts。`.ninfer` 是唯一 C++ 产品 artifact，不通过扩展名检测、
 兼容 shim 或第二套产品入口加载其他格式。CLI、server 和 inference benchmark 只通过公共 Engine
 推理；converter 不提供 Python model-inference route。

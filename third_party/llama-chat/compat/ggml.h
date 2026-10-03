@@ -1,6 +1,6 @@
 #pragma once
 
-// NInfer compat shim for ggml's ggml.h, reduced to the two assertion macros the
+// FrInfer compat shim for ggml's ggml.h, reduced to the two assertion macros the
 // vendored chat sources use. There is no ggml dependency in this subtree.
 
 #include <cstdio>

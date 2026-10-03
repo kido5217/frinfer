@@ -1,14 +1,14 @@
 # HTTP serving
 
-`build/apps/ninfer-yarn-serve` loads one v3 `.ninfer` artifact and exposes OpenAI- and
-Anthropic-compatible HTTP endpoints over one resident NInfer Engine.
+`build/apps/frinfer-serve` loads one v3 `.ninfer` artifact and exposes OpenAI- and
+Anthropic-compatible HTTP endpoints over one resident FrInfer Engine.
 
 ## Start the server
 
 See [CUDA synchronization](cli.md#cuda-synchronization) for the shared `NINFER_CUDA_SYNC` setting.
 
 ```bash
-./build/apps/ninfer-yarn-serve models/qwen3_8_27b_nvfp4.ninfer \
+./build/apps/frinfer-serve models/qwen3_8_27b_nvfp4.ninfer \
   --host 127.0.0.1 \
   --port 8080 \
   --max-context 240000 \
@@ -81,7 +81,7 @@ change generated text, event ordering, usage, stored Responses, or request logs.
 connections also use TCP keepalive and a 15-second `TCP_USER_TIMEOUT`; together with the heartbeat,
 a dead or unacknowledging peer is normally cancelled within about 20 seconds, including while the
 request is waiting or prefilling. A peer whose TCP stack remains connected and acknowledges data
-cannot be distinguished from a reading application; proxies must close their upstream NInfer
+cannot be distinguished from a reading application; proxies must close their upstream FrInfer
 connection when the downstream client disappears.
 
 ## OpenAI Chat Completions
@@ -135,7 +135,7 @@ requested log probabilities,
 audio/file input or audio output, `strict:true`, required or named tool choice,
 `parallel_tool_calls:false` with enabled tools, explicit low/high image detail, web search,
 moderation, low/high verbosity, stored Chat Completions, and non-empty legacy `functions`.
-Each capability rejection identifies the affected field and the guarantee NInfer cannot provide.
+Each capability rejection identifies the affected field and the guarantee FrInfer cannot provide.
 Known constrained-decoding aliases other than `grammar` and `response_format`
 (`structured_outputs`, `guided_json`, `guided_regex`, `guided_choice`, and `guided_grammar`)
 receive the same explicit rejection instead of being treated as unknown hints.
@@ -250,7 +250,7 @@ declared non-string parameter is omitted. Admitted JSON values retain their JSON
 case-insensitive boolean text is normalized to `true` or `false`. A nonempty schema mismatch remains
 a structured call: valid JSON retains its represented type and other text becomes a JSON string so
 the tool consumer can report the validation error and continue the agent loop. Schemas without a
-supported explicit type retain untyped inference. NInfer does not apply defaults, enforce required
+supported explicit type retain untyped inference. FrInfer does not apply defaults, enforce required
 properties, perform recursive JSON Schema validation, or honor JSON Schema constrained decoding
 (a `grammar` GBNF constraint is applied to the answer stream instead).
 
@@ -264,7 +264,7 @@ occurrence's raw value bytes: the duplicates collapse into one argument, first o
 kept. A repeat whose value bytes differ is unrepresentable ambiguity and returns the complete
 region to ordinary content.
 A response may carry several calls in sequence, and a missing `</tool_call>` before the next
-`<tool_call>` is tolerated. NInfer serves the first `<tool_call>` region that parses completely and
+`<tool_call>` is tolerated. FrInfer serves the first `<tool_call>` region that parses completely and
 consumes the response to its end; when no candidate consumes to its end, a structurally complete
 call (function name, closed parameters, `</function>`) is salvaged from the furthest-reaching
 candidate, with its trailing bytes kept as ordinary content. Earlier markup and the prose around it
@@ -292,7 +292,7 @@ system/developer messages at their original positions.
 Prompt-bearing JSON objects retain their received member order through request parsing and prompt
 rendering, including tool schemas and historical tool inputs. Canonical model-origin tool arguments
 retain that member order in aggregate and streaming responses, so an unmodified replay reconstructs
-the same ordered tool call. NInfer does not canonicalize semantically equivalent JSON: if a client
+the same ordered tool call. FrInfer does not canonicalize semantically equivalent JSON: if a client
 reorders members, inserts defaults, or otherwise rewrites a tool object, the changed rendered input
 does not match the model-held endpoint and can reuse only an earlier exact checkpoint.
 
@@ -464,12 +464,12 @@ reads of already-published prefixes do not require the request to repeat a marke
 
 These fields are optimization hints. A legal boundary that cannot be represented as an exact
 rendered-token frontier is ignored without changing prompt content. `prompt_cache_key` is not an
-Engine session key or prefix identity. Valid TTL/retention values are accepted, but NInfer does not
+Engine session key or prefix identity. Valid TTL/retention values are accepted, but FrInfer does not
 promise their wall-clock residency; physical retention follows the resource scheduler.
 
 ## OpenAI Responses Core
 
-NInfer implements the typed-Item and semantic-event core of the OpenAI
+FrInfer implements the typed-Item and semantic-event core of the OpenAI
 [Responses API](https://developers.openai.com/api/reference/resources/responses/overview). All
 supported model instances use this same adapter and Engine route. It is intentionally not
 advertised as full parity with OpenAI-hosted tools, durable cloud storage, background jobs,
@@ -509,7 +509,7 @@ wire response contains typed `output` Items.
 
 ### Create request fields
 
-| Field | NInfer Responses Core contract |
+| Field | FrInfer Responses Core contract |
 |---|---|
 | `model` | required non-empty string; must equal the artifact-derived public model ID or explicit `--model-id` override |
 | `input` | string or typed Item array; it may be omitted or empty only when `previous_response_id` already supplies a user query |
@@ -529,7 +529,7 @@ wire response contains typed `output` Items.
 | `tools` | direct function definitions or namespace groups containing function definitions; see below |
 | `tool_choice` | `auto`, `none`, or function-only `allowed_tools` with mode `auto`; a namespaced selection carries both `namespace` and `name` |
 | `parallel_tool_calls` | `true` by default; `false` is accepted only when no effective tool is callable |
-| `max_tool_calls` | non-negative integer accepted as a hosted-tool no-op; NInfer does not execute hosted tools |
+| `max_tool_calls` | non-negative integer accepted as a hosted-tool no-op; FrInfer does not execute hosted tools |
 | `truncation` | omitted or `disabled`; overlong input fails instead of silently dropping Items |
 | `top_logprobs` | omitted or `0` |
 | `service_tier` | omitted, `auto`, or `default`; the response reports `default` |
@@ -552,7 +552,7 @@ String `input` is normalized to one user `message` with an `input_text` part. Ar
 | `output_text` | assistant-message replay part containing string `text` |
 | `refusal` | assistant-message replay part; its text enters assistant history |
 | `input_image` | user- or assistant-message part with HTTP(S) or data-URI `image_url`; detail omitted or `auto`; requires server `--vision` |
-| `input_video` | NInfer extension with HTTP(S) or data-URI `video_url`; requires server `--vision` |
+| `input_video` | FrInfer extension with HTTP(S) or data-URI `video_url`; requires server `--vision` |
 | `reasoning` | raw replay Item with `reasoning_text` content; summary/encrypted metadata may accompany raw text but cannot replace it |
 | `function_call` | completed assistant call with optional `id` and namespace, plus required `call_id`, `name`, and JSON-object string `arguments` |
 | `function_call_output` | completed result with required `call_id` and optional matching name/namespace assertion; `output` may be a string or a non-empty array of `input_text`/`input_image` parts |
@@ -612,12 +612,12 @@ They may also be grouped in a Responses namespace:
 }
 ```
 
-NInfer gives each namespace/function pair a distinct internal Engine identity and restores the
+FrInfer gives each namespace/function pair a distinct internal Engine identity and restores the
 separate `namespace` and `name` fields in aggregate output, SSE events, and replayed Items. The same
 function name may therefore appear in different namespaces. Namespace members remain ordinary
 client-executed functions; this does not add a remote MCP executor.
 
-NInfer renders these definitions in the Qwen prompt and parses model output into separate
+FrInfer renders these definitions in the Qwen prompt and parses model output into separate
 `function_call` output Items. Each output has a protocol Item `id` (`fc_...`) and a distinct
 `call_id` (`call_...`). The client executes the function and sends a `function_call_output` Item in
 a later request. Only functions in the current effective tool set can become structured calls;
@@ -625,7 +625,7 @@ undeclared model output remains ordinary text. `allowed_tools` with mode `auto` 
 without changing declaration order, while `tool_choice:"none"` disables structured tool output even
 when the history contains earlier calls.
 
-NInfer does not execute functions or enforce tool JSON Schemas through constrained decoding
+FrInfer does not execute functions or enforce tool JSON Schemas through constrained decoding
 (constraints apply only through the caller-supplied `grammar`/`response_format` fields, never to
 tool schemas), so
 `strict:true`, required or named tool choice, hosted tools, remote MCP tools, and custom free-form
@@ -635,7 +635,7 @@ invocation are also rejected because their semantics cannot be honored.
 ### Response object and usage
 
 A terminal wire response has `object: "response"`, one of `completed`, `incomplete`, or
-`cancelled` in `status`, and a typed `output` array. NInfer may emit:
+`cancelled` in `status`, and a typed `output` array. FrInfer may emit:
 
 - a `reasoning` Item containing raw `reasoning_text` and an empty summary;
 - an assistant `message` containing an `output_text` part;
@@ -775,14 +775,14 @@ Assistant prefill cannot contain media, Thinking, or tool calls and cannot start
 enabled.
 
 Claude Code may place its attribution metadata in the first block of a top-level System array. If
-that block is a text block beginning exactly with `x-anthropic-billing-header:`, NInfer consumes the
+that block is a text block beginning exactly with `x-anthropic-billing-header:`, FrInfer consumes the
 whole block before token counting, prompt preparation, and cache identity construction. The rule is
 positional: a string-form System value, a later array block, or an inline System message with the
 same text remains ordinary prompt content. A `cache_control` marker attached to the consumed block
 is consumed with it rather than moved to adjacent content.
 
 `max_tokens` is optional for local clients and otherwise uses `--default-max-tokens`; a positive
-value is the complete output budget. `max_tokens:0` is rejected because NInfer does not expose a
+value is the complete output budget. `max_tokens:0` is rejected because FrInfer does not expose a
 completed zero-output cache-prewarm lifecycle. `temperature`, `top_p`, `top_k`, and
 `stop_sequences` enter Engine execution. A matched custom stop is returned as
 `stop_reason:"stop_sequence"` together with the actual `stop_sequence`; context exhaustion returns
@@ -794,8 +794,8 @@ Thinking is returned with an opaque compatibility signature; SSE emits its `sign
 before closing the block. Request lowering reconstructs the local prompt from the visible
 `thinking` text and treats `signature` as non-semantic transport metadata, so retained history
 remains usable across serve restarts.
-`display:"omitted"` is rejected because NInfer cannot provide Anthropic's
-encrypted hidden-reasoning restore semantics. `preserve_thinking` remains a NInfer extension for
+`display:"omitted"` is rejected because FrInfer cannot provide Anthropic's
+encrypted hidden-reasoning restore semantics. `preserve_thinking` remains a FrInfer extension for
 closed-turn reasoning history. `output_config.effort` passes its protocol-validated value to the
 selected template.
 
@@ -816,7 +816,7 @@ breakpoint at the same target and TTL, conflicts at the same target with a diffe
 an available fifth slot when four different explicit targets already exist. TTL must be `5m` or
 `1h`; it is a protocol hint, not a wall-clock residency guarantee.
 
-NInfer maps representable boundaries to exact prompt frontiers and ignores a legal but
+FrInfer maps representable boundaries to exact prompt frontiers and ignores a legal but
 unrepresentable advisory boundary without changing the prompt. Reuse still requires exact rendered
 identity and can read an existing owner without another `cache_control`. Aggregate usage reports
 verified reused tokens in `cache_read_input_tokens` and leaves cache creation unknown. Streaming
@@ -935,7 +935,7 @@ Backend pool and is consumed in physical page extents. `--no-prefix-reuse` selec
 mode and cannot be combined with any of the seven explicit context-cache capacity flags, including
 zero-valued flags.
 
-Run `./build/apps/ninfer-yarn-serve --help` for the exact option contract.
+Run `./build/apps/frinfer-serve --help` for the exact option contract.
 
 Serve writes human-readable operational records to stderr using
 `YYYY-MM-DD HH:MM:SS.mmm  LEVEL  message`. Normal output covers material startup milestones,
@@ -1123,7 +1123,7 @@ a following compatible turn can reuse it. Output-limit and context-capacity fini
 `length`/ `max_tokens`; ordinary model or string stops map to `stop`/ `end_turn`.
 
 Function tools are rendered into the model prompt and generated calls are parsed into protocol
-responses. NInfer does not execute tools and does not enforce client tool JSON Schemas through
+responses. FrInfer does not execute tools and does not enforce client tool JSON Schemas through
 constrained decoding (constraints apply only through the caller-supplied
 `grammar`/`response_format` fields, never to tool schemas).
 

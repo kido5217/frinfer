@@ -1,4 +1,4 @@
-// NInfer compat implementations for the two jinja-facing pieces the vendored chat
+// FrInfer compat implementations for the two jinja-facing pieces the vendored chat
 // layer expects but the maintained jinja fork (third_party/llama-jinja, baseline
 // 76098465) does not provide: the capability struct and jinja::global_from_json.
 // See compat/jinja/caps.h and compat/jinja/value.h for the rationale.

@@ -1,4 +1,4 @@
-"""Exercise the implemented NInfer HTTP product contract with the standard library."""
+"""Exercise the implemented FrInfer HTTP product contract with the standard library."""
 
 from __future__ import annotations
 
@@ -377,7 +377,7 @@ def exercise(base_url: str, model: str) -> dict[str, Any]:
         raise ContractError("model-list response has the wrong shape")
     if entries[0].get("id") != model or entries[0].get("owned_by") != "ninfer":
         raise ContractError(
-            "model-list response does not identify the configured NInfer model"
+            "model-list response does not identify the configured FrInfer model"
         )
     single_model = json_response(base_url, "GET", f"/v1/models/{model}")
     if single_model.get("id") != model:

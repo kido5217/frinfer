@@ -3,11 +3,11 @@
 How `third_party/llama-grammar/` — the GBNF runtime behind constrained decoding — is kept current
 with upstream [ggml-org/llama.cpp](https://github.com/ggml-org/llama.cpp). The recorded baseline,
 the file map, the patch set and the compat adaptations live in
-[`third_party/llama-grammar/README.ninfer.md`](../../third_party/llama-grammar/README.ninfer.md);
+[`third_party/llama-grammar/README.frinfer.md`](../../third_party/llama-grammar/README.frinfer.md);
 that README is the authority for *what* is vendored and *how* the maintained copies are derived,
 this document for *how* they are refreshed. The design is recorded on wayfinder map
-[#45](https://github.com/kido5217/ninfer-yarn/issues/45) (design
-[#47](https://github.com/kido5217/ninfer-yarn/issues/47)).
+[#45](https://github.com/kido5217/frinfer/issues/45) (design
+[#47](https://github.com/kido5217/frinfer/issues/47)).
 
 ## Ground rules
 

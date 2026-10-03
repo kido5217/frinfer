@@ -8,16 +8,16 @@ if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
 endif()
 if(NOT CMAKE_CUDA_ARCHITECTURES STREQUAL "120a")
   message(FATAL_ERROR
-    "NInfer supports only CMAKE_CUDA_ARCHITECTURES=120a; got "
+    "FrInfer supports only CMAKE_CUDA_ARCHITECTURES=120a; got "
     "'${CMAKE_CUDA_ARCHITECTURES}'")
 endif()
 
 project(ninfer LANGUAGES C CXX CUDA)
 
 # --- Global settings ---------------------------------------------------------
-option(NINFER_BUILD_APPS "Build the NInfer CLI, server and perplexity evaluator" ON)
-option(BUILD_TESTING "Build NInfer tests" OFF)
-option(NINFER_BUILD_BENCHMARKS "Build NInfer benchmarks" OFF)
+option(NINFER_BUILD_APPS "Build the FrInfer CLI, server and perplexity evaluator" ON)
+option(BUILD_TESTING "Build FrInfer tests" OFF)
+option(NINFER_BUILD_BENCHMARKS "Build FrInfer benchmarks" OFF)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)

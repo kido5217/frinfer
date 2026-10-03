@@ -184,7 +184,7 @@ void validate_schema_node(const RequestJson& schema, int depth, const std::strin
     }
     for (const auto& [key, value] : schema.items()) {
         if (!schema_keywords().contains(key)) {
-            unsupported("JSON Schema keyword '" + key + "' is not enforced by NInfer", key);
+            unsupported("JSON Schema keyword '" + key + "' is not enforced by FrInfer", key);
         }
     }
 
@@ -283,7 +283,7 @@ void validate_schema_node(const RequestJson& schema, int depth, const std::strin
         if (schema.contains("format")) {
             const RequestJson& value = schema.at("format");
             if (!value.is_string() || !enforced_formats().contains(value.get<std::string>())) {
-                unsupported("JSON Schema format is not enforced by NInfer", "format");
+                unsupported("JSON Schema format is not enforced by FrInfer", "format");
             }
         }
         if (schema.contains("required")) {

@@ -1,6 +1,6 @@
 #pragma once
 
-// NInfer compat shim for llama.cpp's common/common.h.
+// FrInfer compat shim for llama.cpp's common/common.h.
 //
 // The vendored chat-parsing sources include "common.h" for a small, fixed slice of
 // llama.cpp's common layer. This shim provides exactly that slice so the vendored

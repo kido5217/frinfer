@@ -2,7 +2,7 @@ schema_version: 1
 
 # Two-arm GPQA-Diamond comparison: the same artifact and serving flags at the
 # native context window (262,144) and the deployed YaRN window (446,902);
-# only --max-context differs. Map: kido5217/ninfer-yarn#129.
+# only --max-context differs. Map: kido5217/frinfer#129.
 
 targets:
   qwen38_api:

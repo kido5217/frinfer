@@ -28,7 +28,7 @@ void free_grammar(llama_grammar* grammar) { llama_grammar_free_impl(grammar); }
 // Vocabulary facade
 // ---------------------------------------------------------------------------
 
-// Backs the vendored llama_vocab facade with the NInfer-owned GrammarVocabulary view. The
+// Backs the vendored llama_vocab facade with the FrInfer-owned GrammarVocabulary view. The
 // piece callback copies into a scratch string because the engine expects a stable
 // `const std::string&`; the engine consumes that reference before the next call, so a
 // single scratch is sufficient (same lifetime contract as llama_vocab's piece cache).

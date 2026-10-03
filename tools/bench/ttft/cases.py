@@ -1,4 +1,4 @@
-"""Audited request graphs for black-box ninfer-yarn-serve TTFT measurement."""
+"""Audited request graphs for black-box frinfer-serve TTFT measurement."""
 
 from __future__ import annotations
 

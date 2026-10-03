@@ -1,6 +1,6 @@
-// NInfer compat: definitions for symbols the vendored chat layer references but whose
+// FrInfer compat: definitions for symbols the vendored chat layer references but whose
 // upstream implementations sit in subsystems the minimal port deliberately excludes
-// (see README.ninfer.md; design ticket #28: no differential auto-parser, no other
+// (see README.frinfer.md; design ticket #28: no differential auto-parser, no other
 // specialized parsers, no GGUF/llama runtime init, no GBNF-driven sampling plumbing).
 //
 // Excluded entry points throw, so reaching one is loud, never silent.

@@ -1,12 +1,12 @@
 #pragma once
 
-// NInfer compat shim for llama.cpp's src/llama-vocab.h, reduced to the three llama_vocab
+// FrInfer compat shim for llama.cpp's src/llama-vocab.h, reduced to the three llama_vocab
 // calls llama-grammar.cpp makes: token_to_piece (apply/accept), is_eog (apply/accept) and
 // tokenize (only reachable through `<token>` GBNF literals). The facade is a plain callback
-// table; the NInfer grammar module
+// table; the FrInfer grammar module
 // (src/models/qwen3_5/frontend/grammar/grammar.cpp) backs it with its decoupled
 // GrammarVocabulary view, so the vendored grammar logic stays untouched and the vocabulary
-// is the frontend tokenizer's data. See README.ninfer.md.
+// is the frontend tokenizer's data. See README.frinfer.md.
 
 #include "llama.h"
 

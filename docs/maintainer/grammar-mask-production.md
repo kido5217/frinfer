@@ -4,10 +4,10 @@ How constrained decoding produces its per-state token masks — the serving budg
 cost of the current producer, and the decision to replace it with compiled/adaptive masks. The
 grammar runtime itself is covered by
 [vendored llama.cpp grammar runtime](llama-grammar-vendor.md); the effort is wayfinder map
-[#45](https://github.com/kido5217/ninfer-yarn/issues/45) (design
-[#47](https://github.com/kido5217/ninfer-yarn/issues/47), injection
-[#49](https://github.com/kido5217/ninfer-yarn/issues/49), fill-cost
-[#57](https://github.com/kido5217/ninfer-yarn/issues/57)).
+[#45](https://github.com/kido5217/frinfer/issues/45) (design
+[#47](https://github.com/kido5217/frinfer/issues/47), injection
+[#49](https://github.com/kido5217/frinfer/issues/49), fill-cost
+[#57](https://github.com/kido5217/frinfer/issues/57)).
 
 ## The budget
 
@@ -16,8 +16,8 @@ is the 10 % line, **0.4 ms/step**. Device rows are a Program-owned persistent bu
 31,012 B (column-major over the widest decode layout, `[16, 8]`; MTP's `[6, 8]` slices it), each a
 dense bitmask over the exact 248,077-token domain;
 inactive rows are all-ones and constrained rows are refreshed per round
-([#47](https://github.com/kido5217/ninfer-yarn/issues/47),
-[#49](https://github.com/kido5217/ninfer-yarn/issues/49)).
+([#47](https://github.com/kido5217/frinfer/issues/47),
+[#49](https://github.com/kido5217/frinfer/issues/49)).
 
 ## The current producer (module v1)
 
@@ -86,7 +86,7 @@ document fixes the requirements they must meet.
 3. **Bounded retention.** The row and state map must have an explicit bound and eviction policy,
    with the row view lifetime contract stated.
 4. **Contract preserved.** The `grammar` request field stays the GBNF dialect pinned by
-   [#48](https://github.com/kido5217/ninfer-yarn/issues/48) unless the owner migrates it; the JSON
+   [#48](https://github.com/kido5217/frinfer/issues/48) unless the owner migrates it; the JSON
    Schema path and fail-closed taxonomy are unchanged.
 5. **Host-only and single-threaded** on the serving worker unless explicitly re-decided.
 6. **Correctness bar unchanged.** The differential oracle (every vocabulary token replayed through
@@ -94,10 +94,10 @@ document fixes the requirements they must meet.
    vectors; a producer swap moves vectors only deliberately.
 
 The replacement landed and was measured: the token-trie producer
-([#79](https://github.com/kido5217/ninfer-yarn/issues/79), PR
-[#81](https://github.com/kido5217/ninfer-yarn/pull/81)) passed the end-to-end matrix
-([#53](https://github.com/kido5217/ninfer-yarn/issues/53)) and the cost measurement
-([#54](https://github.com/kido5217/ninfer-yarn/issues/54)), and serve enforcement shipped
-([#52](https://github.com/kido5217/ninfer-yarn/issues/52), PR
-[#85](https://github.com/kido5217/ninfer-yarn/pull/85)). Constrained decoding is enabled in
+([#79](https://github.com/kido5217/frinfer/issues/79), PR
+[#81](https://github.com/kido5217/frinfer/pull/81)) passed the end-to-end matrix
+([#53](https://github.com/kido5217/frinfer/issues/53)) and the cost measurement
+([#54](https://github.com/kido5217/frinfer/issues/54)), and serve enforcement shipped
+([#52](https://github.com/kido5217/frinfer/issues/52), PR
+[#85](https://github.com/kido5217/frinfer/pull/85)). Constrained decoding is enabled in
 serving; the requirements above remain the contract for any future producer swap.

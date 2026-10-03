@@ -1,7 +1,7 @@
-# NInfer Op Development Rules
+# FrInfer Op Development Rules
 
 This document defines the repository-wide rules for admitting, specifying, owning, implementing,
-qualifying, and measuring NInfer Ops. An **Op** is a semantic execution contract. A CUDA
+qualifying, and measuring FrInfer Ops. An **Op** is a semantic execution contract. A CUDA
 **kernel** is one implementation, or one stage of an implementation, of an Op.
 
 Repository-wide product scope, numerical principles, and evidence requirements remain in

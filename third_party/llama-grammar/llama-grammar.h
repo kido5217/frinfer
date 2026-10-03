@@ -9,7 +9,7 @@
 
 struct llama_vocab;
 
-// NInfer adaptation (see README.ninfer.md, patch 0001): the sanity bound on repetition
+// FrInfer adaptation (see README.frinfer.md, patch 0001): the sanity bound on repetition
 // counts and on the expanded rule count of a `{m,n}`/`*`/`+`/`?` item. Upstream clamps a
 // finite `max_times` above its internal threshold to "unbounded" instead, which silently
 // drops the upper bound; this port keeps the parsed bound and fails the parse above the
@@ -95,7 +95,7 @@ struct llama_grammar_parser {
     const llama_vocab * vocab;
     std::map<std::string, uint32_t> symbol_ids;
 
-    // NInfer adaptation (see README.ninfer.md, patch 0002): description of the last
+    // FrInfer adaptation (see README.frinfer.md, patch 0002): description of the last
     // parse() failure (empty on success), so a caller can surface the reason instead of
     // scraping the diagnostic stderr print.
     std::string last_error;

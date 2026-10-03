@@ -1,6 +1,6 @@
-# NInfer 资源调度与上下文缓存
+# FrInfer 资源调度与上下文缓存
 
-本文定义 NInfer 在有限 Device/Host 资源下选择、验证并提交上下文状态的规则。它是 admission
+本文定义 FrInfer 在有限 Device/Host 资源下选择、验证并提交上下文状态的规则。它是 admission
 materialization、prefix reuse、cache retention 和 pressure planning 的维护者权威。
 
 本文解决的问题是：
@@ -327,7 +327,7 @@ Session key、marker、hash 和 prefix index 只缩小 candidate 集合，不证
 
 `rewrite_execution_frontiers` 也是 exact identity 的一部分。它记录 replay/root prefill 必须分段的 exact
 token frontiers，使重建路径采用与原生成路径一致的 execution decomposition；不能为了采用 endpoint 而忽略。
-当 NInfer 自己生成的 accepted output 形成可由历史 renderer 精确重建的边界时，所有权链固定为：
+当 FrInfer 自己生成的 accepted output 形成可由历史 renderer 精确重建的边界时，所有权链固定为：
 
 ```text
 Frontend detects the model-output reconstruction boundary
@@ -338,7 +338,7 @@ Frontend detects the model-output reconstruction boundary
 Frontend 只在 canonical boundary 恰好结束于 token frontier 时发布 metadata，并让 preview rollback、stop
 truncation 和 speculative partial accept 服从同一个 accepted-prefix transaction。Program 把相对位置转换为
 resident absolute frontier，并与 token ledger、State/KV 和 backend state 一起提交；它不扫描输出文本。
-ResourceManager 不推断或放宽这个事实。这样未经客户端改写的 NInfer 输出可以继续采用 exact endpoint；客户端
+ResourceManager 不推断或放宽这个事实。这样未经客户端改写的 FrInfer 输出可以继续采用 exact endpoint；客户端
 重排 tool JSON、补默认值或改写历史仍是不同的 rendered identity，只能匹配更早的合法 checkpoint。
 
 ### 4.6 Request cache participation

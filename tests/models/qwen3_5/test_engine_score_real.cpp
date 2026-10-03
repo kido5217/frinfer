@@ -33,7 +33,7 @@ int main() {
 
     std::string text;
     const std::string paragraph =
-        "NInfer scores each target token from the preceding hidden state. "
+        "FrInfer scores each target token from the preceding hidden state. "
         "Every evaluation window owns fresh state and a fresh KV address space.\n";
     std::vector<ninfer::TokenId> tokens;
     while (tokens.size() < 1537) {

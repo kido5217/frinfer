@@ -1,7 +1,7 @@
 # Third-Party Notices
 
 The files below are evaluation inputs. They retain the licenses and attribution requirements of
-their sources and are not relicensed as NInfer source code.
+their sources and are not relicensed as FrInfer source code.
 
 ## WikiText-2 raw test
 

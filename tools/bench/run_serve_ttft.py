@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run one audited TTFT request graph against an already-running ninfer-yarn-serve."""
+"""Run one audited TTFT request graph against an already-running frinfer-serve."""
 
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ if __package__ in {None, ""}:
 from tools.bench.ttft.cases import CASES, get_case, run_case
 from tools.bench.ttft.corpus import DEFAULT_MANIFEST, Corpus
 from tools.bench.ttft.execution import CaseContext
-from tools.ninfer_serve.client import NInferServeClient
+from tools.ninfer_serve.client import FrInferServeClient
 
 
 _PROGRESS_STOP = object()
@@ -144,7 +144,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     definition = get_case(args.case)
     api_key = os.environ.get(args.api_key_env) if args.api_key_env else None
-    client = NInferServeClient(args.base_url.rstrip("/"), args.timeout_seconds, api_key)
+    client = FrInferServeClient(args.base_url.rstrip("/"), args.timeout_seconds, api_key)
     started = dt.datetime.now(dt.timezone.utc).isoformat()
     progress = StderrProgress()
     progress.event(

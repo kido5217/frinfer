@@ -1,4 +1,4 @@
-"""Convert explicitly selected local weights into a NInfer v3 artifact."""
+"""Convert explicitly selected local weights into a FrInfer v3 artifact."""
 
 from __future__ import annotations
 

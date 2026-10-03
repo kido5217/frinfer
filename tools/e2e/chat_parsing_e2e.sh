@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Acceptance gate for the ported Qwen3.5/froggeric chat parsing (map #25, ticket #34, gate #32).
 #
-# Runs the real product path end to end: `ninfer-yarn-serve` on the neroued Qwen3.8-27B NVFP4
+# Runs the real product path end to end: `frinfer-serve` on the neroued Qwen3.8-27B NVFP4
 # artifact with the fetched froggeric template, driven by `opencode run --format json`. It asserts
 # that the quoted `</think>` stays in the reasoning channel, that no tool-call markup is routed into
 # reasoning, and that the model's `shell` call arrives structured - present once, not lost or
@@ -15,7 +15,7 @@
 # server cannot run inside a plain `nix develop`. When present, the host driver directory
 # (DRIVER_LIB_DIR, default /run/opengl-driver/lib) is prepended to LD_LIBRARY_PATH for the server.
 # Build the binary first:
-#   nix develop -c cmake --build build --target ninfer-yarn-serve
+#   nix develop -c cmake --build build --target frinfer-serve
 #
 # The opencode provider is not discoverable from the repository or the user configuration: pass
 # --model <provider>/<model-id> explicitly. Its provider must be an OpenAI-compatible provider whose
@@ -25,7 +25,7 @@
 # Usage: tools/e2e/chat_parsing_e2e.sh --model <provider/model> [options]
 set -euo pipefail
 
-SERVE_BIN="build/apps/ninfer-yarn-serve"
+SERVE_BIN="build/apps/frinfer-serve"
 ARTIFACT="/home/kido/trash/ai/models/hf/hub/models--neroued--Qwen3.8-27B-nvfp4-NInfer/snapshots/f0b43ad436b9fa8142c6ed6647c470a6fe409484/qwen3_8_27b_nvfp4.ninfer"
 TEMPLATE="/tmp/opencode/froggeric_chat_template.jinja"
 HOST="127.0.0.1"
@@ -62,7 +62,7 @@ Required:
 
 Optional:
   --artifact PATH                 .ninfer artifact (default: the neroued Qwen3.8-27B NVFP4 snapshot)
-  --serve-bin PATH                ninfer-yarn-serve binary (default: build/apps/ninfer-yarn-serve)
+  --serve-bin PATH                frinfer-serve binary (default: build/apps/frinfer-serve)
   --template PATH                 chat template handed to the server (default: /tmp/opencode/froggeric_chat_template.jinja)
   --expect-template-sha256 HEX    fail unless the template file has this sha256
   --host H / --port N             server address (default: 127.0.0.1:8080)
@@ -125,7 +125,7 @@ for tool in python3 curl nvidia-smi sha256sum; do
   command -v "$tool" >/dev/null 2>&1 || die "$tool is required but not on PATH"
 done
 command -v "$OPENCODE_BIN" >/dev/null 2>&1 || die "opencode executable not found: $OPENCODE_BIN"
-[[ -x "$SERVE_BIN" ]] || die "serve binary not found or not executable: $SERVE_BIN (build it: nix develop -c cmake --build build --target ninfer-yarn-serve)"
+[[ -x "$SERVE_BIN" ]] || die "serve binary not found or not executable: $SERVE_BIN (build it: nix develop -c cmake --build build --target frinfer-serve)"
 [[ -f "$ARTIFACT" ]] || die "artifact not found: $ARTIFACT"
 
 if [[ -z "$EVIDENCE" ]]; then

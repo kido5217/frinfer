@@ -4,7 +4,7 @@
  
  struct llama_vocab;
  
-+// NInfer adaptation (see README.ninfer.md, patch 0001): the sanity bound on repetition
++// FrInfer adaptation (see README.frinfer.md, patch 0001): the sanity bound on repetition
 +// counts and on the expanded rule count of a `{m,n}`/`*`/`+`/`?` item. Upstream clamps a
 +// finite `max_times` above its internal threshold to "unbounded" instead, which silently
 +// drops the upper bound; this port keeps the parsed bound and fails the parse above the
@@ -22,7 +22,7 @@
  #include <stdexcept>
  
 -#define MAX_REPETITION_THRESHOLD 2000
-+// NInfer adaptation (patch 0001): raised sanity bound, kept in sync with the exported
++// FrInfer adaptation (patch 0001): raised sanity bound, kept in sync with the exported
 +// llama-grammar.h constant; a repetition beyond it fails the parse instead of being
 +// silently loosened to an unbounded repetition.
 +#define MAX_REPETITION_THRESHOLD LLAMA_GRAMMAR_MAX_REPETITION_BOUND

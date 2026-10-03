@@ -4,7 +4,7 @@
      const llama_vocab * vocab;
      std::map<std::string, uint32_t> symbol_ids;
  
-+    // NInfer adaptation (see README.ninfer.md, patch 0002): description of the last
++    // FrInfer adaptation (see README.frinfer.md, patch 0002): description of the last
 +    // parse() failure (empty on success), so a caller can surface the reason instead of
 +    // scraping the diagnostic stderr print.
 +    std::string last_error;

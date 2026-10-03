@@ -601,7 +601,7 @@ void HttpServer::handle_response_cancel(const httplib::Request& req, httplib::Re
     error.status  = 400;
     error.type    = "invalid_request_error";
     error.code    = "background_not_supported";
-    error.message = "only background responses can be cancelled; NInfer does not support "
+    error.message = "only background responses can be cancelled; FrInfer does not support "
                     "background execution";
     write_openai_error(res, error);
 }

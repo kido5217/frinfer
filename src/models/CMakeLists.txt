@@ -3,7 +3,7 @@ add_library(ninfer_model_loading STATIC registry.cpp)
 ninfer_internal_includes(ninfer_model_loading)
 target_link_libraries(ninfer_model_loading PUBLIC ninfer_artifact ninfer_text ninfer_ops)
 
-# NInfer-owned adapter over the vendored llama.cpp chat-parsing stack (third_party/llama-chat):
+# FrInfer-owned adapter over the vendored llama.cpp chat-parsing stack (third_party/llama-chat):
 # the parse core behind the frontend's output session.
 add_library(ninfer_chat_parsing STATIC qwen3_5/frontend/chat_parse_core.cpp)
 ninfer_internal_includes(ninfer_chat_parsing)

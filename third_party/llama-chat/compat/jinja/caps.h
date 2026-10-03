@@ -1,6 +1,6 @@
 #pragma once
 
-// NInfer compat shim for llama.cpp's common/jinja/caps.h.
+// FrInfer compat shim for llama.cpp's common/jinja/caps.h.
 //
 // The maintained jinja fork vendored at third_party/llama-jinja (baseline 76098465)
 // predates upstream's capability-probing layer (caps.cpp at 95887577). The minimal

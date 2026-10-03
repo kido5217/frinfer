@@ -99,7 +99,7 @@ std::string item_id(const Json& item, const char* prefix) {
 
 ninfer::product::media_acquire::Source parse_image_source(const Json& part) {
     if (part.contains("file_id") && !part.at("file_id").is_null()) {
-        bad_request("input_image.file_id requires a Files API, which NInfer does not provide",
+        bad_request("input_image.file_id requires a Files API, which FrInfer does not provide",
                     "input", "file_inputs_not_supported");
     }
     if (!part.contains("image_url") || !part.at("image_url").is_string() ||
@@ -261,7 +261,7 @@ void parse_message_content_part(const Json& value, ChatRole role, ParsedMessage&
         return;
     }
     if (type == "input_file") {
-        bad_request("input_file requires a Files API, which NInfer does not provide", "input",
+        bad_request("input_file requires a Files API, which FrInfer does not provide", "input",
                     "file_inputs_not_supported");
     }
     if (type == "input_audio") {
@@ -641,7 +641,7 @@ void parse_input(const Json& input, OpenAIResponsesPromptRequest& out,
             assistant.flush(out.input_turns);
             out.input_turns.push_back(std::move(result));
         } else if (type == "input_file") {
-            bad_request("input_file requires a Files API, which NInfer does not provide", "input",
+            bad_request("input_file requires a Files API, which FrInfer does not provide", "input",
                         "file_inputs_not_supported");
         } else {
             bad_request("unsupported input Item type: " + type, "input", "item_type_not_supported");
@@ -793,11 +793,11 @@ void parse_tools(const Json& body, ParsedPromptFields& out) {
         }
         if (type != "namespace") {
             bad_request("tool type '" + type +
-                            "' requires an executor that NInfer does not provide",
+                            "' requires an executor that FrInfer does not provide",
                         "tools", "tool_type_not_supported");
         }
 
-        // OpenAI Responses beta groups functions/custom tools under a namespace. NInfer lowers
+        // OpenAI Responses beta groups functions/custom tools under a namespace. FrInfer lowers
         // only nested functions because custom tools require unsupported free-form decoding.
         reject_nonnull_unknown_members(item, namespace_members, "tools");
         const std::string namespace_name = require_namespace_tool_name(item);

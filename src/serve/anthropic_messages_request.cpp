@@ -116,7 +116,7 @@ ninfer::product::media_acquire::Source parse_image_source(const Json& block) {
         return result;
     }
     if (type == "file") {
-        bad_request("image file sources require an Anthropic Files API, which NInfer does not "
+        bad_request("image file sources require an Anthropic Files API, which FrInfer does not "
                     "provide",
                     "messages", "files_not_supported");
     }
@@ -280,15 +280,15 @@ std::vector<ParsedUserBlock> parse_user_blocks(const Json& content) {
         } else if (type == "tool_result") {
             result.emplace_back(parse_tool_result(block));
         } else if (type == "document") {
-            bad_request("document blocks require document and citation semantics that NInfer does "
+            bad_request("document blocks require document and citation semantics that FrInfer does "
                         "not provide",
                         "messages", "documents_not_supported");
         } else if (type == "search_result") {
-            bad_request("search_result blocks require source and citation semantics that NInfer "
+            bad_request("search_result blocks require source and citation semantics that FrInfer "
                         "does not provide",
                         "messages", "search_results_not_supported");
         } else if (is_server_tool_block(type)) {
-            bad_request("server tool result blocks require an executor that NInfer does not "
+            bad_request("server tool result blocks require an executor that FrInfer does not "
                         "provide",
                         "messages", "server_tools_not_supported");
         } else {
@@ -316,7 +316,7 @@ ChatTurn parse_assistant_blocks(const Json& content) {
             }
             const std::string thinking =
                 require_string(block, "thinking", "messages", "thinking block");
-            // NInfer has no encrypted reasoning state to restore. The wire signature is therefore
+            // FrInfer has no encrypted reasoning state to restore. The wire signature is therefore
             // intentionally outside the lowered request; only visible Thinking reaches the model.
             assistant.reasoning_content += thinking;
         } else if (type == "redacted_thinking") {
@@ -335,7 +335,7 @@ ChatTurn parse_assistant_blocks(const Json& content) {
                 // flattened assistant turn. It is advisory, so execution continues without it.
             }
         } else if (is_server_tool_block(type)) {
-            bad_request("server tool content blocks require an executor that NInfer does not "
+            bad_request("server tool content blocks require an executor that FrInfer does not "
                         "provide",
                         "messages", "server_tools_not_supported");
         } else {
@@ -788,13 +788,13 @@ void lower_tools(const Json& body, GenerationRequest& request) {
         if (std::none_of(definitions.begin(), definitions.end(), named)) {
             bad_request("tool_choice references unknown tool: " + selection.name, "tool_choice");
         }
-        bad_request("tool_choice.type='tool' requires that exact tool to be called, which NInfer "
+        bad_request("tool_choice.type='tool' requires that exact tool to be called, which FrInfer "
                     "cannot guarantee",
                     "tool_choice", "tool_choice_not_supported");
     }
     if (selection.kind == ToolSelectionKind::Any) {
         if (definitions.empty()) { bad_request("tool_choice requires tools", "tool_choice"); }
-        bad_request("tool_choice.type='any' requires at least one tool call, which NInfer cannot "
+        bad_request("tool_choice.type='any' requires at least one tool call, which FrInfer cannot "
                     "guarantee",
                     "tool_choice", "tool_choice_not_supported");
     }
@@ -812,36 +812,36 @@ void lower_tools(const Json& body, GenerationRequest& request) {
 
     for (ParsedTool& tool : definitions) {
         if (tool.source == ToolSource::Toolset) {
-            bad_request("Anthropic toolsets require a tool loader that NInfer does not provide",
+            bad_request("Anthropic toolsets require a tool loader that FrInfer does not provide",
                         "tools", "toolsets_not_supported");
         }
         if (tool.source == ToolSource::AnthropicProvided) {
             bad_request("Anthropic-provided tool type '" + tool.source_type +
                             "' requires its predefined prompt schema or server executor, which "
-                            "NInfer does not provide",
+                            "FrInfer does not provide",
                         "tools", "anthropic_tools_not_supported");
         }
         if (tool.strict) {
             bad_request("strict=true requires generated tool input to satisfy the declared JSON "
-                        "Schema, which NInfer cannot guarantee",
+                        "Schema, which FrInfer cannot guarantee",
                         "tools", "strict_tools_not_supported");
         }
         if (tool.defer_loading) {
-            bad_request("defer_loading=true requires a deferred tool loader that NInfer does not "
+            bad_request("defer_loading=true requires a deferred tool loader that FrInfer does not "
                         "provide",
                         "tools", "deferred_tools_not_supported");
         }
         if (tool.allowed_callers &&
             std::find(tool.allowed_callers->begin(), tool.allowed_callers->end(), "direct") ==
                 tool.allowed_callers->end()) {
-            bad_request("tool allowed_callers excludes direct model calls, and NInfer provides no "
+            bad_request("tool allowed_callers excludes direct model calls, and FrInfer provides no "
                         "alternate caller",
                         "tools", "tool_caller_not_supported");
         }
         request.tools.push_back(std::move(tool.definition));
     }
     if (selection.disable_parallel && !request.tools.empty()) {
-        bad_request("disable_parallel_tool_use=true requires at most one tool call, which NInfer "
+        bad_request("disable_parallel_tool_use=true requires at most one tool call, which FrInfer "
                     "cannot guarantee",
                     "tool_choice", "parallel_tool_use_not_supported");
     }
@@ -887,7 +887,7 @@ void parse_thinking(const Json& body, GenerationRequest& request, ParsePurpose p
         }
         if (purpose == ParsePurpose::Messages && display == "omitted") {
             bad_request("thinking.display='omitted' requires encrypted hidden-reasoning restore "
-                        "semantics that NInfer does not provide",
+                        "semantics that FrInfer does not provide",
                         "thinking", "thinking_display_not_supported");
         }
     }
@@ -899,7 +899,7 @@ void parse_effort(const Json& body, GenerationRequest& request, ParsePurpose pur
     if (!config.is_object()) { bad_request("output_config must be an object", "output_config"); }
     if (purpose == ParsePurpose::Messages && config.contains("format") &&
         !config.at("format").is_null()) {
-        bad_request("output_config.format requires constrained decoding, which NInfer does not "
+        bad_request("output_config.format requires constrained decoding, which FrInfer does not "
                     "provide",
                     "output_config.format", "output_config_format_not_supported");
     }
@@ -1024,7 +1024,7 @@ void parse_common_prompt(const Json& body, GenerationRequest& request, ParsePurp
     parse_effort(body, request, purpose);
     apply_anthropic_prompt_cache_policy(body, request);
     if (body.contains("container") && !body.at("container").is_null()) {
-        bad_request("container requires an external execution environment that NInfer does not "
+        bad_request("container requires an external execution environment that FrInfer does not "
                     "provide",
                     "container", "container_not_supported");
     }
@@ -1055,7 +1055,7 @@ AnthropicMessagesRequest parse_anthropic_messages_request(const Json& body,
     if (max_tokens) {
         result.output_tokens_explicit = true;
         if (*max_tokens == 0) {
-            bad_request("max_tokens=0 requires a completed cache prewarm lifecycle that NInfer "
+            bad_request("max_tokens=0 requires a completed cache prewarm lifecycle that FrInfer "
                         "does not provide",
                         "max_tokens", "cache_prewarm_not_supported");
         }

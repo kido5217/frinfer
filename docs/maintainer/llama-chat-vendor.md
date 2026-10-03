@@ -3,10 +3,10 @@
 How `third_party/llama-chat/` — the parser-only port of llama.cpp's chat stack — is kept current
 with upstream [ggml-org/llama.cpp](https://github.com/ggml-org/llama.cpp). The recorded baseline,
 the file map and every compat adaptation live in
-[`third_party/llama-chat/README.ninfer.md`](../../third_party/llama-chat/README.ninfer.md); that
+[`third_party/llama-chat/README.frinfer.md`](../../third_party/llama-chat/README.frinfer.md); that
 README is the authority for *what* is vendored, this document for *how* it is refreshed. The port
-itself is recorded on wayfinder map [#25](https://github.com/kido5217/ninfer-yarn/issues/25)
-(design [#28](https://github.com/kido5217/ninfer-yarn/issues/28)).
+itself is recorded on wayfinder map [#25](https://github.com/kido5217/frinfer/issues/25)
+(design [#28](https://github.com/kido5217/frinfer/issues/28)).
 
 ## Ground rules
 
@@ -72,7 +72,7 @@ the procedure below, then re-arm the note with the new baseline.
   `ctest --test-dir build -R 'llama_chat|chat_pars|frontend'`: the vendor smoke, the 48-vector
   corpus (`tests/fixtures/chat_parsing/corpus.json`, the semantic authority) and the frontend
   fixtures.
-- The port's deliberate overrides must survive: the [#35](https://github.com/kido5217/ninfer-yarn/issues/35)
+- The port's deliberate overrides must survive: the [#35](https://github.com/kido5217/frinfer/issues/35)
   recovery layer (no silent *drop tail*) and the two-layer B1 framing are behavior the upstream
   baseline does **not** provide — the corpus catches a regression; never "simplify" toward
   upstream.
