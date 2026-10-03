@@ -108,8 +108,46 @@ common_peg_arena build_region_arena(const ChatParseWireFormat& format) {
     });
 }
 
+// Second-chance region grammar (ADR-0002, M2). Parameter values are raw bytes up to a
+// newline-framed close — the upstream llama.cpp delimiter rule — so an inline `<parameter=` /
+// `</parameter>` fragment inside a value is ordinary text. The strict arena stays first, so a
+// region it accepts keeps the balanced-nested value representation; this arena is tried only
+// after the strict arena rejects a candidate. The value rule leaves the framing newline inside
+// the delimiter, so `value` excludes it and B6 still strips the leading framing newline.
+common_peg_arena build_raw_region_arena(const ChatParseWireFormat& format) {
+    const std::string parameter_open(format.parameter_open);
+    const std::string parameter_close(format.parameter_close);
+    const std::string raw_close = "\n" + parameter_close;
+    const std::string function_open(format.function_open);
+    const std::string function_close(format.function_close);
+    const std::string tool_open(format.tool_call_open);
+    const std::string tool_close(format.tool_call_close);
+    return build_chat_peg_parser([&](common_chat_peg_builder& p) {
+        auto format_ws      = p.chars("[ \t\r\n]", 0, -1);
+        auto function_name  = p.rule(kRuleFunctionName, p.chars("[^<>]", 1, -1));
+        auto parameter_name = p.rule(kRuleParameterName, p.chars("[^<>]", 1, -1));
+        auto value          = p.rule(kRuleParameterValue, p.until(raw_close));
+        auto parameter      = p.rule(kRuleParameter, p.literal(parameter_open) + parameter_name +
+                                                           ">" + value + p.literal(raw_close));
+        auto function =
+            p.rule(kRuleFunction, p.literal(function_open) + function_name + ">" + format_ws +
+                                      p.zero_or_more(format_ws + parameter) + format_ws +
+                                      p.literal(function_close));
+        auto call = p.rule(kRuleToolCall, p.literal(tool_open) + format_ws + function + format_ws +
+                                              p.optional(p.literal(tool_close)));
+        return format_ws + p.optional(call + p.zero_or_more(format_ws + call)) + format_ws +
+               p.end();
+    });
+}
+
 const common_peg_arena& region_arena() {
     static const common_peg_arena arena = build_region_arena(ChatParseWireFormat::qwen3_5());
+    return arena;
+}
+
+const common_peg_arena& raw_region_arena() {
+    static const common_peg_arena arena =
+        build_raw_region_arena(ChatParseWireFormat::qwen3_5());
     return arena;
 }
 
@@ -123,52 +161,80 @@ struct RawToolCall {
     std::vector<RawParameter> parameters;
 };
 
-// Walks the region AST: direct children of the root are calls, direct children of a call are its
-// function, and direct children of a parameter are its name and raw value bytes. Nested parameter
-// markup lives inside the value node and is deliberately left there.
+// Reads one completed call node: direct children of a call are its function, direct children of a
+// parameter are its name and raw value bytes. Nested parameter markup lives inside the value node
+// and is deliberately left there.
+RawToolCall read_call(const common_peg_ast_arena& ast, const common_peg_ast_node& call_node) {
+    RawToolCall call;
+    for (const common_peg_ast_id function_id : call_node.children) {
+        const common_peg_ast_node& function_node = ast.get(function_id);
+        if (function_node.rule != kRuleFunction) { continue; }
+        for (const common_peg_ast_id member_id : function_node.children) {
+            const common_peg_ast_node& member = ast.get(member_id);
+            if (member.rule == kRuleFunctionName) {
+                call.name.assign(member.text);
+            } else if (member.rule == kRuleParameter) {
+                RawParameter parameter;
+                for (const common_peg_ast_id argument_id : member.children) {
+                    const common_peg_ast_node& argument = ast.get(argument_id);
+                    if (argument.rule == kRuleParameterName) {
+                        parameter.name.assign(argument.text);
+                    } else if (argument.rule == kRuleParameterValue) {
+                        parameter.value.assign(argument.text);
+                    }
+                }
+                call.parameters.push_back(std::move(parameter));
+            }
+        }
+    }
+    return call;
+}
+
+// Walks the region AST: direct children of the root are calls.
 bool collect_calls(const common_peg_ast_arena& ast, const common_peg_parse_result& result,
                    std::vector<RawToolCall>& calls) {
     calls.clear();
     for (const common_peg_ast_id call_id : result.nodes) {
         const common_peg_ast_node& call_node = ast.get(call_id);
         if (call_node.rule != kRuleToolCall) { continue; }
-
-        RawToolCall call;
-        for (const common_peg_ast_id function_id : call_node.children) {
-            const common_peg_ast_node& function_node = ast.get(function_id);
-            if (function_node.rule != kRuleFunction) { continue; }
-            for (const common_peg_ast_id member_id : function_node.children) {
-                const common_peg_ast_node& member = ast.get(member_id);
-                if (member.rule == kRuleFunctionName) {
-                    call.name.assign(member.text);
-                } else if (member.rule == kRuleParameter) {
-                    RawParameter parameter;
-                    for (const common_peg_ast_id argument_id : member.children) {
-                        const common_peg_ast_node& argument = ast.get(argument_id);
-                        if (argument.rule == kRuleParameterName) {
-                            parameter.name.assign(argument.text);
-                        } else if (argument.rule == kRuleParameterValue) {
-                            parameter.value.assign(argument.text);
-                        }
-                    }
-                    call.parameters.push_back(std::move(parameter));
-                }
-            }
-        }
-        calls.push_back(std::move(call));
+        calls.push_back(read_call(ast, call_node));
     }
     return !calls.empty();
 }
 
-// Parses one candidate region: it must parse and consume the region to its end.
-FallbackReason parse_candidate_region(std::string_view region, std::vector<RawToolCall>& calls) {
-    common_peg_parse_context context(std::string(region), COMMON_PEG_PARSE_FLAG_NONE);
-    const common_peg_parse_result result = region_arena().parse(context);
-    if (!result.success() || result.end != context.input.size()) {
-        return FallbackReason::MalformedStructure;
+// Salvage scan over a failed parse (ADR-0002, M1): the arena retains every node the parse
+// completed before the failure, so a call node that is not partial is a structurally complete
+// call, and a function-name node is evidence that a call was attempted. A failed rule creates no
+// node of its own, which is exactly the "name + all parameters closed + `</function>`" boundary:
+// an unterminated parameter or function leaves no call node behind.
+struct PartialScan {
+    bool call_attempted      = false;
+    bool has_complete_call   = false;
+    std::size_t complete_end = 0; // relative to the parsed region; the furthest call end
+    std::vector<RawToolCall> calls;
+};
+
+PartialScan scan_complete_calls(const common_peg_ast_arena& ast) {
+    PartialScan scan;
+    std::vector<const common_peg_ast_node*> complete_calls;
+    for (common_peg_ast_id id = 0; id < ast.size(); ++id) {
+        const common_peg_ast_node& node = ast.get(id);
+        if (node.rule == kRuleFunctionName) {
+            scan.call_attempted = true;
+        } else if (node.rule == kRuleToolCall && !node.is_partial) {
+            complete_calls.push_back(&node);
+        }
     }
-    if (!collect_calls(context.ast, result, calls)) { return FallbackReason::MalformedStructure; }
-    return FallbackReason::None;
+    std::sort(complete_calls.begin(), complete_calls.end(),
+              [](const common_peg_ast_node* left, const common_peg_ast_node* right) {
+                  return left->start < right->start;
+              });
+    for (const common_peg_ast_node* node : complete_calls) {
+        scan.calls.push_back(read_call(ast, *node));
+        scan.complete_end      = std::max(scan.complete_end, node->end);
+        scan.has_complete_call = true;
+    }
+    return scan;
 }
 
 // ---------------------------------------------------------------- value normalization (B6)
@@ -204,6 +270,126 @@ const Contract::Parameter* find_parameter_contract(const Contract::Tool& tool,
         std::find_if(tool.parameters.begin(), tool.parameters.end(),
                      [&](const auto& candidate) { return candidate.name == parameter_name; });
     return parameter == tool.parameters.end() ? nullptr : &*parameter;
+}
+
+// B5 adapter checks: structure is already settled; these decide whether the parsed calls are
+// servable. A repeated parameter is representable only when its raw value bytes equal the first
+// occurrence's (the #42 merge); differing bytes stay fail-closed.
+FallbackReason apply_adapter_checks(std::vector<RawToolCall>& calls, const Contract& contract,
+                                    std::size_t max_name_length, std::size_t& merged_arguments) {
+    merged_arguments = 0;
+    for (const RawToolCall& call : calls) {
+        if (!valid_function_name(call.name, max_name_length)) {
+            return FallbackReason::InvalidToolName;
+        }
+    }
+    if (contract.enforce_declared_names) {
+        for (const RawToolCall& call : calls) {
+            if (find_tool_contract(contract, call.name) == nullptr) {
+                return FallbackReason::UndeclaredTool;
+            }
+        }
+    }
+    for (RawToolCall& call : calls) {
+        std::vector<RawParameter> merged;
+        merged.reserve(call.parameters.size());
+        for (RawParameter& parameter : call.parameters) {
+            const auto kept = std::find_if(merged.begin(), merged.end(),
+                                           [&parameter](const RawParameter& candidate) {
+                                               return candidate.name == parameter.name;
+                                           });
+            if (kept == merged.end()) {
+                merged.push_back(std::move(parameter));
+                continue;
+            }
+            if (kept->value != parameter.value) {
+                return FallbackReason::DuplicateParameter;
+            }
+            ++merged_arguments;
+        }
+        call.parameters = std::move(merged);
+    }
+    return FallbackReason::None;
+}
+
+// One candidate's analysis: the strict accept, the raw-value second chance (ADR-0002, M2), and
+// the salvage scan over the failing parse (ADR-0002, M1).
+struct CandidateAnalysis {
+    bool accepted               = false;
+    std::vector<RawToolCall> accepted_calls;
+    std::size_t accepted_merged = 0;
+    FallbackReason failure      = FallbackReason::MalformedStructure;
+    bool call_attempted         = false;
+    bool has_complete_call      = false;
+    std::size_t complete_end    = 0;
+    std::vector<RawToolCall> complete_calls;
+};
+
+CandidateAnalysis analyse_candidate(std::string_view candidate, const Contract& contract,
+                                    std::size_t max_name_length) {
+    CandidateAnalysis analysis;
+
+    const auto keep_complete = [&analysis](const PartialScan& scan) {
+        if (!scan.has_complete_call) { return; }
+        if (analysis.has_complete_call && scan.complete_end <= analysis.complete_end) { return; }
+        analysis.has_complete_call = true;
+        analysis.complete_end      = scan.complete_end;
+        analysis.complete_calls    = scan.calls;
+    };
+
+    // Strict arena first: a region it accepts keeps the balanced-nested value representation.
+    {
+        common_peg_parse_context context(std::string(candidate), COMMON_PEG_PARSE_FLAG_NONE);
+        const common_peg_parse_result result = region_arena().parse(context);
+        if (result.success() && result.end == context.input.size()) {
+            std::vector<RawToolCall> calls;
+            if (!collect_calls(context.ast, result, calls)) {
+                analysis.failure = FallbackReason::MalformedStructure;
+                return analysis;
+            }
+            analysis.call_attempted = true;
+            const FallbackReason failure =
+                apply_adapter_checks(calls, contract, max_name_length, analysis.accepted_merged);
+            if (failure == FallbackReason::None) {
+                analysis.accepted       = true;
+                analysis.accepted_calls = std::move(calls);
+            } else {
+                analysis.failure = failure;
+            }
+            return analysis;
+        }
+        const PartialScan scan  = scan_complete_calls(context.ast);
+        analysis.call_attempted = scan.call_attempted;
+        keep_complete(scan);
+    }
+
+    // Raw-value second chance: the strict arena rejected the candidate, so try the upstream
+    // delimiter rule before giving up on it.
+    {
+        common_peg_parse_context context(std::string(candidate), COMMON_PEG_PARSE_FLAG_NONE);
+        const common_peg_parse_result result = raw_region_arena().parse(context);
+        if (result.success() && result.end == context.input.size()) {
+            std::vector<RawToolCall> calls;
+            if (collect_calls(context.ast, result, calls)) {
+                analysis.call_attempted = true;
+                std::size_t merged      = 0;
+                const FallbackReason failure =
+                    apply_adapter_checks(calls, contract, max_name_length, merged);
+                if (failure == FallbackReason::None) {
+                    analysis.accepted        = true;
+                    analysis.accepted_calls  = std::move(calls);
+                    analysis.accepted_merged = merged;
+                } else {
+                    analysis.failure = failure;
+                }
+                return analysis;
+            }
+        }
+        const PartialScan scan = scan_complete_calls(context.ast);
+        analysis.call_attempted = analysis.call_attempted || scan.call_attempted;
+        keep_complete(scan);
+    }
+    return analysis;
 }
 
 std::string_view remove_parameter_framing_newlines(std::string_view text) {
@@ -466,72 +652,70 @@ void resolve_tool_region(ParseState& state, const ParseContext& context, const C
 
     FallbackReason first_failure = FallbackReason::MalformedStructure;
     bool failure_recorded        = false;
+    bool call_attempted          = false;
     std::size_t accepted         = std::string_view::npos;
     std::size_t accepted_merged  = 0;
     std::vector<RawToolCall> accepted_calls;
 
+    // The salvage fallback (ADR-0002, M1): when no candidate consumes the region to its end, the
+    // furthest-consumed structurally complete call is emitted with its trailing bytes as content.
+    struct SalvageSelection {
+        bool found            = false;
+        std::size_t candidate = 0;
+        std::size_t end       = 0;
+        std::vector<RawToolCall> calls;
+    } salvage;
+
     for (std::size_t candidate = region.find(tool_open); candidate != std::string_view::npos;
          candidate             = region.find(tool_open, candidate + 1)) {
-        std::vector<RawToolCall> calls;
-        std::size_t merged_arguments = 0;
-        FallbackReason failure       = parse_candidate_region(region.substr(candidate), calls);
-        if (failure == FallbackReason::None) {
-            // Structure first, then the declared-name policy, then the parameters (B5).
-            for (const RawToolCall& call : calls) {
-                if (!valid_function_name(call.name, max_name_length)) {
-                    failure = FallbackReason::InvalidToolName;
-                    break;
-                }
-            }
-            if (failure == FallbackReason::None && contract.enforce_declared_names) {
-                for (const RawToolCall& call : calls) {
-                    if (find_tool_contract(contract, call.name) == nullptr) {
-                        failure = FallbackReason::UndeclaredTool;
-                        break;
-                    }
-                }
-            }
-            if (failure == FallbackReason::None) {
-                // A repeated parameter is representable only when its raw value bytes equal the
-                // first occurrence's: the repeat collapses into one argument (first occurrence
-                // position kept) and the call is served. Differing bytes are a conflicting repeat
-                // and stay fail-closed (B5).
-                for (RawToolCall& call : calls) {
-                    std::vector<RawParameter> merged;
-                    merged.reserve(call.parameters.size());
-                    for (RawParameter& parameter : call.parameters) {
-                        const auto kept = std::find_if(merged.begin(), merged.end(),
-                                                       [&parameter](const RawParameter& candidate) {
-                                                           return candidate.name == parameter.name;
-                                                       });
-                        if (kept == merged.end()) {
-                            merged.push_back(std::move(parameter));
-                            continue;
-                        }
-                        if (kept->value != parameter.value) {
-                            failure = FallbackReason::DuplicateParameter;
-                            break;
-                        }
-                        ++merged_arguments;
-                    }
-                    if (failure != FallbackReason::None) { break; }
-                    call.parameters = std::move(merged);
-                }
-            }
-        }
-        if (failure == FallbackReason::None) {
+        CandidateAnalysis analysis =
+            analyse_candidate(region.substr(candidate), contract, max_name_length);
+        call_attempted = call_attempted || analysis.call_attempted;
+        if (analysis.accepted) {
             accepted        = candidate;
-            accepted_merged = merged_arguments;
-            accepted_calls  = std::move(calls);
+            accepted_merged = analysis.accepted_merged;
+            accepted_calls  = std::move(analysis.accepted_calls);
             break;
         }
         if (!failure_recorded) {
-            first_failure    = failure;
+            first_failure    = analysis.failure;
             failure_recorded = true;
+        }
+        if (analysis.has_complete_call) {
+            const std::size_t absolute_end = candidate + analysis.complete_end;
+            if (!salvage.found || absolute_end > salvage.end) {
+                salvage.found     = true;
+                salvage.candidate = candidate;
+                salvage.end       = absolute_end;
+                salvage.calls     = std::move(analysis.complete_calls);
+            }
         }
     }
 
-    state.diagnostics.marker_seen = true;
+    state.diagnostics.marker_seen    = true;
+    state.diagnostics.call_attempted = call_attempted;
+
+    if (accepted == std::string_view::npos && salvage.found) {
+        std::size_t merged_arguments = 0;
+        const FallbackReason failure =
+            apply_adapter_checks(salvage.calls, contract, max_name_length, merged_arguments);
+        if (failure == FallbackReason::None) {
+            publish(state.content, rtrim_format_whitespace(region.substr(0, salvage.candidate)));
+            publish(state.content, region.substr(salvage.end));
+            state.diagnostics.structured_call_count =
+                static_cast<std::uint32_t>(salvage.calls.size());
+            state.diagnostics.salvaged_calls += static_cast<std::uint32_t>(salvage.calls.size());
+            state.diagnostics.duplicate_arguments_merged +=
+                static_cast<std::uint32_t>(merged_arguments);
+            for (const RawToolCall& raw : salvage.calls) {
+                state.tool_calls.push_back(
+                    normalize_raw_tool_call(raw, contract, state.diagnostics));
+            }
+            return;
+        }
+        first_failure = failure;
+    }
+
     if (accepted == std::string_view::npos) {
         // No candidate qualifies: the whole region is ordinary content (B2).
         publish(state.content, region);
@@ -746,7 +930,10 @@ ChatParseCore::~ChatParseCore()                                   = default;
 ChatParseCore::ChatParseCore(ChatParseCore&&) noexcept            = default;
 ChatParseCore& ChatParseCore::operator=(ChatParseCore&&) noexcept = default;
 
-void ChatParseCore::warm_up() { (void)region_arena(); }
+void ChatParseCore::warm_up() {
+    (void)region_arena();
+    (void)raw_region_arena();
+}
 
 void ChatParseCore::begin_preview() {
     Impl& impl = *impl_;

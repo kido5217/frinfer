@@ -12,6 +12,7 @@
 
 #include <cstdint>
 #include <cstdio>
+#include <exception>
 #include <fstream>
 #include <map>
 #include <memory>
@@ -28,7 +29,7 @@ using ninfer::ToolCallParseDiagnostics;
 using ninfer::ToolCallParseFallbackReason;
 using ninfer::tool_call_parse_fallback_reason_name;
 
-constexpr std::size_t kExpectedVectorCount = 42;
+constexpr std::size_t kExpectedVectorCount = 46;
 
 int g_failures = 0;
 
@@ -85,8 +86,12 @@ void check_diagnostics(const ToolCallParseDiagnostics& actual, const ordered_jso
         const std::string context = vector_id + ": diagnostics." + key;
         if (key == "marker_seen") {
             check(actual.marker_seen == value.get<bool>(), context);
+        } else if (key == "call_attempted") {
+            check(actual.call_attempted == value.get<bool>(), context);
         } else if (key == "structured_call_count") {
             check(actual.structured_call_count == value.get<std::uint32_t>(), context);
+        } else if (key == "salvaged_calls") {
+            check(actual.salvaged_calls == value.get<std::uint32_t>(), context);
         } else if (key == "empty_arguments_omitted") {
             check(actual.empty_arguments_omitted == value.get<std::uint32_t>(), context);
         } else if (key == "schema_mismatch_arguments") {
@@ -256,6 +261,93 @@ void run_vector(const ordered_json& vector, const std::map<std::string, ordered_
     check(core.finished(), vector_id + ": terminal state");
 }
 
+// ADR-0002 (#149), upstream's prefix-stability methodology (llama.cpp
+// tests/test-chat.cpp:1122-1218): every prefix of every corpus feed must parse without throwing,
+// and feeding byte by byte must reconstruct exactly the single-feed terminal state. Vectors
+// carrying a frontend control expectation are skipped (their semantics are deferred to the
+// frontend integration).
+void run_prefix_stability(const ordered_json& vector,
+                          const std::map<std::string, ordered_json>& tools) {
+    const std::string vector_id = vector.at("id").get<std::string>();
+    std::string whole;
+    for (const auto& round : vector.at("rounds")) {
+        if (round.contains("control")) { return; }
+        whole += round.at("feed").get<std::string>();
+    }
+    if (whole.empty()) { return; }
+
+    auto contract = contract_for(vector, tools, vector_id);
+    if (contract == nullptr) { return; }
+    ChatParseOptions options;
+    options.thinking_enabled     = vector.value("thinking", false);
+    options.tool_name_max_length = 64;
+
+    const ordered_json& rounds = vector.at("rounds");
+    struct RunResult {
+        std::string reasoning;
+        std::string content;
+        std::vector<GeneratedToolCall> calls;
+        ToolCallParseDiagnostics diagnostics;
+        bool finished = false;
+    };
+    const auto run = [&](bool byte_wise) -> RunResult {
+        RunResult result;
+        ChatParseCore core(contract, options);
+        const auto feed = [&](std::string_view text) {
+            core.begin_preview();
+            const ChatParseResult fed = core.preview_feed(text);
+            core.commit();
+            result.reasoning += fed.reasoning_delta;
+            result.content += fed.content_delta;
+        };
+        if (byte_wise) {
+            for (const char byte : whole) { feed(std::string_view(&byte, 1)); }
+        } else {
+            for (const auto& round : rounds) { feed(round.at("feed").get<std::string>()); }
+        }
+        core.begin_preview();
+        const ChatParseResult terminal = core.preview_finish();
+        core.commit();
+        result.reasoning += terminal.reasoning_delta;
+        result.content += terminal.content_delta;
+        result.calls       = core.tool_calls();
+        result.diagnostics = core.diagnostics();
+        result.finished    = core.finished();
+        return result;
+    };
+
+    // Reference: the vector's own round boundaries (the corpus contract). Note that the core is
+    // bound at the whitespace/marker boundary by design (B1 withholds the framing run only when it
+    // shares the held buffer with the marker), so a single merged feed is NOT the reference.
+    RunResult reference;
+    try {
+        reference = run(false);
+    } catch (const std::exception& exception) {
+        check(false, vector_id + ": round-wise run threw", exception.what());
+        return;
+    }
+    RunResult incremental;
+    try {
+        incremental = run(true);
+    } catch (const std::exception& exception) {
+        check(false, vector_id + ": byte-wise prefix feed threw", exception.what());
+        return;
+    }
+
+    check(incremental.reasoning == reference.reasoning, vector_id + ": prefix reasoning differs");
+    check(incremental.content == reference.content, vector_id + ": prefix content differs");
+    check(incremental.finished == reference.finished, vector_id + ": prefix terminal state differs");
+    check(incremental.diagnostics == reference.diagnostics,
+          vector_id + ": prefix diagnostics differ");
+    bool calls_match = incremental.calls.size() == reference.calls.size();
+    for (std::size_t index = 0; calls_match && index < reference.calls.size(); ++index) {
+        calls_match = incremental.calls[index].name == reference.calls[index].name &&
+                      incremental.calls[index].arguments_json ==
+                          reference.calls[index].arguments_json;
+    }
+    check(calls_match, vector_id + ": prefix tool calls differ");
+}
+
 } // namespace
 
 int main() {
@@ -279,6 +371,7 @@ int main() {
               std::to_string(vectors.size()));
 
     for (const auto& vector : vectors) { run_vector(vector, tools); }
+    for (const auto& vector : vectors) { run_prefix_stability(vector, tools); }
 
     if (g_failures == 0) {
         std::printf("chat parsing corpus: %zu vectors OK\n", vectors.size());

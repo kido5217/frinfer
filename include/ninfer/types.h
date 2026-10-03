@@ -344,10 +344,16 @@ tool_call_parse_fallback_reason_name(ToolCallParseFallbackReason reason) noexcep
 
 struct ToolCallParseDiagnostics {
     bool marker_seen                            = false;
+    // A candidate parse formed a function-name element: evidence that a call was attempted. It is
+    // consulted only together with a non-None fallback (the serve-side signal condition).
+    bool call_attempted                         = false;
     std::uint32_t structured_call_count         = 0;
     std::uint32_t empty_arguments_omitted       = 0;
     std::uint32_t schema_mismatch_arguments     = 0;
     std::uint32_t duplicate_arguments_merged    = 0;
+    // Calls recovered by partial-AST salvage: structurally complete calls in a region that did not
+    // consume to its end (ADR-0002).
+    std::uint32_t salvaged_calls                = 0;
     ToolCallParseFallbackReason fallback_reason = ToolCallParseFallbackReason::None;
 
     [[nodiscard]] friend constexpr bool

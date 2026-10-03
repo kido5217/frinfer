@@ -937,7 +937,7 @@ in append mode and flushes every event, so successive model or MTP blocks may sh
 file. The parent directory must already exist. Failure to open the file aborts startup; the log path
 is also rejected if it resolves to the model artifact.
 
-Every line is one `ninfer_serve_request_log` schema-v22 JSON object. All events carry
+Every line is one `ninfer_serve_request_log` schema-v23 JSON object. All events carry
 `timestamp_unix_ms` and a process-unique `server_instance_id`; request IDs are monotonic only within
 that server instance. Successful request-start records include request-scoped acquisition,
 media-preprocessing wall/work, tokenizer, cache hit/miss/single-flight, and payload-size fields;
@@ -955,12 +955,15 @@ they do not infer request behavior from process-global counter deltas.
 `requested_reasoning_effort` and `preserve_thinking` record the explicit options, or `null` when
 unspecified. `enable_thinking` records whether the response starts in thinking mode.
 
-`request_done.result.tool_call_parse` records whether a complete marker was seen, the structured
-call count, empty non-string arguments omitted during normalization, byte-identical repeated
-arguments merged away, schema-mismatched arguments preserved for consumer validation, and a stable
-text-fallback reason. Fallback reasons are `none`, `malformed_structure`, `duplicate_parameter` (a
-repeated parameter with differing value bytes), `invalid_tool_name`, `undeclared_tool`, and
-`trailing_content`. These counters contain no tool arguments or generated text.
+`request_done.result.tool_call_parse` records whether a complete marker was seen, whether a
+candidate parse formed a function name (`call_attempted`; with a non-`none` fallback this is the
+serve-side demotion signal condition), the structured call count, calls recovered by partial-AST
+salvage from a region that did not consume to its end (`salvaged_calls`), empty non-string
+arguments omitted during normalization, byte-identical repeated arguments merged away,
+schema-mismatched arguments preserved for consumer validation, and a stable text-fallback reason.
+Fallback reasons are `none`, `malformed_structure`, `duplicate_parameter` (a repeated parameter
+with differing value bytes), `invalid_tool_name`, `undeclared_tool`, and `trailing_content`. These
+counters contain no tool arguments or generated text.
 
 `request_done.timings_seconds` contains `prepare`, `ttft`, `vision`, `prefill`, `decode`, and `total`
 as full-precision JSON numbers. Its `speculative` object contains `backend`, `draft_window`, `rounds`,

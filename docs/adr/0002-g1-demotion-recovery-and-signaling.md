@@ -18,9 +18,10 @@ llama.cpp engine, plus a client-visible, retryable signal for residual call loss
 
 **Recovery** (parse/recovery only; no serve-side generation-time constraint):
 
-- Port llama.cpp's lenient truncation typing (`need_more_input` vs `fail`) and partial-AST
-  salvage into `chat_parse_core`, reusing the vendored engine's LENIENT machinery — zero
-  `third_party/` changes.
+- Salvage structurally complete calls from a region that fails to consume to its end, reusing the
+  vendored engine's retained parse nodes: the strict parse keeps every node it completed before
+  the failure (a failed rule creates no node of its own), so a completed call node is exactly the
+  "name + all parameters closed + `</function>`" criterion. Zero `third_party/` changes.
 - Adopt upstream's raw-value rule as a **second-chance parse**: when the strict region grammar
   rejects a candidate, re-parse it with parameter values as raw bytes up to a newline-framed
   close. Strict-first keeps the balanced-nested representation.
@@ -89,3 +90,9 @@ llama.cpp engine, plus a client-visible, retryable signal for residual call loss
   aggregate `content` keeps the demoted bytes, so CLI/bench behavior is unchanged.
 - Deployment (nixos-configs pin bump + unit restart) remains the human's step; a post-deployment
   reaction e2e is optional.
+
+Implementation note (2026-10-03, #149): the LENIENT `need_more_input` vs `fail` typing was dropped
+as a vehicle: the retained-completed-node scan above gives the structurally-complete-call
+criterion directly, and no consumer branches on bound-cut-vs-malformed. Taking a LENIENT pass would
+also have contradicted the B3 optional-close tolerance, because a `</tool_call>` cut mid-literal
+would stop reading as a complete call.
