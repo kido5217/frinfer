@@ -69,7 +69,7 @@ the procedure below, then re-arm the note with the new baseline.
 ## Verification standard
 
 - Build and the host-only parse set, at least
-  `ctest --test-dir build -R 'llama_chat|chat_pars|frontend'`: the vendor smoke, the 46-vector
+  `ctest --test-dir build -R 'llama_chat|chat_pars|frontend'`: the vendor smoke, the 48-vector
   corpus (`tests/fixtures/chat_parsing/corpus.json`, the semantic authority) and the frontend
   fixtures.
 - The port's deliberate overrides must survive: the [#35](https://github.com/kido5217/ninfer-yarn/issues/35)

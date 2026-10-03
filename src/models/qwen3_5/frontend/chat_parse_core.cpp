@@ -117,7 +117,8 @@ common_peg_arena build_region_arena(const ChatParseWireFormat& format) {
 common_peg_arena build_raw_region_arena(const ChatParseWireFormat& format) {
     const std::string parameter_open(format.parameter_open);
     const std::string parameter_close(format.parameter_close);
-    const std::string raw_close = "\n" + parameter_close;
+    const std::string raw_close_lf   = "\n" + parameter_close;
+    const std::string raw_close_crlf = "\r\n" + parameter_close;
     const std::string function_open(format.function_open);
     const std::string function_close(format.function_close);
     const std::string tool_open(format.tool_call_open);
@@ -126,9 +127,10 @@ common_peg_arena build_raw_region_arena(const ChatParseWireFormat& format) {
         auto format_ws      = p.chars("[ \t\r\n]", 0, -1);
         auto function_name  = p.rule(kRuleFunctionName, p.chars("[^<>]", 1, -1));
         auto parameter_name = p.rule(kRuleParameterName, p.chars("[^<>]", 1, -1));
-        auto value          = p.rule(kRuleParameterValue, p.until(raw_close));
-        auto parameter      = p.rule(kRuleParameter, p.literal(parameter_open) + parameter_name +
-                                                           ">" + value + p.literal(raw_close));
+        auto value = p.rule(kRuleParameterValue, p.until_one_of({raw_close_crlf, raw_close_lf}));
+        auto parameter = p.rule(kRuleParameter,
+                                p.literal(parameter_open) + parameter_name + ">" + value +
+                                    (p.literal(raw_close_crlf) | p.literal(raw_close_lf)));
         auto function =
             p.rule(kRuleFunction, p.literal(function_open) + function_name + ">" + format_ws +
                                       p.zero_or_more(format_ws + parameter) + format_ws +
@@ -713,6 +715,9 @@ void resolve_tool_region(ParseState& state, const ParseContext& context, const C
             }
             return;
         }
+        // Fail-closed (B5): an identity or parameter failure on the selected set demotes the
+        // whole region with that class; a weaker later candidate is not substituted, so an
+        // undeclared or conflicting call can never be buried under a servable one.
         first_failure = failure;
     }
 

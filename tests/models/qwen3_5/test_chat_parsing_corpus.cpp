@@ -29,7 +29,7 @@ using ninfer::ToolCallParseDiagnostics;
 using ninfer::ToolCallParseFallbackReason;
 using ninfer::tool_call_parse_fallback_reason_name;
 
-constexpr std::size_t kExpectedVectorCount = 46;
+constexpr std::size_t kExpectedVectorCount = 48;
 
 int g_failures = 0;
 
@@ -318,7 +318,10 @@ void run_prefix_stability(const ordered_json& vector,
 
     // Reference: the vector's own round boundaries (the corpus contract). Note that the core is
     // bound at the whitespace/marker boundary by design (B1 withholds the framing run only when it
-    // shares the held buffer with the marker), so a single merged feed is NOT the reference.
+    // shares the held buffer with the marker), so a single merged feed is NOT the reference. The
+    // byte-wise == round-wise equality is asserted per-corpus shape: a trailing whitespace run
+    // that arrives in an earlier round than its marker is published, and no rtrim compensation
+    // applies when that run is the whole preamble.
     RunResult reference;
     try {
         reference = run(false);

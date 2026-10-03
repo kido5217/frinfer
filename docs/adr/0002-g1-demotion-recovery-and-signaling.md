@@ -29,8 +29,8 @@ llama.cpp engine, plus a client-visible, retryable signal for residual call loss
   never emit truncated arguments and never mutate bytes. Salvage covers prose tails and bound
   cuts alike; when no candidate consumes to end, the furthest-consumed complete-call candidate
   is salvaged (ties → earliest), and it publishes byte-exact without a signal.
-- Classify demotions by whether a call was attempted (some candidate formed a function node);
-  only call loss signals. Prose demotions stay silent byte-exact round-trips.
+- Classify demotions by whether a call was attempted (some candidate formed a function-name
+  element); only call loss signals. Prose demotions stay silent byte-exact round-trips.
 - A turn cut mid-region that leaves no complete call is unsalvageable and signaled;
   `finish_reason` remains `"length"`.
 

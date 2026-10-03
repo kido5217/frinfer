@@ -1973,6 +1973,77 @@
       "basis": [
         "ninfer(ADR-0002 M1: accept before salvage)"
       ]
+    },
+    {
+      "id": "tool-call-raw-crlf-framing",
+      "thinking": false,
+      "tools": [
+        "bash"
+      ],
+      "note": "Added by the ADR-0002 (#149) review fix: CRLF-framed parameters through the raw second chance must not leak the frame's carriage return; the raw delimiter covers `\\r\\n</parameter>` and `\\n</parameter>`, so B6 sees the same clean value as the strict path.",
+      "rounds": [
+        {
+          "feed": "<tool_call>\r\n<function=bash>\r\n<parameter=command>\r\necho <parameter=x ok\r\n</parameter>\r\n</function>\r\n</tool_call>",
+          "content": "",
+          "tool_calls": [
+            {
+              "name": "bash",
+              "arguments": {
+                "command": "echo <parameter=x ok"
+              }
+            }
+          ]
+        }
+      ],
+      "final": {
+        "reasoning": "",
+        "content": "",
+        "tool_calls": [
+          {
+            "name": "bash",
+            "arguments": {
+              "command": "echo <parameter=x ok"
+            }
+          }
+        ],
+        "diagnostics": {
+          "marker_seen": true,
+          "structured_call_count": 1,
+          "salvaged_calls": 0
+        }
+      },
+      "basis": [
+        "ninfer(ADR-0002 M2: raw-value second chance, CRLF frame)"
+      ]
+    },
+    {
+      "id": "tool-call-salvage-adapter-failure-stays-fail-closed",
+      "thinking": false,
+      "tools": [
+        "bash"
+      ],
+      "note": "Added by the ADR-0002 (#149) review fix: when the selected salvage set fails an adapter check (an undeclared call here), the whole region demotes fail-closed with that class; a weaker later servable candidate is not substituted, so the identity failure can never be buried.",
+      "rounds": [
+        {
+          "feed": "<tool_call>\n<function=ghost>\n<parameter=x>\n1\n</parameter>\n</function>\n</tool_call>\n<tool_call>\n<function=bash>\n<parameter=command>\necho ok\n</parameter>\n</function>\n</tool_call>\nstill explaining",
+          "content": "<tool_call>\n<function=ghost>\n<parameter=x>\n1\n</parameter>\n</function>\n</tool_call>\n<tool_call>\n<function=bash>\n<parameter=command>\necho ok\n</parameter>\n</function>\n</tool_call>\nstill explaining",
+          "tool_calls": []
+        }
+      ],
+      "final": {
+        "reasoning": "",
+        "content": "<tool_call>\n<function=ghost>\n<parameter=x>\n1\n</parameter>\n</function>\n</tool_call>\n<tool_call>\n<function=bash>\n<parameter=command>\necho ok\n</parameter>\n</function>\n</tool_call>\nstill explaining",
+        "tool_calls": [],
+        "diagnostics": {
+          "marker_seen": true,
+          "call_attempted": true,
+          "fallback_reason": "UndeclaredTool",
+          "salvaged_calls": 0
+        }
+      },
+      "basis": [
+        "ninfer(ADR-0002 M1: fail-closed salvage adapter check)"
+      ]
     }
   ]
 }
