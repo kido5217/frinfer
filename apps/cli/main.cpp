@@ -168,6 +168,9 @@ void print_generation_summary(const ninfer::GenerationResult& result,
         print_metric("thinking control tokens", std::to_string(result.thinking.injected_tokens));
         print_metric("thinking control", result.thinking.applied ? "applied" : "not applied");
     }
+    if (result.reasoning_tokens > 0) {
+        print_metric("reasoning tokens", std::to_string(result.reasoning_tokens));
+    }
     print_metric("model elapsed", format_seconds(model_seconds));
     print_metric("prefill speed", format_rate(static_cast<double>(result.prompt.prompt_tokens),
                                               result.timings.prefill_seconds));
