@@ -2,11 +2,63 @@
 
 > Selected checkpoints. Maximum single-GPU inference performance.
 
-This repository is `kido5217/ninfer-yarn`, a fork of
-[Neroued/ninfer](https://github.com/Neroued/ninfer), kept current through regular upstream
-merges. It adds YaRN context extension for `--max-context` beyond a model's native position
-capacity, a llama.cpp-derived chat/tool-call parsing stack, and `ninfer-yarn`-named product
-binaries.
+## This fork: `kido5217/ninfer-yarn`
+
+This repository is a fork of [Neroued/ninfer](https://github.com/Neroued/ninfer), kept current
+through periodic true-merge syncs (last sync: `d44ab584`, 2026-09-30). It adds YaRN context
+extension, a llama.cpp-derived chat/tool-call parsing stack, and constrained decoding, and ships
+`ninfer-yarn`-named product binaries. The rest of this README describes the combined product
+(fork + upstream).
+
+### Fork constraints
+
+- **Single NVIDIA GeForce RTX 5090.** The fork is developed, tested, and published on one 5090;
+  the build rejects CUDA architectures other than `sm_120a`. There is no multi-GPU, offload, or
+  distributed path.
+- **NVFP4 weights.** The fork's features are developed and validated against NVFP4 weight
+  artifacts. The upstream `groupwise-int` artifacts remain loadable but are not a fork-validated
+  configuration.
+- **Built for opencode.** The primary intended client is the opencode agent harness: the serve is
+  the opencode backend (compatibility study: [wayfinder map #139](https://github.com/kido5217/ninfer-yarn/issues/139)).
+  One-shot CLI use also works.
+
+### Changes from upstream
+
+Maintained: add or update a row whenever a fork feature changes or its status changes.
+Last updated 2026-10-03 (`r5`, `3e0ff840`).
+
+| What | Why | How | Status | Source |
+|---|---|---|---|---|
+| YaRN context extension — `--max-context` beyond the model's native `max_position_embeddings` (β_fast=32, β_slow=1, ext_factor=1) | Long-context agent sessions (opencode compaction, 200K+ contexts) exceed the model's native capacity on 32 GB VRAM | YaRN correction in the RoPE op, golden-vector tested; unsupported by the DFlash draft backend | shipped | NInfer (implementation); spec cross-checked against the YaRN original, llama.cpp, HF transformers, and vLLM |
+| llama.cpp-derived chat/tool-call parsing stack for Qwen3.5 turns (reasoning / content / tool-call regions) | Agent tool-call parsing must survive quoted markers, truncation, and degenerate loops without silent demotion | Vendored llama.cpp subset (chat params, PEG grammar runtime) under `third_party/`, re-vendor runbook with drift alert, 48-vector parse corpus + e2e gate | shipped (vendored baseline `05af0d2b`) | llama.cpp (vendored subset) |
+| Tool-call demotion recovery + client signaling (G1) | A malformed or truncated tool call demoted to plain text, stalling the agent silently | Partial-AST salvage + second-chance raw-value parse (llama.cpp-derived, in-core); lost calls signal a retryable in-band error (SSE error frame / 409 + `x-should-retry`) with per-class codes (ADR-0002) | shipped | Salvage: llama.cpp-derived; signaling: NInfer (verified against the opencode client's error classifier; llama.cpp-flush and vLLM close-at-end alternatives rejected) |
+| Constrained decoding — per-request GBNF grammar + `response_format` `json_object`/`json_schema` | Agents depend on guaranteed structured output (tool arguments, JSON) | Engine GBNF mask via an in-tree token-trie producer (differential-verified); serve enforcement with a context-accurate schema allowlist and fail-closed codes; thinking-aware wrapper grammar; grammar A/B perf-neutral (±0.24 ms/step) | shipped | GBNF language, PEG runtime, and JSON-schema converter: llama.cpp (vendored + 3 fork patches); mask producer and serve contract: NInfer |
+| Realized reasoning tokens in the request log (schema v24) + CLI summary | Clients must distinguish realized thinking tokens from the thinking budget | `reasoning_tokens` in `request_done.result`, `model_thinking_tokens` → `budget_thinking_tokens`, realized tokens in the CLI generation summary | shipped (r5) | NInfer (opencode-deployment driven) |
+| Benchmark extensions | Measure fork features at their claimed scope | `ninfer_bench --grammar` (constrained-decoding mode); Qwen3.8 GPQA context-window comparison | shipped | GPQA-Diamond (public benchmark); runners: NInfer |
+| Upstream sync process | Keep the fork current while preserving upstream ancestry | True merge commits per the sync runbook; drift alert on the vendored subset; last sync `d44ab584` (2026-09-30) | ongoing | Neroued/ninfer (upstream) |
+| Product executables renamed to the `ninfer-yarn` family | Distinguish the fork's binaries from upstream's | CMake target rename (`ninfer-yarn`, `ninfer-yarn-serve`, `ninfer-yarn-perplexity`) | shipped | NInfer |
+| Nix flake dev environment | Reproducible build environment | `flake.nix` at the repo root: CUDA 13.1, C++20, CMake/Ninja, FFmpeg, libcurl, Python 3.13 + torch; builds run in `nix develop` | shipped | nixpkgs (CUDA 13.1 `cudaPackages_13_1`) |
+| Agent/governance documentation | The fork is developed with LLM agents in the loop | `AGENTS.md` (product boundaries, verification, reporting), issue tracker + triage-label conventions, branch→commit→push→PR→merge→rebase landing pipeline; the LLM is permitted to open and merge PRs | ongoing | NInfer |
+
+### Bug reporting
+
+Bugs in this fork are reported in [this repository's issue tracker](https://github.com/kido5217/ninfer-yarn/issues).
+Do not report bugs to the upstream [Neroued/ninfer](https://github.com/Neroued/ninfer) project unless the
+bug is verified to reproduce on the original NInfer — an upstream master build with none of this fork's
+changes applied (no YaRN, no chat parsing stack, no constrained decoding, and no other row in the table
+above). If a repro exists only in this fork, it is a fork bug — report it here. The verification burden
+is on the reporter: the upstream tracker is for upstream bugs only, and unverified reports there poison
+the upstream project.
+
+### Disclaimer
+
+This fork is provided **as is**, without warranty of any kind, either express or implied,
+including but not limited to the warranties of merchantability, fitness for a particular purpose,
+and non-infringement. The fork's author assumes no responsibility or liability for any loss or
+damage of any kind — including data loss, model output quality, or system damage — arising from
+the use of this fork or its artifacts. This fork is an independent derivative project; it is not
+endorsed by, sponsored by, or affiliated with the upstream [Neroued/ninfer](https://github.com/Neroued/ninfer)
+project or its maintainer. Use at your own risk.
 
 NInfer is a from-scratch C++/CUDA inference engine for Qwen3.5 Dense and MoE architectures on a
 single NVIDIA GeForce RTX 5090. It runs text, image, and video prompts through a local CLI or
