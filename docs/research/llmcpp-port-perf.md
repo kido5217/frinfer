@@ -23,8 +23,10 @@ decoding, decode batching, memory layout, CUDA graphs, published Blackwell gains
 NInfer baseline facts used here (from `docs/performance.md`, `docs/performance/qwen3.8-27b.md`
 at the ref above, campaign on one RTX 5090, driver 617.14, CUDA 13.4, NInfer rev `7f6aafed`):
 Qwen3.8-27B `nvfp4` prefill 12,819 tok/s @ 7,680 ctx and 4,016 tok/s @ 260K ctx;
-MTP0 single-request decode 74.1 tok/s @ 7,680 ctx (53.4 @ 260K); MTP3 decode 196–232 tok/s;
-DFlash2 K=7 decode 258–377 tok/s. Decode-batch baseline ~13.7 ms/step (grammar A/B at
+MTP0 single-request decode 74.1 tok/s @ 7,680 ctx (53.4 @ 260K); MTP3 decode 123.4–231.7
+tok/s (36.6–90.6% acceptance); DFlash2 K=7 decode 115.0–377.3 tok/s (15.9–77.3%
+acceptance) — full single-request ranges at both quantizations. Decode-batch baseline
+~13.7 ms/step (grammar A/B at
 `b84e4fb4`). KV profiles in production: FP8 E4M3 row-256 (Qwen3.8), INT8 group-64 (Qwen3.6);
 paged KV P=64, CUDA-graph-captured decode per exact-`B` topology with page IDs as stable
 input data (`docs/maintainer/paged-kv-cache.md`, `docs/maintainer/engine-architecture.md`).
@@ -44,8 +46,10 @@ Model geometry (27B dense / 35B-A3B MoE): 64 / 40 layers, 16 / 10 full-attention
 - MoE GEMM (`GGML_OP_MUL_MAT_ID`) routes through the same MMQ family with
   `expert_bounds` scatter scheduling and `dedup_bcast` (duplicate expert-id collapse)
   (`mmq.cu:235-303`, `mmq.cuh:1387`).
-- Merged PR #28572 "ggml-cuda: pipeline NVFP4 MMQ tile loads with cp.async and TMA on
-  Blackwell (+14% pp)" (2026-09): overlap of tile loads with MMA + TMA-engine loads +
+- Closed-UNMERGED PR #28572 "ggml-cuda: pipeline NVFP4 MMQ tile loads with cp.async and
+  TMA on Blackwell (+14% pp)" (closed 2026-09-17; NOT in master at 1537a0a8 — a grep for
+  TMA/cp.async/tensor_map across `ggml-cuda/` at the verified commit finds no such
+  kernel): the proposed mechanism was overlap of tile loads with MMA + TMA-engine loads +
   spill-free accumulate, NVFP4/Blackwell only.
 - In-flight (open, NOT in master): #26159 "compact Blackwell NVFP4 MoE work scheduling
   (+10% to +15% prefill, NVFP4-only)", #29857 "Optimize accumulation in mmq for NVFP4
@@ -55,11 +59,13 @@ Model geometry (27B dense / 35B-A3B MoE): 64 / 40 layers, 16 / 10 full-attention
 **Mechanism + published gains**: NVFP4 = 4-bit E2M1 elements with 16-element FP8(E4M3)
 block scales (two-level scaling + optional RHT in "true" NVFP4); on sm_120a the GEMM runs
 native FP4 tensor-core MMA. Measured numbers found this session:
-- #28572 (merged): RTX 5090 @ 600 W, CUDA 13.3, Qwen3.8-27B NVFP4,
-  `llama-bench -ub 1024 -p 16384 -n 0 -r 3`: pp16384 6,146.5 → 7,009.7 tok/s (+14.0%);
+- #28572 (closed **unmerged** — its table reports the master baseline `dbeb37548` vs the
+  PR build; a PR-build number, not merged-master state): RTX 5090 @ 600 W, CUDA 13.3,
+  Qwen3.8-27B NVFP4, `llama-bench -ub 1024 -p 16384 -n 0 -r 3`: pp16384 6,146.5 ± 9.8 →
+  7,009.7 ± 9.1 tok/s (+14.0%);
   wikitext-2 perplexity 7.1927 → 7.1957 (no measurable quality change); non-NVFP4 model
   unchanged (Q5_K pp4096 3,199.5 → 3,199.9, tg64 71.1 → 70.8 tok/s).
-- #23572 (closed **unmerged**, claim only): "Blackwell PP +40%" for a CUDA-native NVFP4
+- #23572 (**open**, unmerged, claim only): "Blackwell PP +40%" for a CUDA-native NVFP4
   quantization; mean KLD 0.0894 vs Q4_0 0.0486 (between Q3_K and Q4_0); second scale level
   alone costs −8% without a fused kernel.
 - For scale, NInfer's own dense-27B data shows the NVFP4 vs int gap on this GPU:
@@ -67,7 +73,7 @@ native FP4 tensor-core MMA. Measured numbers found this session:
 
 **NInfer applicability**: NInfer's dense 27B already ships and is published as `nvfp4`
 (tensor-core NVFP4 linears; `src/ops/linear`). The MoE 35B-A3B does **not**:
-`src/ops/sparse_moe.h` admits only `Q4+Q5, Q4+Q6, Q8+Q8` for the two routed banks (shared
+`include/ninfer/ops/sparse_moe.h` admits only `Q4+Q5, Q4+Q6, Q8+Q8` for the two routed banks (shared
 banks Q8), and `docs/performance.md` publishes 35B-A3B only under `groupwise-int`. This is
 an (a)-axis contract gap (artifact codec profile + converter recipe + `sparse_moe` codec
 support) with a clear (b) payoff on prefill; decode is bandwidth-bound and the byte
@@ -93,8 +99,9 @@ contract gap *and* a demonstrated ~4× prefill lever on this exact GPU/model cla
 
 ## C2 — NVFP4 GEMM load pipelining (cp.async + TMA) for NInfer's dense NVFP4 path
 
-**llama.cpp state**: #28572 (merged, above): the NVFP4 MMQ kernel overlapped tile loads
-with math, moved loads to the TMA engine, removed register spills in the accumulate step.
+**llama.cpp state**: #28572 (closed unmerged, above) proposed: the NVFP4 MMQ kernel
+overlapping tile loads with math, moving loads to the TMA engine, removing register
+spills in the accumulate step. Not in master at the verified commit.
 Explicitly NVFP4/Blackwell-only (`blackwell_mma_available` gate).
 
 **Mechanism + gains**: see C1 (#28572, +14% pp16384 on RTX 5090, Qwen3.8-27B NVFP4;
@@ -105,9 +112,10 @@ prefill work appears as open #26001 "GDN chunked kernel for prefill").
 
 **NInfer applicability**: technique-level port into NInfer's own dense NVFP4 linear
 kernels (Ops boundary, `src/ops/linear`). NInfer already publishes nvfp4 27B prefill at
-12.8K tok/s @ 7.7K ctx vs llama.cpp master's ~7K @ 16K — NInfer's dense NVFP4 prefill is
-not currently the loser, so headroom is uncertain and must be measured, not inferred from
-llama.cpp's numbers (different kernel structure, ubatch, context).
+12.8K tok/s @ 7.7K ctx vs the llama.cpp master baseline of 6,146.5 tok/s @ 16K (per
+#28572's table; its ~7,010 tok/s PR build is closed-unmerged) — NInfer's dense NVFP4
+prefill is not currently the loser, so headroom is uncertain and must be measured, not
+inferred from llama.cpp's numbers (different kernel structure, ubatch, context).
 
 **Port cost**: medium (kernel rewrite of the NVFP4 linear load/accumulate pipeline;
 oracle qualification per Op contract).
@@ -244,8 +252,8 @@ and feed the same verify/accept loop as draft models.
 **NInfer applicability**: NInfer's spec backends are fixed Program internals (MTP /
 DFlash / DFlash2, `docs/maintainer/engine-architecture.md` §1); ngram drafting would be a
 CPU-side mechanism with no artifact support, and its acceptance ceiling on these models is
-far below the published MTP3 (54–90% acceptance) / DFlash2 (16–77%) numbers. Adding it
-buys nothing measurable for the served workloads.
+far below the published MTP3 (36.6–90.6% acceptance) / DFlash2 (15.9–77.3%) numbers.
+Adding it buys nothing measurable for the served workloads.
 
 **Verdict: defer** (axis c at best). Rationale: no draft weights needed is the only
 advantage; acceptance quality is strictly worse than the trained draft backends NInfer
@@ -315,8 +323,9 @@ this ticket's perf scope.
 ## C12 — Multi-device draft placement / expert parallelism / tensor split
 
 **llama.cpp state**: the draft context takes its own `devices` list
-(`common_speculative_draft_params`, `common/speculative.h:53`); MoE/weight placement uses
-`--tensor-split` / `--n-cpu-moe` (multi-GPU split, CPU expert offload).
+(`common_params_speculative_draft`, `common/common.h:328`; used as `params.devices` at
+`src/speculative.cpp:246/2537`); MoE/weight placement uses `--tensor-split` /
+`--n-cpu-moe` (multi-GPU split, CPU expert offload).
 
 **NInfer applicability**: NInfer's product is one GPU, one resident model
 (`AGENTS.md`). Any multi-device variant crosses the stated boundary.
@@ -325,7 +334,7 @@ this ticket's perf scope.
 
 ## C13 — GDN recurrent-state snapshot fusion (rollback slots)
 
-**llama.cpp state**: `ggml/src/ggml-cuda/gated_delta_net.cu{,h}` + graph-level fusion
+**llama.cpp state**: `ggml/src/ggml-cuda/gated_delta_net.cu/.cuh` + graph-level fusion
 `ggml_cuda_try_gdn_cache_fusion` (`ggml-cuda.cu:2809`): the GDN kernel writes K
 recurrent-state snapshots (rollback slots, newest = slot 0) directly into the cache,
 skipping the trailing `CPY` node — the speculative-decoding support for GDN state.
@@ -387,11 +396,11 @@ microbatch 1..8 (e.g. 1,017.8 → 1,031.97 t/s at 7).
 
 **NInfer applicability**: NInfer's `sparse_moe` is a single closed Op that already owns
 "router projection and selection, selected routed and shared SwiGLU projections, down
-projections, their merge, and the AddResidual epilogue" (`src/ops/sparse_moe.h`) — the
+projections, their merge, and the AddResidual epilogue" (`include/ninfer/ops/sparse_moe.h`) — the
 llama.cpp fusion family is the same idea done at graph level because ggml has no closed
 MoE op.
 
-**Verdict: no** — already covered by NInfer's closed-op design; the +2–5% numbers are
+**Verdict: no** — already covered by NInfer's closed-op design; the +0.4–5.1% numbers are
 against a baseline that lacked the fusion.
 
 ## C17 — Decode batching internals (ubatch splitting)
@@ -459,6 +468,14 @@ Boundary-crossing (multi-GPU / new architecture — no verdict, out of this map'
    backends beyond the fixed MTP/DFlash/DFlash2 set; if official Qwen artifacts for
    either land, they become a product decision with an artifact-contract (axis-a)
    component.
+4a. **Continuous batching / preemptive batching** (ticket scope): llama.cpp does not
+   implement preemptive continuous batching either — its slot model (bounded per-slot
+   concurrency with ubatch splitting inside a request, C17) is the closest analogue to
+   NInfer's bounded-FIFO compact rounds; there is nothing to port. Recorded to close the
+   ticket's boundary-flag scope.
+4b. **MoE load balancing** (ticket scope): meaningful only under expert parallelism
+   (flag 2, boundary-crossing); N/A for NInfer's single-GPU closed `sparse_moe` op, where
+   expert selection is a deterministic top-k inside the Op.
 
 Adjacent / not-performance observations the coordinator may want to route:
 
@@ -478,7 +495,12 @@ Adjacent / not-performance observations the coordinator may want to route:
 
 ## Claims not verifiable this session (disclosed)
 
-- #23572's "+40% Blackwell PP" is an **unmerged** PR claim (no hardware in the claim;
+- #28572's +14% pp16384 is a **closed-unmerged** PR-build number (its table: master
+  baseline `dbeb37548` 6,146.5 → PR build 7,009.7 tok/s, RTX 5090). The pipelined NVFP4
+  MMQ kernel is not in master at the verified commit, so no merged-master prefill number
+  exists to compare against; C1's port verdict rests on NInfer's own verified 12,819 vs
+  3,332 tok/s nvfp4-vs-int prefill gap instead.
+- #23572's "+40% Blackwell PP" is an **open, unmerged** PR claim (no hardware in the claim;
   body discusses Blackwell generally) — excluded from any verdict basis.
 - #27444's "same model on vLLM and NInfer looks ok" is a reporter assertion inside the
   issue (used only as a directional signal about NInfer's long-ctx decode; NInfer's own
