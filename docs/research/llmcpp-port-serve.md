@@ -140,7 +140,7 @@ header) (`src/serve/http_server.cpp:336-360, 158-186`).
   `--logit-bias` CLI (`1537a0a8b2:tools/server/server-schema.cpp`, README "Sampling
   params").
 - **NInfer state:** rejects nonzero `logit_bias` with 400 `logit_bias_not_supported`
-  (all-zero accepted as neutral; `3e0ff840:docs/serving.md:132-137, 230-231`).
+  (all-zero accepted as neutral; `3e0ff840:docs/serving.md:132-137, 143-145`).
 - **Port shape + cost:** Engine sampler applies a per-request token-id bias table; the
   table is per-program data at a stable address (programs own their operands), sized/bounded
   by a cap on distinct bias entries. **Medium–large** (new sampler Op dimension + bound +
@@ -411,22 +411,26 @@ header) (`src/serve/http_server.cpp:336-360, 158-186`).
   architecture; the serve exposes `temperature`, `top_p`, `top_k (0..20)`, `min_p`,
   presence/frequency penalties, `seed`, and process-level overrides
   (`3e0ff840:docs/serving.md:91-112, 867-929`). Unknown top-level fields (including these)
-  are ignored, so such requests already execute safely.
+  are ignored on the chat route (`3e0ff840:docs/serving.md:147`) and fail closed with
+  400 `unknown_parameter` on the Responses route (`3e0ff840:docs/serving.md:541-542`,
+  `src/serve/openai_responses_request.cpp:1144-1150`), so such requests are safe either way.
 - **Port shape + cost:** each sampler is a new Engine Op with its own qualification
   contract; a large batch of Engine work whose Qwen tuned presets do not need
   (DRY/mirostat/XTC are CPU-inference-era samplers with no 5090 performance argument).
-- **Verdict:** **no** (c). The ignore-behavior is already safe; porting the zoo is Engine
+- **Verdict:** **no** (c). The ignore-or-fail-closed behavior is already safe; porting the zoo is Engine
   work with no contract gap (none is an official field) and no measurable performance
   headroom for the deployed models.
 
 ## Candidate 19 — context/generation-control request fields
 
 - **llama.cpp state:** `n_keep`, `n_discard`, `n_indent`, `n_cache_reuse`, `ignore_eos`,
-  `echo` (legacy completions only), `t_max_prompt_ms`/`t_max_predict_ms`, `cache_prompt`,
+  `echo` (legacy completions only), `t_max_predict_ms` (`t_max_prompt_ms` is an
+  unimplemented TODO at the cited commit, `server-schema.cpp:71-72`), `cache_prompt`,
   `return_tokens`, `response_fields`, `verbose`, `message_delimiters` (per-message
   checkpoint spans), `sse_ping_interval` (per-request)
   (`1537a0a8b2:tools/server/server-schema.cpp`, `server-context.cpp:4524`).
-- **NInfer state:** none of these are accepted fields (unknown fields ignored). Context
+- **NInfer state:** none of these are accepted fields (ignored on the chat route,
+  fail-closed 400 on Responses — see Candidate 18). Context
   policy is Engine-owned: `--max-context` + YaRN, checkpoint/pressure system,
   `--no-prefix-reuse` process toggle (`3e0ff840:docs/serving.md:1076-1123`).
 - **Port shape + cost (sub-items):**
@@ -460,7 +464,9 @@ header) (`src/serve/http_server.cpp:336-360, 158-186`).
   `reasoning_effort`, assistant `reasoning_content` history are supported; request-level
   thinking budget is not a chat field (server `--default-thinking-budget` + Anthropic
   `thinking.budget_tokens` are the budget surfaces); tool-call parsing always runs;
-  assistant prefill exists on the Anthropic route only
+  assistant prefill exists on the Anthropic route only; `parallel_tool_calls:false`
+  with tools is rejected with the named code `parallel_tool_calls_not_supported`
+  (`3e0ff840:src/serve/openai_chat_request.cpp:832-836`; `docs/serving.md:136, 531`).
   (`3e0ff840:docs/serving.md:102-147, 299-335, 773-775`).
 - **Port shape + cost:** `reasoning_budget_tokens` as a chat-request field mapping onto
   the existing budget machinery — **small**. Chat assistant-prefill behavior is
@@ -471,7 +477,8 @@ header) (`src/serve/http_server.cpp:336-360, 158-186`).
 - **Verdict:** **defer** for `reasoning_budget_tokens` (c; small, reuses budget path).
   **defer** for chat assistant-prefill/`generation_prompt` (c; mostly already
   template-native). **no** for `parse_tool_calls`/`reasoning_format` (c; NInfer's
-  fail-closed single-parser contract is deliberate).
+  fail-closed single-parser contract is deliberate). **no** for `parallel_tool_calls`
+  (a; the named-code rejection is a documented fail-closed choice, not an oversight).
 
 ## Candidate 21 — response extension fields
 
@@ -532,7 +539,7 @@ map does not treat them as gaps:
 
 - **Error shape:** llama.cpp returns `{"error": {"code": <http number>, "message", "type"}}`
   (README "API errors"); NInfer returns `{"error": {"message", "type", "param", "code":
-  <string>}}` (`3e0ff840:src/serve/openai_common.cpp:188-196`). Both are OpenAI-shaped;
+  <string>}}` (`3e0ff840:src/serve/openai_common.cpp:203-207`). Both are OpenAI-shaped;
   NInfer's string `code` is the vLLM convention and is deliberately more specific
   (field + stable per-class codes). No port.
 - **Overload semantics:** llama.cpp's task queue is unbounded
@@ -590,7 +597,7 @@ small Engine change; large = Engine redesign or new architecture.
 | `/tools` + MCP executors | no | c | NInfer's "does not execute tools" is a documented product decision; executor = security posture change. |
 | Web UI | no | c | Standalone UI project, outside the serve-API product. |
 | `/v1/models` `meta` + aliases | defer | c | Trivial artifact-metadata exposure; discovery metadata only. |
-| Sampler zoo (DRY/mirostat/XTC/typical/dynatemp/adaptive/top_n_sigma/…) | no | c | Engine Op zoo with no contract gap (none official) and no 5090 performance argument; unknown fields already safely ignored. |
+| Sampler zoo (DRY/mirostat/XTC/typical/dynatemp/adaptive/top_n_sigma/…) | no | c | Engine Op zoo with no contract gap (none official) and no 5090 performance argument; unknown fields ignored (chat) or fail-closed 400 (Responses) — safe either way. |
 | Context fields (`n_keep`, `n_discard`, `n_indent`, `n_cache_reuse`, `echo`) | no | c | Per-request context shaping collides with Engine-owned checkpoint/pressure policy. |
 | `sse_ping_interval` flag, `ignore_eos`, `min_keep`, `return_tokens`, `t_max_predict_ms` | defer | c | Small real QoL toggles; build if a consumer appears. |
 | `message_delimiters` | FLAG | — | Per-message KV checkpointing is an Engine context-cache feature, not a serve surface. |
