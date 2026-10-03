@@ -4,6 +4,7 @@
 #include "serve/openai_common.h"
 #include "serve/openai_responses.h"
 #include "serve/request_validation.h"
+#include "serve/tool_call_signal.h"
 
 #include <nlohmann/json.hpp>
 
@@ -308,6 +309,13 @@ void HttpServer::handle_responses(const httplib::Request& req, httplib::Response
             return;
         }
         lifecycle->done(outcome);
+        if (tool_call_demotion_signals(outcome.tool_call_parse.fallback_reason,
+                                       outcome.tool_call_parse.call_attempted)) {
+            res.set_header("x-should-retry", "true");
+            write_openai_error(res, responses_error(tool_call_demotion_error(
+                                       outcome.tool_call_parse.fallback_reason)));
+            return;
+        }
 
         std::optional<BuiltOpenAIResponse> response;
         try {
@@ -409,8 +417,21 @@ void HttpServer::handle_responses(const httplib::Request& req, httplib::Response
                 }
 
                 GenerationOutcome outcome;
+                std::optional<ApiError> demotion_signal;
                 try {
                     StreamSink output;
+                    output.on_tool_call_demoted = [&](const std::string& text,
+                                                      const ninfer::ToolCallDemotion& demotion) {
+                        if (tool_call_demotion_signals(demotion.fallback_reason,
+                                                       demotion.call_attempted)) {
+                            // ADR-0002: the lost call is signaled in-band; the region bytes are
+                            // withheld from the stream (the Engine aggregate keeps them).
+                            demotion_signal = tool_call_demotion_error(demotion.fallback_reason);
+                            return;
+                        }
+                        render_and_write(transport,
+                                         [&] { return stream->encoder->content_delta(text); });
+                    };
                     output.on_reasoning = [&](const std::string& text) {
                         render_and_write(transport,
                                          [&] { return stream->encoder->reasoning_delta(text); });
@@ -443,6 +464,7 @@ void HttpServer::handle_responses(const httplib::Request& req, httplib::Response
                 }
 
                 lifecycle->done(outcome);
+                if (demotion_signal) { return send_failed(responses_error(*demotion_signal)); }
                 std::optional<OpenAIResponsesStreamFinish> finished;
                 try {
                     finished.emplace(stream->encoder->finish(outcome));

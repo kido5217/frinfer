@@ -4,6 +4,7 @@
 
 #include "serve/generation_service.h"
 #include "serve/openai_responses.h"
+#include "serve/tool_call_signal.h"
 #include "serve/translate.h"
 
 #include <nlohmann/json.hpp>
@@ -932,6 +933,18 @@ int test_sse_sequence_and_failures() {
                           failure.at("response").at("status") == "failed" &&
                           failure.at("response").at("completed_at").is_null(),
                       "runtime failure uses response.failed with no completion timestamp");
+
+    OpenAIResponsesCreateRequest demoted_request = parse_openai_responses_create_request(
+        Json{{"model", "m"}, {"input", "hello"}, {"stream", true}}, limits());
+    OpenAIResponsesEventStream demoted("resp_demoted", 123, std::move(demoted_request), {});
+    (void)demoted.start();
+    const Json demotion_failure = parse_event(demoted.failed(
+        tool_call_demotion_error(ninfer::ToolCallParseFallbackReason::MalformedStructure)));
+    failures += check(demotion_failure.at("type") == "response.failed" &&
+                          demotion_failure.at("response").at("status") == "failed" &&
+                          demotion_failure.at("response").at("error").at("code") ==
+                              "tool_call_malformed_structure",
+                      "responses demotion failure carries the class code");
 
     OpenAIResponsesCreateRequest cancelled_request = parse_openai_responses_create_request(
         Json{{"model", "m"}, {"input", "hello"}, {"stream", true}}, limits());

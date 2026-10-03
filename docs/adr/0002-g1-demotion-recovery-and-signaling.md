@@ -40,14 +40,17 @@ llama.cpp engine, plus a client-visible, retryable signal for residual call loss
   withhold the region on the streaming route; the Engine's aggregate result keeps the bytes for
   CLI/bench consumers.
 - Streaming routes: an in-band SSE error event replaces the normal finish. On opencode an
-  in-band error is retryable-eligible, and a non-numeric `code` classifies as `UnknownProvider`:
-  no output started → the same request is retried; output started (reasoning counts) → the
-  synthetic "previous response was interrupted" continuation. Both are bounded by the
-  10-decision per-step budget and surface on exhaustion — never idle.
+  in-band error is retryable-eligible only while both its `type` and `code` stay outside the
+  client's recognized code sets (a recognized type such as `invalid_request_error` classifies as a
+  non-retryable InvalidRequest before the `UnknownProvider` fallback); the implementation uses
+  `type: tool_call_error` with the string class code. Then: no output started → the same request
+  is retried; output started (reasoning counts) → the synthetic "previous response was interrupted"
+  continuation. Both are bounded by the 10-decision per-step budget and surface on exhaustion —
+  never idle.
 - Non-streaming requests: HTTP `409` with `x-should-retry: true`.
 - Per-class string codes: `tool_call_malformed_structure`, `tool_call_undeclared_tool`,
-  `tool_call_duplicate_parameter`, `tool_call_invalid_tool_name`; `trailing_content` remains
-  unassigned and inherits the uniform treatment if ever assigned.
+  `tool_call_duplicate_parameter`, `tool_call_invalid_tool_name`; `trailing_content` has no
+  assigning path today and inherits the uniform treatment if ever assigned.
 - All three advertised routes (OpenAI chat, OpenAI Responses, Anthropic Messages) implement the
   signal in their native error shapes, with schema tests and `docs/serving.md` updated together.
 - Diagnostics: `fallback_reason` is demotion-only; add `call_attempted` and `salvaged_calls`
@@ -96,3 +99,9 @@ as a vehicle: the retained-completed-node scan above gives the structurally-comp
 criterion directly, and no consumer branches on bound-cut-vs-malformed. Taking a LENIENT pass would
 also have contradicted the B3 optional-close tolerance, because a `</tool_call>` cut mid-literal
 would stop reading as a complete call.
+
+Implementation note (2026-10-03, #150): the stream event is the demoting `OutputDelta` itself. It
+carries `ToolCallDemotion{fallback_reason, call_attempted, text_offset}`, where the withheld region
+is `delta.text.substr(text_offset)`; `ServiceOutputSink` splits the delta at that offset when the
+route installs `StreamSink::on_tool_call_demoted`. The engine aggregate keeps the full text
+unchanged, so the CLI, benchmarks, and the request log are untouched.

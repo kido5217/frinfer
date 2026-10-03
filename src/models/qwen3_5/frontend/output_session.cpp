@@ -363,11 +363,29 @@ public:
             close_channel(preview_state, OutputChannel::Content, preview_output);
             return;
         }
+        // ADR-0002: a demoted tool-call region is published byte-exact but marked, so a streaming
+        // consumer can withhold `text.substr(text_offset)` and signal the class instead of showing
+        // the markup. Everything appended before the region in this commit stays ordinary content.
+        const auto publish_terminal_content = [&](std::string text) {
+            if (text.empty()) { return; }
+            const std::size_t offset =
+                !preview_output.empty() && preview_output.back().channel == OutputChannel::Content
+                    ? preview_output.back().text.size()
+                    : 0;
+            append_delta(preview_output, OutputChannel::Content, std::move(text));
+            if (terminal.diagnostics.fallback_reason != ninfer::ToolCallParseFallbackReason::None) {
+                preview_output.back().demotion = ninfer::ToolCallDemotion{
+                    .fallback_reason = terminal.diagnostics.fallback_reason,
+                    .call_attempted  = terminal.diagnostics.call_attempted,
+                    .text_offset     = offset,
+                };
+            }
+        };
         if (ended_in_reasoning) {
             append_delta(preview_output, OutputChannel::Reasoning, terminal.reasoning_delta);
             publish_content_whitespace(preview_state, preview_output);
             close_channel(preview_state, OutputChannel::Reasoning, preview_output);
-            append_delta(preview_output, OutputChannel::Content, terminal.content_delta);
+            publish_terminal_content(terminal.content_delta);
             return;
         }
         append_delta(preview_output, OutputChannel::Reasoning, terminal.reasoning_delta);
@@ -378,7 +396,7 @@ public:
         } else {
             publish_content_whitespace(preview_state, preview_output);
         }
-        append_delta(preview_output, OutputChannel::Content, terminal.content_delta);
+        publish_terminal_content(terminal.content_delta);
     }
 
     std::shared_ptr<const fi::Tokenizer> tokenizer;

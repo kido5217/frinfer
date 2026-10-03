@@ -323,6 +323,15 @@ enum class ToolCallParseFallbackReason : std::uint8_t {
     TrailingContent,
 };
 
+// One demoted tool-call region inside a streaming OutputDelta (ADR-0002). The region bytes are
+// `text.substr(text_offset)`; `call_attempted` is true when some candidate parse formed a
+// function-name element (the serve-side signal condition with a non-None fallback).
+struct ToolCallDemotion {
+    ToolCallParseFallbackReason fallback_reason = ToolCallParseFallbackReason::None;
+    bool call_attempted                        = false;
+    std::size_t text_offset                    = 0;
+};
+
 [[nodiscard]] inline constexpr const char*
 tool_call_parse_fallback_reason_name(ToolCallParseFallbackReason reason) noexcept {
     switch (reason) {
@@ -588,6 +597,10 @@ enum class FinishReason : std::uint8_t {
 struct OutputDelta {
     OutputChannel channel = OutputChannel::Content;
     std::string text;
+    // ADR-0002: set when this delta's tail is a demoted tool-call region. `text_offset` is the
+    // byte offset inside `text` where the region starts; the Engine keeps the full text in the
+    // aggregate result, while a streaming consumer may withhold the region tail and signal it.
+    std::optional<ToolCallDemotion> demotion;
 };
 
 // Exact prompt accounting selected at admission. Streaming consumers receive this once before any

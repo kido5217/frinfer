@@ -2,6 +2,7 @@
 #include "serve/generation_service.h"
 #include "serve/openai_chat.h"
 #include "serve/openai_common.h"
+#include "serve/tool_call_signal.h"
 #include "serve/translate.h"
 
 #include <nlohmann/json.hpp>
@@ -1187,6 +1188,39 @@ int test_common_objects() {
     return failures;
 }
 
+int test_tool_call_demotion_signal() {
+    using ninfer::ToolCallParseFallbackReason;
+    int failures = 0;
+    failures +=
+        check(tool_call_demotion_signals(ToolCallParseFallbackReason::MalformedStructure, true) &&
+                  !tool_call_demotion_signals(ToolCallParseFallbackReason::MalformedStructure,
+                                              false) &&
+                  !tool_call_demotion_signals(ToolCallParseFallbackReason::None, true),
+              "demotion signal condition is not call-loss-only");
+
+    struct Case {
+        ToolCallParseFallbackReason reason;
+        const char* code;
+    };
+    const Case cases[] = {
+        {ToolCallParseFallbackReason::MalformedStructure, "tool_call_malformed_structure"},
+        {ToolCallParseFallbackReason::DuplicateParameter, "tool_call_duplicate_parameter"},
+        {ToolCallParseFallbackReason::InvalidToolName, "tool_call_invalid_tool_name"},
+        {ToolCallParseFallbackReason::UndeclaredTool, "tool_call_undeclared_tool"},
+        {ToolCallParseFallbackReason::TrailingContent, "tool_call_trailing_content"},
+    };
+    for (const Case& item : cases) {
+        const ApiError error = tool_call_demotion_error(item.reason);
+        const Json rendered  = Json::parse(make_error_body(error));
+        failures += check(error.status == 409 && error.type == "tool_call_error" &&
+                              error.code == item.code && rendered["error"]["code"] == item.code &&
+                              rendered["error"]["message"].get<std::string>().find("tool call") !=
+                                  std::string::npos,
+                          std::string("demotion error shape is wrong for ") + item.code);
+    }
+    return failures;
+}
+
 } // namespace
 
 int main() {
@@ -1203,6 +1237,7 @@ int main() {
     failures += test_stream_response();
     failures += test_stream_observations();
     failures += test_common_objects();
+    failures += test_tool_call_demotion_signal();
     if (failures == 0) { std::cout << "OpenAI Chat protocol tests passed\n"; }
     return failures == 0 ? 0 : 1;
 }
