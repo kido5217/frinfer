@@ -163,8 +163,8 @@ void print_generation_summary(const ninfer::GenerationResult& result,
     print_metric("generated tokens", std::to_string(generated));
     if (result.thinking.configured_budget) {
         print_metric("thinking budget", std::to_string(*result.thinking.configured_budget));
-        print_metric("model thinking tokens",
-                     std::to_string(result.thinking.model_thinking_tokens));
+        print_metric("budget thinking tokens",
+                     std::to_string(result.thinking.budget_thinking_tokens));
         print_metric("thinking control tokens", std::to_string(result.thinking.injected_tokens));
         print_metric("thinking control", result.thinking.applied ? "applied" : "not applied");
     }

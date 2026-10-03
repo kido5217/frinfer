@@ -418,10 +418,11 @@ int main() {
                           .search_discovery_used      = true,
                           .search_overshoot_ns        = 0,
     };
-    outcome.thinking = ninfer::ThinkingBudgetStats{.configured_budget     = 256,
-                                                   .model_thinking_tokens = 256,
-                                                   .injected_tokens       = 19,
-                                                   .applied               = true};
+    outcome.thinking         = ninfer::ThinkingBudgetStats{.configured_budget      = 256,
+                                                           .budget_thinking_tokens = 256,
+                                                           .injected_tokens        = 19,
+                                                           .applied                = true};
+    outcome.reasoning_tokens = 275;
 
     const Json done = Json::parse(format_request_done_json("serve-test", 3000, context, outcome));
     failures += check(done.at("materialization").at("initial_predicted_total_ns") == 500000 &&
@@ -438,7 +439,8 @@ int main() {
     failures += check(done.at("result").at("prefix_reuse_path") == "private_turn_closure",
                       "prefix reuse path missing");
     failures += check(done.at("result").at("thinking_budget") == 256 &&
-                          done.at("result").at("model_thinking_tokens") == 256 &&
+                          done.at("result").at("budget_thinking_tokens") == 256 &&
+                          done.at("result").at("reasoning_tokens") == 275 &&
                           done.at("result").at("thinking_control_tokens") == 19 &&
                           done.at("result").at("thinking_control_applied") == true,
                       "thinking-control result accounting missing");
@@ -492,8 +494,27 @@ int main() {
         pretty_done.message ==
             "req#7 done | openai-chat | output limit | prompt 401 | output 1,024 | cache 101 "
             "(25.2%, response replay) | TTFT 358 ms | total 5.7s | prefill 1.28k tok/s | "
-            "decode 191.4 tok/s | mtp accepted 720/900 (80.0%) | thinking 256/256, control 19",
+            "decode 191.4 tok/s | mtp accepted 720/900 (80.0%) | thinking 256/256, control 19 "
+            "| reasoning 275",
         "pretty request-done record mismatch");
+
+    // The realized count is the headline of #152: it must render with no budget configured at
+    // all, so pin the no-budget rendering, not only the budget fixture.
+    GenerationOutcome no_budget = outcome;
+    no_budget.thinking = ninfer::ThinkingBudgetStats{};
+    const OperationalRecord pretty_no_budget = render_request_done(context, no_budget);
+    failures += check(pretty_no_budget.message ==
+                          "req#7 done | openai-chat | output limit | prompt 401 | output 1,024 | "
+                          "cache 101 (25.2%, response replay) | TTFT 358 ms | total 5.7s | "
+                          "prefill 1.28k tok/s | decode 191.4 tok/s | mtp accepted 720/900 (80.0%) "
+                          "| reasoning 275",
+                      "no-budget pretty request-done record mismatch");
+    const Json no_budget_done =
+        Json::parse(format_request_done_json("serve-test", 3004, context, no_budget));
+    failures += check(no_budget_done.at("result").at("thinking_budget").is_null() &&
+                          no_budget_done.at("result").at("budget_thinking_tokens") == 0 &&
+                          no_budget_done.at("result").at("reasoning_tokens") == 275,
+                      "no-budget request_done must still report the realized reasoning count");
 
     GenerationOutcome normalized_tool_outcome = outcome;
     normalized_tool_outcome.tool_calls.push_back(

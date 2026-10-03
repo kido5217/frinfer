@@ -722,7 +722,7 @@ struct SpeculativeStats {
 struct ThinkingBudgetStats {
     std::optional<std::uint32_t> configured_budget;
     // Model-origin tokens accepted while capped thinking remained open.
-    std::uint32_t model_thinking_tokens = 0;
+    std::uint32_t budget_thinking_tokens = 0;
     // Complete tokenizer-derived target-control suffix committed by Engine.
     std::uint32_t injected_tokens = 0;
     bool applied                  = false;
