@@ -228,6 +228,14 @@ public:
 
     void publish(ninfer::OutputDelta delta) override {
         if (delta.text.empty()) { return; }
+        if (delta.demotion && sink_->on_tool_call_demoted) {
+            const ninfer::ToolCallDemotion demotion = *delta.demotion;
+            if (demotion.text_offset > 0 && sink_->on_content) {
+                sink_->on_content(delta.text.substr(0, demotion.text_offset));
+            }
+            sink_->on_tool_call_demoted(delta.text.substr(demotion.text_offset), demotion);
+            return;
+        }
         if (delta.channel == ninfer::OutputChannel::Reasoning) {
             if (sink_->on_reasoning) { sink_->on_reasoning(delta.text); }
         } else {

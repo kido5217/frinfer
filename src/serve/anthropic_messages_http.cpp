@@ -2,12 +2,14 @@
 
 #include "serve/anthropic_messages.h"
 #include "serve/http_transport.h"
+#include "serve/tool_call_signal.h"
 
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <exception>
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -112,6 +114,13 @@ void HttpServer::handle_messages(const httplib::Request& req, httplib::Response&
             return;
         }
         lifecycle->done(outcome);
+        if (tool_call_demotion_signals(outcome.tool_call_parse.fallback_reason,
+                                       outcome.tool_call_parse.call_attempted)) {
+            res.set_header("x-should-retry", "true");
+            write_anthropic_error(
+                res, tool_call_demotion_error(outcome.tool_call_parse.fallback_reason), request_id);
+            return;
+        }
         try {
             set_owned_json_content(res, make_anthropic_messages_response(identity, outcome),
                                    prepared.lifetime);
@@ -164,10 +173,22 @@ void HttpServer::handle_messages(const httplib::Request& req, httplib::Response&
                 };
 
                 GenerationOutcome outcome;
+                std::optional<ApiError> demotion_signal;
                 try {
                     StreamSink output;
                     output.on_start = [&](const ninfer::GenerationStart& start) {
                         render_and_write(transport, [&] { return encoder->start(start); });
+                    };
+                    output.on_tool_call_demoted = [&](const std::string& text,
+                                                      const ninfer::ToolCallDemotion& demotion) {
+                        if (tool_call_demotion_signals(demotion.fallback_reason,
+                                                       demotion.call_attempted)) {
+                            // ADR-0002: the lost call is signaled in-band; the region bytes are
+                            // withheld from the stream (the Engine aggregate keeps them).
+                            demotion_signal = tool_call_demotion_error(demotion.fallback_reason);
+                            return;
+                        }
+                        render_and_write(transport, [&] { return encoder->content_delta(text); });
                     };
                     output.on_reasoning = [&](const std::string& text) {
                         render_and_write(transport, [&] { return encoder->reasoning_delta(text); });
@@ -203,6 +224,7 @@ void HttpServer::handle_messages(const httplib::Request& req, httplib::Response&
                 }
 
                 lifecycle->done(outcome);
+                if (demotion_signal) { return send_error(*demotion_signal); }
                 std::vector<std::string> terminal;
                 try {
                     terminal = encoder->finish(outcome);

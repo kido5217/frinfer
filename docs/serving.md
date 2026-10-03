@@ -255,18 +255,36 @@ properties, perform recursive JSON Schema validation, or honor JSON Schema const
 (a `grammar` GBNF constraint is applied to the answer stream instead).
 
 String parameters preserve function/tool-call markers and balanced nested
-`<parameter=...>...</parameter>` text as value bytes. The Qwen wire format has no delimiter escape,
-so an unmatched nested parameter opener or a standalone `</parameter>` cannot be represented
-unambiguously; either causes the complete tool-call region to fall back to ordinary content. A
+`<parameter=...>...</parameter>` text as value bytes. The Qwen wire format has no delimiter escape;
+when the strict balanced-nesting rule cannot represent a value, a second-chance parse treats the
+parameter value as raw bytes up to the next newline-framed `</parameter>` (LF or CRLF), so an
+unmatched nested opener or an inline standalone `</parameter>` is served as value text. A
 repeated parameter name is representable only when every later occurrence repeats the first
 occurrence's raw value bytes: the duplicates collapse into one argument, first occurrence position
 kept. A repeat whose value bytes differ is unrepresentable ambiguity and returns the complete
 region to ordinary content.
 A response may carry several calls in sequence, and a missing `</tool_call>` before the next
 `<tool_call>` is tolerated. NInfer serves the first `<tool_call>` region that parses completely and
-consumes the response to its end; earlier markup and the prose around it stay ordinary content, a
-region without a served candidate stays ordinary content verbatim, and the parse diagnostics report
-the first failure.
+consumes the response to its end; when no candidate consumes to its end, a structurally complete
+call (function name, closed parameters, `</function>`) is salvaged from the furthest-reaching
+candidate, with its trailing bytes kept as ordinary content. Earlier markup and the prose around it
+stay ordinary content, a region without a served or salvaged candidate stays ordinary content
+verbatim, and the parse diagnostics report the first failure.
+
+### Tool-call demotion signal
+
+A residual demotion that lost an attempted call — parse diagnostics `call_attempted` is true with a
+non-`none` fallback reason — is signaled to the client instead of being delivered as markup text.
+A streaming response withholds the demoted region (any content before it is delivered normally)
+and terminates with the protocol's error event: a `{"error": {...}}` SSE frame for Chat
+Completions, a `response.failed` event for Responses, and an `event: error` event for Anthropic
+Messages. A non-streaming response returns HTTP `409` with `x-should-retry: true`. Chat and
+Responses error objects carry a stable per-class code — `tool_call_malformed_structure`,
+`tool_call_undeclared_tool`, `tool_call_duplicate_parameter`, `tool_call_invalid_tool_name`,
+`tool_call_trailing_content`; the Anthropic envelope expresses the class in its message because its
+error schema has no code field. A demotion that never formed a function name (prose quoting the
+markers) stays a silent byte-exact round-trip, and the Engine aggregate result always retains the
+demoted bytes for CLI and benchmark consumers.
 
 Messages enter the selected template in their input order. The maintained Qwen templates keep
 system/developer messages at their original positions.
@@ -928,7 +946,9 @@ sequences. Pretty values use readable units and rounded rates; use the independe
 complete fields and full precision. Operational records never contain prompts, generated text,
 request bodies, credentials, or arbitrary client error messages.
 If a tool marker is returned to text because its structure or tool identity cannot be represented,
-Serve emits one warning with only the failure classification, never the generated markup.
+Serve emits one warning with only the failure classification, never the generated markup. A demotion
+that lost an attempted call additionally signals the client instead of delivering the markup; see
+[Tool-call demotion signal](#tool-call-demotion-signal).
 
 ## Structured request log
 

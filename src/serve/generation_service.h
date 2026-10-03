@@ -64,6 +64,10 @@ struct StreamSink {
     std::function<void(const ninfer::GenerationTimingObservation& timing)> on_timing;
     std::function<void(const std::string& delta_text)> on_content;
     std::function<void(const std::string& delta_text)> on_reasoning;
+    // ADR-0002: a demoted tool-call region (`text` holds only the region bytes). The route either
+    // signals the class (call loss) or republishes the bytes as ordinary content (benign).
+    std::function<void(const std::string& text, const ninfer::ToolCallDemotion& demotion)>
+        on_tool_call_demoted;
     std::function<bool()> is_cancelled;
 };
 

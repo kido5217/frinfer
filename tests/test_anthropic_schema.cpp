@@ -1,6 +1,7 @@
 #include "serve/anthropic_messages.h"
 
 #include "serve/generation_service.h"
+#include "serve/tool_call_signal.h"
 #include "serve/translate.h"
 
 #include <nlohmann/json.hpp>
@@ -636,6 +637,18 @@ int test_aggregate_and_errors() {
                           error["request_id"] == "req_error" &&
                           error["error"]["type"] == "overloaded_error",
                       "Anthropic overload or request-id error mapping is wrong");
+
+    const ApiError demotion =
+        tool_call_demotion_error(ninfer::ToolCallParseFallbackReason::UndeclaredTool);
+    const Json demotion_body = Json::parse(make_anthropic_error_body(demotion, "req_demotion"));
+    failures += check(demotion_body["type"] == "error" &&
+                          demotion_body["error"]["type"] == "tool_call_error" &&
+                          demotion_body["error"]["message"].get<std::string>().find(
+                              "undeclared tool") != std::string::npos,
+                      "Anthropic demotion error shape is wrong");
+    const std::string demotion_event = make_anthropic_sse_error(demotion, "req_demotion");
+    failures += check(demotion_event.starts_with("event: error\ndata: "),
+                      "Anthropic demotion SSE error is not the native error event");
     return failures;
 }
 

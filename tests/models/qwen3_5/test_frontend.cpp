@@ -1704,6 +1704,92 @@ int test_structured_tool_output() {
     return failures;
 }
 
+// ADR-0002 signaling: the session marks a demoted tool-call region on the streaming delta so the
+// serve can withhold the region and signal the class; bytes before the region stay ordinary
+// content, and an accepted call is never marked.
+int test_tool_call_demotion_marking() {
+    const Frontend frontend = make_frontend(resources());
+
+    ninfer::ChatMessage message;
+    message.role = ninfer::ChatRole::User;
+    message.parts.push_back(
+        ninfer::MessagePart{.kind = ninfer::MessagePartKind::Text, .text = "x", .media = {}});
+    ninfer::PromptInput input;
+    input.messages.push_back(std::move(message));
+    input.options.enable_thinking = false;
+    input.options.tool_jsons.push_back(
+        R"({"type":"function","function":{"name":"bash","parameters":{"type":"object","properties":{"command":{"type":"string"}},"required":["command"]}}})");
+    auto prompt = frontend.prepare(std::move(input));
+
+    const auto run_terminal = [&](const std::string& generated) {
+        auto session = frontend.make_output_session(
+            prompt, {}, ninfer::OutputOptions{.tool_name_max_length = 64});
+        const std::vector<ninfer::TokenId> tokens = fixture_tokenizer().encode(generated);
+        const auto decision = session.preview_model(tokens, static_cast<std::uint32_t>(tokens.size()),
+                                                    ninfer::FinishReason::OutputLimit);
+        check(decision.finish_reason == ninfer::FinishReason::OutputLimit,
+              "demotion test did not reach the terminal transaction");
+        return session.commit_preview();
+    };
+
+    int failures = 0;
+
+    // A truncated call (a lost call): the region tail is isolated by text_offset and everything
+    // before it stays ordinary content.
+    const std::string truncated =
+        "Calling.\n\n<tool_call>\n<function=bash>\n<parameter=command>\nprintf 'cut";
+    const PublishedOutput lost_output = run_terminal(truncated);
+    const ninfer::OutputDelta* lost_delta = nullptr;
+    for (const ninfer::OutputDelta& delta : lost_output) {
+        if (delta.demotion) { lost_delta = &delta; }
+    }
+    failures += check(lost_delta != nullptr,
+                      "lost-call demotion was not marked on the streaming delta");
+    if (lost_delta != nullptr) {
+        const std::string region = "<tool_call>\n<function=bash>\n<parameter=command>\nprintf 'cut";
+        failures +=
+            check(lost_delta->channel == ninfer::OutputChannel::Content &&
+                      lost_delta->demotion->fallback_reason ==
+                          ninfer::ToolCallParseFallbackReason::MalformedStructure &&
+                      lost_delta->demotion->call_attempted &&
+                      lost_delta->text.substr(0, lost_delta->demotion->text_offset) ==
+                          "Calling.\n\n" &&
+                      lost_delta->text.substr(lost_delta->demotion->text_offset) == region,
+                  "lost-call demotion metadata does not isolate the region bytes");
+    }
+
+    // A region that is the entire transaction: offset 0, and the tail is the whole delta.
+    const PublishedOutput bare_output =
+        run_terminal("<tool_call>\n<function=bash>\n<parameter=command>\nprintf 'cut");
+    const ninfer::OutputDelta* bare_delta = nullptr;
+    for (const ninfer::OutputDelta& delta : bare_output) {
+        if (delta.demotion) { bare_delta = &delta; }
+    }
+    failures += check(bare_delta != nullptr && bare_delta->demotion->text_offset == 0 &&
+                          bare_delta->text.starts_with("<tool_call>") &&
+                          bare_delta->demotion->call_attempted,
+                      "whole-transaction demotion did not isolate at offset zero");
+
+    // A quoted marker with no call (benign): marked, but call_attempted stays false.
+    const PublishedOutput benign_output = run_terminal("Note <tool_call> quoted only");
+    const ninfer::OutputDelta* benign_delta = nullptr;
+    for (const ninfer::OutputDelta& delta : benign_output) {
+        if (delta.demotion) { benign_delta = &delta; }
+    }
+    failures += check(benign_delta != nullptr && !benign_delta->demotion->call_attempted,
+                      "benign demotion lost its call_attempted=false classification");
+
+    // An accepted call publishes without any demotion mark.
+    const PublishedOutput accepted_output = run_terminal(
+        "Calling.  \n<tool_call>\n<function=bash>\n<parameter=command>\nls\n</parameter>\n</function>\n</tool_call>");
+    bool marked = false;
+    for (const ninfer::OutputDelta& delta : accepted_output) {
+        marked = marked || delta.demotion.has_value();
+    }
+    failures += check(!marked, "accepted call was marked as a demotion");
+    return failures;
+}
+
 int test_reasoning_split(const Frontend& frontend) {
     ninfer::ChatMessage message;
     message.role = ninfer::ChatRole::User;
@@ -2633,6 +2719,7 @@ int main() {
     failures += test_same_token_stop_priority(frontend);
     failures += test_terminal_flush(frontend);
     failures += test_structured_tool_output();
+    failures += test_tool_call_demotion_marking();
     failures += test_reasoning_split(frontend);
     failures += test_thinking_budget_control(frontend);
     failures += test_grammar_constraints(frontend);
