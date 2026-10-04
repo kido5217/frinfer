@@ -804,8 +804,9 @@ selected template.
 shared constraint contract as the OpenAI `response_format` json_schema conversion (see
 [Constrained output](#constrained-output)): the same keyword allowlist and context rules, the same
 64 KiB payload and 64-level nesting limits, and the same `json_schema_invalid`,
-`json_schema_unsupported`, and `constraint_too_large` fail-closed codes, reported on
-`output_config.format`. As on the chat route, a constrained answer cannot be combined with a
+`json_schema_unsupported`, and `constraint_too_large` fail-closed codes, attributed to
+`output_config.format` internally — the Anthropic error body serializes only `type` and `message`,
+as the protocol specifies. As on the chat route, a constrained answer cannot be combined with a
 `tools` field (the tool-call parser owns the turn), and `format` and `effort` may share one
 `output_config` object. A hand-rolled client that also sends a top-level `output_format` is
 rejected with `constrained_decoding_conflict`: this mirrors the official SDK's own client-side
