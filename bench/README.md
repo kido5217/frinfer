@@ -42,7 +42,8 @@ The `dev` configure preset also enables all benchmarks, alongside products and t
 Python interpreter; a benchmark-only configuration does not require one.
 
 The devShell provides `just bench <target>` to build and run one benchmark executable (for example
-`just bench ninfer_rmsnorm_bench --profile`), and `just build` for the full `dev` preset build.
+`just bench ninfer_rmsnorm_bench`), and `just build` for the full `dev` preset build. Benchmark
+flags forward to the executable.
 
 ## Product benchmark
 

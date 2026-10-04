@@ -23,7 +23,7 @@ test-one name *args:
     cmake --build build --parallel --target {{name}}
     ctest --preset dev -R {{name}} --output-on-failure {{args}}
 
-# Build and run a benchmark executable: `just bench ninfer_rmsnorm_bench --profile`.
+# Build and run a benchmark executable: `just bench ninfer_rmsnorm_bench --tokens 128`.
 bench target *args:
     cmake --build build --parallel --target {{target}}
     build/bench/{{target}} {{args}}
