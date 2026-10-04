@@ -25,7 +25,7 @@ the `frinfer` product binaries. The rest of this README describes the combined p
 ### Changes from upstream
 
 Maintained: add or update a row whenever a fork feature changes or its status changes.
-Last updated 2026-10-04 (`feat/serve-logprobs`, `ae8f6acd`).
+Last updated 2026-10-04 (`feat/nvfp4-moe-codec`, `6262bcc9`).
 
 | What | Why | How | Status | Source |
 |---|---|---|---|---|
@@ -36,6 +36,7 @@ Last updated 2026-10-04 (`feat/serve-logprobs`, `ae8f6acd`).
 | Token log probabilities — OpenAI `logprobs`/`top_logprobs` on the chat + Responses routes | Clients and evaluators need the model's per-token confidence (OpenAI spec shape, not llama.cpp's self-declared non-compatible one) | New bounded `logprob_topk` split-CTA Op gathers the full-vocabulary log-softmax of the post-mask, penalty/temperature-scaled sampler logits before truncation; Engine per-committed-token channel aligned with `preview_model`; chat `{content, refusal}` + Responses aggregate/streaming shapes; Anthropic route unaffected | shipped | OpenAI OpenAPI spec (shape); evidence gate `research/logprobs-evidence` (distribution, oracle, cost) |
 | Realized reasoning tokens in the request log (schema v24) + CLI summary | Clients must distinguish realized thinking tokens from the thinking budget | `reasoning_tokens` in `request_done.result`, `model_thinking_tokens` → `budget_thinking_tokens`, realized tokens in the CLI generation summary | shipped (r5) | FrInfer (opencode-deployment driven) |
 | Benchmark extensions | Measure fork features at their claimed scope | `ninfer_bench --grammar` (constrained-decoding mode); Qwen3.8 GPQA context-window comparison | shipped | GPQA-Diamond (public benchmark); runners: FrInfer |
+| NVFP4 35B-A3B MoE experts — converter recipe + `.ninfer` codec + loader binding | The MoE line had no native FP4 expert route; prefill is compute-bound on the Q4/Q5 banks | `qwen3_6_35b_a3b_nvfp4` imports the compressed-tensors per-expert tensors as per-expert `nvfp4` parents (one FP32 divisor each); `SparseMoeWeights` carries the expert banks and the Op validation/route-plan profiles admit the codec. The W4A4 GEMM and e2e follow in #207/#208 | in progress — converts, round-trips and loads; execution pending | FrInfer; evidence gate `research/nvfp4-moe-evidence` (#177) |
 | Upstream sync process | Keep the fork current while preserving upstream ancestry | True merge commits per the sync runbook; drift alert on the vendored subset; last sync `d44ab584` (2026-09-30) | ongoing | Neroued/ninfer (upstream) |
 | Product executables renamed to the `frinfer` family | Distinguish the fork's binaries from upstream's | CMake target rename (`frinfer`, `frinfer-serve`, `frinfer-perplexity`) | shipped | FrInfer |
 | Nix flake dev environment | Reproducible build environment | `flake.nix` at the repo root: CUDA 13.1, C++20, CMake/Ninja, FFmpeg, libcurl, Python 3.13 + torch; builds run in `nix develop` | shipped | nixpkgs (CUDA 13.1 `cudaPackages_13_1`) |
