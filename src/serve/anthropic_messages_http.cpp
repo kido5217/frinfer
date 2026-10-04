@@ -2,14 +2,12 @@
 
 #include "serve/anthropic_messages.h"
 #include "serve/http_transport.h"
-#include "serve/tool_call_signal.h"
 
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <exception>
 #include <memory>
-#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -17,8 +15,7 @@
 namespace ninfer::serve {
 
 void HttpServer::handle_count_tokens(const httplib::Request& req, httplib::Response& res) {
-    const std::string request_id = new_anthropic_request_id();
-    res.set_header("request-id", request_id);
+    const std::string request_id = res.get_header_value("request-id");
     try {
         const AnthropicCountTokensRequest request =
             parse_anthropic_count_tokens_request(parse_json_body(req));
@@ -39,8 +36,7 @@ void HttpServer::handle_count_tokens(const httplib::Request& req, httplib::Respo
 }
 
 void HttpServer::handle_messages(const httplib::Request& req, httplib::Response& res) {
-    const std::string request_id = new_anthropic_request_id();
-    res.set_header("request-id", request_id);
+    const std::string request_id = res.get_header_value("request-id");
 
     AnthropicMessagesRequest request;
     try {
@@ -62,9 +58,10 @@ void HttpServer::handle_messages(const httplib::Request& req, httplib::Response&
     }
 
     const std::uint64_t req_id = ++request_seq_;
-    const RequestLogMetadata metadata{.model                  = request.model,
-                                      .stream                 = request.stream,
-                                      .output_tokens_explicit = request.output_tokens_explicit};
+    RequestLogMetadata metadata{.http_request_id        = request_id,
+                                .model                  = request.model,
+                                .stream                 = request.stream,
+                                .output_tokens_explicit = request.output_tokens_explicit};
     PreparedRequest prepared;
     try {
         prepared = service_->prepare(request.generation,
@@ -90,6 +87,7 @@ void HttpServer::handle_messages(const httplib::Request& req, httplib::Response&
 
     const AnthropicResponseIdentity identity =
         make_anthropic_response_identity(request_id, request.model);
+    metadata.response_id   = identity.message_id;
     const int input_tokens = prepared.prompt_tokens;
 
     auto lifecycle = begin_request(make_request_log_context(
@@ -114,13 +112,6 @@ void HttpServer::handle_messages(const httplib::Request& req, httplib::Response&
             return;
         }
         lifecycle->done(outcome);
-        if (tool_call_demotion_signals(outcome.tool_call_parse.fallback_reason,
-                                       outcome.tool_call_parse.call_attempted)) {
-            res.set_header("x-should-retry", "true");
-            write_anthropic_error(
-                res, tool_call_demotion_error(outcome.tool_call_parse.fallback_reason), request_id);
-            return;
-        }
         try {
             set_owned_json_content(res, make_anthropic_messages_response(identity, outcome),
                                    prepared.lifetime);
@@ -173,28 +164,15 @@ void HttpServer::handle_messages(const httplib::Request& req, httplib::Response&
                 };
 
                 GenerationOutcome outcome;
-                std::optional<ApiError> demotion_signal;
                 try {
                     StreamSink output;
                     output.on_start = [&](const ninfer::GenerationStart& start) {
                         render_and_write(transport, [&] { return encoder->start(start); });
                     };
-                    output.on_tool_call_demoted = [&](const std::string& text,
-                                                      const ninfer::ToolCallDemotion& demotion) {
-                        if (tool_call_demotion_signals(demotion.fallback_reason,
-                                                       demotion.call_attempted)) {
-                            // ADR-0002: the lost call is signaled in-band; the region bytes are
-                            // withheld from the stream (the Engine aggregate keeps them).
-                            demotion_signal = tool_call_demotion_error(demotion.fallback_reason);
-                            return;
-                        }
-                        render_and_write(transport, [&] { return encoder->content_delta(text); });
-                    };
                     output.on_reasoning = [&](const std::string& text) {
                         render_and_write(transport, [&] { return encoder->reasoning_delta(text); });
                     };
-                    output.on_content = [&](const std::string& text,
-                                            std::vector<ninfer::TokenLogprob> /*logprobs*/) {
+                    output.on_content = [&](const std::string& text) {
                         render_and_write(transport, [&] { return encoder->content_delta(text); });
                     };
                     output.is_cancelled = [&] { return transport.poll(); };
@@ -225,7 +203,12 @@ void HttpServer::handle_messages(const httplib::Request& req, httplib::Response&
                 }
 
                 lifecycle->done(outcome);
-                if (demotion_signal) { return send_error(*demotion_signal); }
+                if (outcome.finish_reason == ninfer::FinishReason::Cancelled ||
+                    stream->cancelled.load(std::memory_order_acquire)) {
+                    lifecycle->response_failure(
+                        make_client_disconnected_failure(RequestFailurePhase::Transport));
+                    return false;
+                }
                 std::vector<std::string> terminal;
                 try {
                     terminal = encoder->finish(outcome);

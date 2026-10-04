@@ -10,6 +10,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <exception>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -22,15 +23,19 @@ struct RequestLifetime;
 struct RequestCapacity;
 
 struct GenerationMetrics {
-    double prepare_seconds         = 0.0;
-    double ttft_seconds            = 0.0;
-    double vision_seconds          = 0.0;
-    double prefill_seconds         = 0.0;
-    double decode_seconds          = 0.0;
-    double prompt_wall_seconds     = 0.0;
-    double generation_wall_seconds = 0.0;
-    double total_seconds           = 0.0;
+    std::uint64_t engine_request_id       = 0;
+    std::uint32_t computed_prefill_tokens = 0;
+    double prepare_seconds                = 0.0;
+    double ttft_seconds                   = 0.0;
+    double vision_seconds                 = 0.0;
+    double prefill_seconds                = 0.0;
+    double decode_seconds                 = 0.0;
+    double prompt_wall_seconds            = 0.0;
+    double generation_wall_seconds        = 0.0;
+    double total_seconds                  = 0.0;
     ninfer::GenerationEngineTiming engine_timing;
+    std::optional<ninfer::GenerationFirstOutputTiming> first_output_timing;
+    ninfer::GenerationSchedulingStats scheduling;
 
     SpeculativeBackend speculative_backend    = SpeculativeBackend::None;
     std::uint32_t speculative_draft_window    = 0;
@@ -41,14 +46,12 @@ struct GenerationMetrics {
     std::vector<std::uint64_t> speculative_accepted_per_position;
     std::uint32_t prefix_cache_hit_tokens     = 0;
     ninfer::PrefixReusePath prefix_reuse_path = ninfer::PrefixReusePath::Root;
-    ninfer::MaterializationDiagnostics materialization;
 };
 
 struct GenerationOutcome {
     std::string text;
     std::string reasoning;
-    // Per-content-token logprob records when the request opted in; empty otherwise.
-    std::vector<ninfer::TokenLogprob> content_logprobs;
+    std::vector<ninfer::TokenId> generated_token_ids;
     std::vector<ninfer::GeneratedToolCall> tool_calls;
     ninfer::ToolCallParseDiagnostics tool_call_parse;
     int prompt_tokens     = 0;
@@ -60,20 +63,19 @@ struct GenerationOutcome {
     GenerationMetrics metrics;
 };
 
+// A transport may report an interrupted stream through a callback or is_cancelled().
+// Generation still settles through Engine cancellation and returns its actual work statistics.
+class ClientDisconnected final : public std::exception {
+public:
+    [[nodiscard]] const char* what() const noexcept override { return "client disconnected"; }
+};
+
 struct StreamSink {
     std::function<void(const ninfer::GenerationStart& start)> on_start;
     std::function<void(const ninfer::PromptProgress& progress)> on_progress;
     std::function<void(const ninfer::GenerationTimingObservation& timing)> on_timing;
-    // Content delta with the logprob records that arrived in the same output delta (token order).
-    // Passed together so a route can emit one event carrying both the text and its logprobs; the
-    // records are empty when logprobs are not requested for this delta.
-    std::function<void(const std::string& delta_text, std::vector<ninfer::TokenLogprob> logprobs)>
-        on_content;
+    std::function<void(const std::string& delta_text)> on_content;
     std::function<void(const std::string& delta_text)> on_reasoning;
-    // ADR-0002: a demoted tool-call region (`text` holds only the region bytes). The route either
-    // signals the class (call loss) or republishes the bytes as ordinary content (benign).
-    std::function<void(const std::string& text, const ninfer::ToolCallDemotion& demotion)>
-        on_tool_call_demoted;
     std::function<bool()> is_cancelled;
 };
 
@@ -83,10 +85,7 @@ enum class GenerationConsumerMode : std::uint8_t {
 };
 
 // Translate Engine request failures into the shared protocol-neutral HTTP error contract.
-// `source` selects the contract code for a rejected constraint (grammar_invalid vs
-// json_schema_invalid); other kinds ignore it.
-ApiError request_error_to_api_error(const ninfer::RequestError& exception,
-                                    ConstraintSource source = ConstraintSource::None);
+ApiError request_error_to_api_error(const ninfer::RequestError& exception);
 
 // Preparation ends by synchronously submitting the owning prompt to the Engine FIFO. The returned
 // request keeps its ingress/response lifetime reservation until the HTTP response is released and

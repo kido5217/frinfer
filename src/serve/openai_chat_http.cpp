@@ -3,14 +3,12 @@
 #include "serve/http_transport.h"
 #include "serve/openai_chat.h"
 #include "serve/openai_common.h"
-#include "serve/tool_call_signal.h"
 
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <exception>
 #include <memory>
-#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -37,9 +35,10 @@ void HttpServer::handle_chat_completions(const httplib::Request& req, httplib::R
     }
 
     const std::uint64_t req_id = ++request_seq_;
-    const RequestLogMetadata metadata{.model                  = request.model,
-                                      .stream                 = request.stream,
-                                      .output_tokens_explicit = request.output_tokens_explicit};
+    RequestLogMetadata metadata{.http_request_id        = res.get_header_value("x-request-id"),
+                                .model                  = request.model,
+                                .stream                 = request.stream,
+                                .output_tokens_explicit = request.output_tokens_explicit};
     PreparedRequest prepared;
     try {
         const ninfer::GenerationObservationOptions observation{
@@ -68,17 +67,9 @@ void HttpServer::handle_chat_completions(const httplib::Request& req, httplib::R
     }
 
     const OpenAIChatResponseIdentity identity = make_openai_chat_response_identity(request.model);
+    metadata.response_id                      = identity.id;
     auto lifecycle                            = begin_request(make_request_log_context(
         req_id, "openai_chat_completions", request.generation, metadata, prepared));
-    // A streaming completion publishes its id before the first delta, which is what makes the
-    // control route addressable while the client still reads the stream. The registration lives as
-    // long as this handler's shared state, so it is released when the response ends either way.
-    const std::shared_ptr<ReasoningControlRegistration> control_registration = arm_reasoning_control(
-        reasoning_controls_, identity.id,
-        {.control                 = request.reasoning_control ? prepared.generation.control()
-                                                              : ninfer::GenerationControl{},
-         .requested               = request.reasoning_control,
-         .id_live_while_generating = request.stream});
 
     if (!request.stream) {
         GenerationOutcome outcome;
@@ -100,16 +91,8 @@ void HttpServer::handle_chat_completions(const httplib::Request& req, httplib::R
             return;
         }
         lifecycle->done(outcome);
-        if (tool_call_demotion_signals(outcome.tool_call_parse.fallback_reason,
-                                       outcome.tool_call_parse.call_attempted)) {
-            res.set_header("x-should-retry", "true");
-            write_openai_error(res,
-                               tool_call_demotion_error(outcome.tool_call_parse.fallback_reason));
-            return;
-        }
         try {
-            set_owned_json_content(res,
-                                   make_chat_completion_response(identity, outcome, request.logprobs),
+            set_owned_json_content(res, make_chat_completion_response(identity, outcome),
                                    prepared.lifetime);
         } catch (const std::exception& exception) {
             lifecycle->response_failure(make_internal_request_failure(
@@ -128,16 +111,12 @@ void HttpServer::handle_chat_completions(const httplib::Request& req, httplib::R
         const bool timings_per_token = request.timings_per_token;
         auto stream                  = std::make_shared<HttpGenerationStream>(std::move(prepared));
         auto encoder = std::make_shared<OpenAIChatStream>(identity, request.include_usage,
-                                                          timings_per_token, return_progress,
-                                                          request.logprobs);
+                                                          timings_per_token, return_progress);
 
         prepare_sse_response(res);
         res.set_chunked_content_provider(
             "text/event-stream",
-            // The registration is captured, not left in the handler: the provider runs after this
-            // frame returns, and the completion must stay controllable for as long as its stream
-            // is still being read.
-            [this, stream, encoder, lifecycle, control_registration, return_progress,
+            [this, stream, encoder, lifecycle, return_progress,
              timings_per_token](std::size_t, httplib::DataSink& sink) -> bool {
                 if (stream->started.exchange(true, std::memory_order_acq_rel)) {
                     sink.done();
@@ -176,7 +155,6 @@ void HttpServer::handle_chat_completions(const httplib::Request& req, httplib::R
                 }
 
                 GenerationOutcome outcome;
-                std::optional<ApiError> demotion_signal;
                 try {
                     StreamSink output;
                     output.on_start = [&](const ninfer::GenerationStart& start) {
@@ -197,22 +175,8 @@ void HttpServer::handle_chat_completions(const httplib::Request& req, httplib::R
                             encoder->note_timing(timing);
                         };
                     }
-                    output.on_tool_call_demoted = [&](const std::string& text,
-                                                      const ninfer::ToolCallDemotion& demotion) {
-                        if (tool_call_demotion_signals(demotion.fallback_reason,
-                                                       demotion.call_attempted)) {
-                            // ADR-0002: the lost call is signaled in-band; the region bytes are
-                            // withheld from the stream (the Engine aggregate keeps them).
-                            demotion_signal = tool_call_demotion_error(demotion.fallback_reason);
-                            return;
-                        }
+                    output.on_content = [&](const std::string& text) {
                         render_and_write(transport, [&] { return encoder->content_delta(text); });
-                    };
-                    output.on_content = [&](const std::string& text,
-                                            std::vector<ninfer::TokenLogprob> records) {
-                        render_and_write(transport, [&] {
-                            return encoder->content_delta(text, std::move(records));
-                        });
                     };
                     output.on_reasoning = [&](const std::string& text) {
                         render_and_write(transport, [&] { return encoder->reasoning_delta(text); });
@@ -246,7 +210,12 @@ void HttpServer::handle_chat_completions(const httplib::Request& req, httplib::R
                 }
 
                 lifecycle->done(outcome);
-                if (demotion_signal) { return send_error(*demotion_signal); }
+                if (outcome.finish_reason == ninfer::FinishReason::Cancelled ||
+                    stream->cancelled.load(std::memory_order_acquire)) {
+                    lifecycle->response_failure(
+                        make_client_disconnected_failure(RequestFailurePhase::Transport));
+                    return false;
+                }
                 std::vector<std::string> terminal;
                 try {
                     terminal = encoder->finish(outcome);

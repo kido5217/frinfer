@@ -45,6 +45,54 @@ std::uint64_t parse_u64(const char* text, const char* label) {
     return static_cast<std::uint64_t>(value);
 }
 
+std::size_t parse_host_context_mib(const char* text) {
+    constexpr std::size_t bytes_per_mib = 1ULL << 20;
+    constexpr std::size_t maximum       = std::numeric_limits<std::size_t>::max();
+    const std::string_view value(text);
+    const std::size_t point      = value.find('.');
+    const std::string_view whole = value.substr(0, point);
+    std::string_view fraction =
+        point == std::string_view::npos ? std::string_view{} : value.substr(point + 1);
+    if (whole.empty() || whole.find_first_not_of("0123456789") != std::string_view::npos ||
+        (point != std::string_view::npos &&
+         (fraction.empty() ||
+          fraction.find_first_not_of("0123456789") != std::string_view::npos))) {
+        throw std::invalid_argument("--host-context-mib requires a nonnegative decimal MiB value");
+    }
+
+    std::size_t whole_mib = 0;
+    for (const char character : whole) {
+        const std::size_t digit = static_cast<std::size_t>(character - '0');
+        if (whole_mib > (maximum / bytes_per_mib - digit) / 10) {
+            throw std::invalid_argument("--host-context-mib is out of range");
+        }
+        whole_mib = whole_mib * 10 + digit;
+    }
+
+    // A whole-byte MiB value has at most 20 fractional decimal digits (1 MiB = 2^20 bytes).
+    // Use exact integer arithmetic so decimal parsing cannot round the requested budget upward.
+    while (!fraction.empty() && fraction.back() == '0') { fraction.remove_suffix(1); }
+    if (fraction.size() > 20) {
+        throw std::invalid_argument("--host-context-mib must resolve to a whole number of bytes");
+    }
+    unsigned __int128 numerator = 0;
+    unsigned __int128 divisor   = 1;
+    for (const char character : fraction) {
+        numerator = numerator * 10 + static_cast<unsigned int>(character - '0');
+        divisor *= 10;
+    }
+    numerator *= bytes_per_mib;
+    if (numerator % divisor != 0) {
+        throw std::invalid_argument("--host-context-mib must resolve to a whole number of bytes");
+    }
+    const std::size_t fractional_bytes = static_cast<std::size_t>(numerator / divisor);
+    const std::size_t whole_bytes      = whole_mib * bytes_per_mib;
+    if (fractional_bytes > maximum - whole_bytes) {
+        throw std::invalid_argument("--host-context-mib is out of range");
+    }
+    return whole_bytes + fractional_bytes;
+}
+
 KvCacheStorage parse_kv_dtype(const char* text) {
     const std::string value(text);
     if (value == "bf16") { return KvCacheStorage::BFloat16; }
@@ -73,23 +121,17 @@ std::string serve_usage_text(const char* argv0) {
            "[--context-cost-presets FILE] "
            "[--max-request-mib N] [--media-cache-mib N] [--media-live-mib N] "
            "[--media-preprocess-threads N] "
-           "[--device-state-slots N] [--host-state-slots N] [--host-kv-mib N] "
-           "[--max-private-continuations N] [--max-shared-prefixes N] "
-           "[--max-long-anchors-per-continuation N] "
+           "[--device-state-slots N] [--host-context-mib N] "
            "[--request-log-jsonl FILE] "
            "[--response-store-max-records N] [--response-store-max-mib N] "
            "[--kv-dtype bf16|int8|fp8|nvfp4|k8v4] [--spec mtp|dflash|dflash2 --draft-tokens N] "
            "[--default-max-tokens N] [--default-thinking-budget N] "
            "[--vision] [--no-cuda-graph] [--no-prefix-reuse] "
            "[--chat-template FILE] [--lm-head-draft] [--no-thinking] [--preserve-thinking] "
-            "[--cors] [--metrics] "
+           "[--cors] "
            "[--temperature F] [--top-p F] [--top-k N] [--min-p F] [--presence-penalty F] "
            "[--frequency-penalty F] [--seed N] [--greedy]\n"
            "       [--log-level trace|debug|info|warning|error|critical|off]\n"
-           "       [--hf-repo OWNER/REPO --hf-file FILE [--hf-revision REV] [--hf-token TOKEN]]\n"
-           "       [--model-url https://.../model.ninfer] [--cache-dir DIR] [--offline] "
-           "[--cache-list]\n"
-           "       [--version]\n"
            "       serves OpenAI Responses/Chat Completions and Anthropic Messages endpoints\n"
            "       --default-max-tokens defaults to " +
            std::to_string(kDefaultMaxTokens) +
@@ -98,8 +140,7 @@ std::string serve_usage_text(const char* argv0) {
            "       --media-cache-mib defaults to 1024; 0 disables retained media reuse\n"
            "       --media-live-mib defaults to 2048 and bounds all live BF16 patch payloads\n"
            "       --media-preprocess-threads defaults to 0 (auto, at most 16 workers)\n"
-            "       --request-log-jsonl appends full-precision server/request records\n"
-            "       --metrics publishes Prometheus metrics on GET /metrics\n"
+           "       --request-log-jsonl appends full-precision server/request records\n"
            "       --model-id overrides the artifact metadata.name reported by the server\n"
            "       Responses state is process-local and bounded to 1024 records / 256 MiB by "
            "default\n"
@@ -108,21 +149,19 @@ std::string serve_usage_text(const char* argv0) {
            "       --kv-capacity auto leaves " +
            std::to_string(kDefaultKvCapacityHeadroomBytes / (1024ULL * 1024ULL)) +
            " MiB of sizing headroom\n"
-           "       --no-prefix-reuse disables compatible-prefix caching (enabled by default)\n"
-           "       context cache defaults: device-state=max-concurrency, private=2x concurrency, "
-           "shared=max(max-concurrency,4), anchors=2; Host state=8 slots, Host KV=8192 MiB\n"
-           "       --device-state-slots is extra checkpoint capacity beyond active lanes; "
-           "--host-kv-mib uses MiB\n"
+           "       --no-prefix-reuse disables cross-request history; request pause/replay "
+           "resources remain available\n"
+           "       context defaults: device-state=max-concurrency; Host budget is resolved from "
+           "8192 MiB plus eight native StateImages\n"
+           "       --device-state-slots is extra capacity beyond active lanes; "
+           "--host-context-mib bounds shared Host State/KV and in-flight storage in MiB\n"
+           "       --host-context-mib accepts decimal MiB values that resolve to whole bytes\n"
            "       --default-thinking-budget caps model-origin thinking for enabled requests; "
            "control tokens count toward the request output limit\n"
            "       --preserve-thinking retains closed-turn assistant reasoning in later prompts\n"
            "       sampler defaults come from the loaded model and resolved thinking mode; "
            "server flags and request fields override individual values.\n"
-           "       --greedy forces temperature 0 (exact argmax).\n"
-           "Model acquisition takes exactly one source: positional <model.ninfer>, "
-           "--hf-repo + --hf-file (cached under --cache-dir), or --model-url.\n"
-           "--hf-revision defaults to main; --hf-token defaults to $HF_TOKEN. "
-           "--offline reuses the cache; --cache-list prints cached artifacts.\n";
+           "       --greedy forces temperature 0 (exact argmax).\n";
 }
 
 ServeOptions parse_serve_options(int argc, char** argv) {
@@ -136,28 +175,17 @@ ServeOptions parse_serve_options(int argc, char** argv) {
             continue;
         }
         options.startup_argv.emplace_back(argv[i] == nullptr ? "" : argv[i]);
-        const std::string& last = options.startup_argv.back();
-        redact_next = last == "--api-key" || last == "--hf-token";
+        redact_next = options.startup_argv.back() == "--api-key";
     }
     bool default_max_tokens_explicit = false;
     bool kv_capacity_explicit        = false;
-    bool context_capacity_explicit   = false;
     if (argc >= 2 && (std::string(argv[1]) == "--help" || std::string(argv[1]) == "-h")) {
         options.help_requested = true;
         return options;
     }
-    if (argc >= 2 && std::string(argv[1]) == "--version") {
-        options.version_requested = true;
-        return options;
-    }
-    int positional_end = 2;
-    if (argc >= 2 && std::string(argv[1]).rfind("--", 0) != 0) {
-        options.artifact_path = argv[1];
-        positional_end        = 2;
-    } else {
-        positional_end = 1;
-    }
-    for (int i = positional_end; i < argc; ++i) {
+    if (argc < 2) { throw std::invalid_argument("artifact path is required"); }
+    options.artifact_path = argv[1];
+    for (int i = 2; i < argc; ++i) {
         const std::string arg    = argv[i];
         const auto require_value = [&](const char* flag) -> const char* {
             if (++i >= argc) { throw std::invalid_argument(std::string(flag) + " needs a value"); }
@@ -231,33 +259,9 @@ ServeOptions parse_serve_options(int argc, char** argv) {
         } else if (arg == "--device-state-slots") {
             options.context_cache.device_state_slots = static_cast<std::uint32_t>(
                 parse_nonnegative_int(require_value("--device-state-slots"), "device-state-slots"));
-            context_capacity_explicit = true;
-        } else if (arg == "--host-state-slots") {
-            options.context_cache.host_state_slots = static_cast<std::uint32_t>(
-                parse_nonnegative_int(require_value("--host-state-slots"), "host-state-slots"));
-            context_capacity_explicit = true;
-        } else if (arg == "--host-kv-mib") {
-            const std::uint64_t mib = parse_u64(require_value("--host-kv-mib"), "host-kv-mib");
-            if (mib > std::numeric_limits<std::size_t>::max() / (1ULL << 20)) {
-                throw std::invalid_argument("--host-kv-mib is out of range");
-            }
-            options.context_cache.host_kv_capacity_bytes = static_cast<std::size_t>(mib << 20);
-            context_capacity_explicit                    = true;
-        } else if (arg == "--max-private-continuations") {
-            options.context_cache.max_private_continuations =
-                static_cast<std::uint32_t>(parse_nonnegative_int(
-                    require_value("--max-private-continuations"), "max-private-continuations"));
-            context_capacity_explicit = true;
-        } else if (arg == "--max-shared-prefixes") {
-            options.context_cache.max_shared_prefixes =
-                static_cast<std::uint32_t>(parse_nonnegative_int(
-                    require_value("--max-shared-prefixes"), "max-shared-prefixes"));
-            context_capacity_explicit = true;
-        } else if (arg == "--max-long-anchors-per-continuation") {
-            options.context_cache.max_long_anchors_per_continuation = static_cast<std::uint32_t>(
-                parse_nonnegative_int(require_value("--max-long-anchors-per-continuation"),
-                                      "max-long-anchors-per-continuation"));
-            context_capacity_explicit = true;
+        } else if (arg == "--host-context-mib") {
+            options.context_cache.host_capacity_bytes =
+                parse_host_context_mib(require_value("--host-context-mib"));
         } else if (arg == "--request-log-jsonl") {
             options.request_log_jsonl = require_value("--request-log-jsonl");
             if (options.request_log_jsonl.empty()) {
@@ -314,8 +318,6 @@ ServeOptions parse_serve_options(int argc, char** argv) {
             options.preserve_thinking = true;
         } else if (arg == "--cors") {
             options.enable_cors = true;
-        } else if (arg == "--metrics") {
-            options.enable_metrics = true;
         } else if (arg == "--temperature") {
             options.sampling_overrides.temperature =
                 parse_float_in(require_value("--temperature"), "temperature", 0.0f, 2.0f);
@@ -339,27 +341,8 @@ ServeOptions parse_serve_options(int argc, char** argv) {
             options.sampling_overrides.seed = parse_u64(require_value("--seed"), "seed");
         } else if (arg == "--greedy") {
             options.greedy = true;
-        } else if (arg == "--hf-repo") {
-            options.acquisition.hf_repo = require_value("--hf-repo");
-        } else if (arg == "--hf-file") {
-            options.acquisition.hf_file = require_value("--hf-file");
-        } else if (arg == "--hf-revision") {
-            options.acquisition.hf_revision = require_value("--hf-revision");
-        } else if (arg == "--hf-token") {
-            options.acquisition.hf_token = require_value("--hf-token");
-        } else if (arg == "--model-url") {
-            options.acquisition.model_url = require_value("--model-url");
-        } else if (arg == "--cache-dir") {
-            options.acquisition.cache_dir = require_value("--cache-dir");
-        } else if (arg == "--offline") {
-            options.acquisition.offline = true;
-        } else if (arg == "--cache-list") {
-            options.acquisition.cache_list = true;
         } else if (arg == "--log-level") {
             options.log_level = product::parse_log_level(require_value("--log-level"));
-        } else if (arg == "--version") {
-            options.version_requested = true;
-            return options;
         } else {
             throw std::invalid_argument("unknown argument: " + arg);
         }
@@ -367,42 +350,7 @@ ServeOptions parse_serve_options(int argc, char** argv) {
     if (!kv_capacity_explicit) {
         options.kv_capacity = KvCapacityPolicy::explicit_capacity(options.max_context);
     }
-    if (!options.allow_prefix_reuse) {
-        if (context_capacity_explicit) {
-            throw std::invalid_argument(
-                "--no-prefix-reuse cannot be combined with context-cache capacity options");
-        }
-        options.context_cache.enabled                = false;
-        options.context_cache.host_state_slots       = 0;
-        options.context_cache.host_kv_capacity_bytes = 0;
-    }
-    const bool has_hf  = options.acquisition.hf_repo.has_value();
-    const bool has_url = options.acquisition.model_url.has_value();
-    if (has_hf && has_url) {
-        throw std::invalid_argument(
-            "hf_spec_invalid: --hf-repo and --model-url are mutually exclusive");
-    }
-    if (options.acquisition.hf_file && !has_hf) {
-        throw std::invalid_argument("hf_spec_invalid: --hf-file needs --hf-repo");
-    }
-    if (options.acquisition.hf_revision && !has_hf) {
-        throw std::invalid_argument("hf_spec_invalid: --hf-revision needs --hf-repo");
-    }
-    if (options.acquisition.hf_token && !has_hf) {
-        throw std::invalid_argument("hf_spec_invalid: --hf-token needs --hf-repo");
-    }
-    if (has_hf && !options.acquisition.hf_file) {
-        throw std::invalid_argument("hf_spec_invalid: --hf-repo needs --hf-file");
-    }
-    if ((has_hf || has_url) && !options.artifact_path.empty()) {
-        throw std::invalid_argument(
-            "hf_spec_invalid: positional <model.ninfer> and --hf-repo/--model-url "
-            "are mutually exclusive");
-    }
-    if (!has_hf && !has_url && !options.acquisition.cache_list &&
-        options.artifact_path.empty()) {
-        throw std::invalid_argument("artifact path is required");
-    }
+    options.context_cache.enabled = options.allow_prefix_reuse;
     if (options.port <= 0 || options.port > 65535) {
         throw std::invalid_argument("--port must be in [1,65535]");
     }
