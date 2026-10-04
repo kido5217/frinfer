@@ -9,6 +9,7 @@
 // NINFER_TEST_ARTIFACT selects the artifact; without it the test skips (exit 77).
 
 #include "ninfer/engine.h"
+#include "serve/anthropic_messages.h"
 #include "serve/generation_service.h"
 #include "serve/openai_chat.h"
 #include "serve/translate.h"
@@ -58,14 +59,25 @@ ninfer::EngineOptions engine_options(const char* artifact) {
     return options;
 }
 
-ninfer::GenerationResult run_route(ninfer::Engine& engine, const ServeOptions& server,
-                                   const Json& body) {
-    const OpenAIChatRequest parsed        = parse_chat_completion_request(body, limits());
-    const ResolvedPromptSemantics res     = resolve_prompt_semantics(parsed.generation, server);
-    ninfer::RequestOptions options = to_request_options(parsed.generation, server, res, false);
-    ninfer::PreparedPrompt prompt  = engine.prepare(to_prompt_input(parsed.generation, res, {}));
+template <typename ParsedRequest>
+ninfer::GenerationResult run_parsed(ninfer::Engine& engine, const ServeOptions& server,
+                                    const ParsedRequest& parsed) {
+    const ResolvedPromptSemantics res = resolve_prompt_semantics(parsed.generation, server);
+    ninfer::RequestOptions options    = to_request_options(parsed.generation, server, res, false);
+    ninfer::PreparedPrompt prompt = engine.prepare(to_prompt_input(parsed.generation, res, {}));
     ninfer::GenerationHandle handle = engine.submit(std::move(prompt), std::move(options));
     return handle.wait();
+}
+
+ninfer::GenerationResult run_route(ninfer::Engine& engine, const ServeOptions& server,
+                                   const Json& body) {
+    return run_parsed(engine, server, parse_chat_completion_request(body, limits()));
+}
+
+// The same constraint pipeline reached through the Anthropic route's output_config.format.
+ninfer::GenerationResult run_anthropic_route(ninfer::Engine& engine, const ServeOptions& server,
+                                             const Json& body) {
+    return run_parsed(engine, server, parse_anthropic_messages_request(body, limits()));
 }
 
 int exercise(const char* artifact) {
@@ -82,17 +94,15 @@ int exercise(const char* artifact) {
           "grammar completion ends generation");
 
     // 2. JSON Schema response_format: the answer is a valid document of the schema.
+    const Json answer_schema =
+        Json{{"type", "object"},
+             {"additionalProperties", false},
+             {"required", Json::array({"answer"})},
+             {"properties", Json{{"answer", Json{{"type", "number"}}}}}};
     Json schema_body               = base_request();
     schema_body["response_format"] = Json{
         {"type", "json_schema"},
-        {"json_schema",
-         Json{{"name", "answer"},
-              {"strict", true},
-              {"schema", Json{{"type", "object"},
-                              {"additionalProperties", false},
-                              {"required", Json::array({"answer"})},
-                              {"properties",
-                               Json{{"answer", Json{{"type", "number"}}}}}}}}}};
+        {"json_schema", Json{{"name", "answer"}, {"strict", true}, {"schema", answer_schema}}}};
     const ninfer::GenerationResult schema_result = run_route(engine, server, schema_body);
     bool schema_valid                            = false;
     std::string schema_detail;
@@ -173,6 +183,31 @@ int exercise(const char* artifact) {
     check(dflash_rejected && dflash_code == "constrained_decoding_not_supported" &&
               dflash_message.find("dflash2") != std::string::npos,
           "a constrained request on DFlash2 is rejected naming the backend", dflash_message);
+
+    // 7. Anthropic structured outputs: the equivalent json_schema through output_config.format
+    //    reaches the same constraint pipeline and, at temperature 0, the same answer as the chat
+    //    route. This is the ticket's Anthropic-vs-chat round-trip on a real artifact.
+    Json anthropic_body = base_request();
+    anthropic_body["output_config"] =
+        Json{{"format", Json{{"type", "json_schema"}, {"schema", answer_schema}}}};
+    const ninfer::GenerationResult anthropic_result =
+        run_anthropic_route(engine, server, anthropic_body);
+    bool anthropic_schema_valid = false;
+    std::string anthropic_detail;
+    try {
+        const Json document = Json::parse(anthropic_result.content);
+        anthropic_schema_valid = document.is_object() && document.contains("answer") &&
+                                 document.at("answer").is_number() && document.size() == 1;
+        anthropic_detail = anthropic_result.content;
+    } catch (const Json::exception& error) {
+        anthropic_detail = std::string("not JSON: ") + error.what() +
+                           " content=" + anthropic_result.content;
+    }
+    check(anthropic_schema_valid, "Anthropic output_config.format answer satisfies the schema",
+          anthropic_detail);
+    check(anthropic_result.content == schema_result.content,
+          "the Anthropic and chat constrained answers round-trip identically",
+          "chat=" + schema_result.content + " anthropic=" + anthropic_result.content);
 
     return g_failures == 0 ? 0 : 1;
 }

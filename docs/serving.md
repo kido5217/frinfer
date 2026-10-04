@@ -806,9 +806,11 @@ shared constraint contract as the OpenAI `response_format` json_schema conversio
 64 KiB payload and 64-level nesting limits, and the same `json_schema_invalid`,
 `json_schema_unsupported`, and `constraint_too_large` fail-closed codes, reported on
 `output_config.format`. As on the chat route, a constrained answer cannot be combined with a
-`tools` field (the tool-call parser owns the turn), and the beta top-level `output_format` spelling
-cannot accompany `output_config.format`. `format` and `effort` may share one `output_config`
-object. `output_format` alone carries no constraint guarantee and is ignored.
+`tools` field (the tool-call parser owns the turn), and `format` and `effort` may share one
+`output_config` object. A hand-rolled client that also sends a top-level `output_format` is
+rejected with `constrained_decoding_conflict`: this mirrors the official SDK's own client-side
+check, which folds `output_format` into `output_config.format` and transmits only the latter, so a
+conforming client never triggers it, and a lone `output_format` remains ignored.
 
 User-defined, non-strict tools support `name`, `description`, object `input_schema`, and
 `input_examples`. `tool_choice:auto` and `none` are executable. Forced or named choice,
