@@ -28,6 +28,13 @@ struct OpenAIPromptCachePolicy {
 [[nodiscard]] OpenAIPromptCachePolicy parse_openai_prompt_cache_policy(const RequestJson& body);
 void apply_openai_prompt_cache_policy(GenerationRequest& request, OpenAIPromptCachePolicy policy);
 
+// Serializes an OpenAI wire object. Token logprob entries carry tokenizer byte strings, which can
+// be partial UTF-8 for a byte-level BPE token; nlohmann's default dump throws on those, so the
+// replacement handler is used (the exact bytes remain available in the `bytes` array).
+inline std::string dump_openai_json(const nlohmann::json& payload) {
+    return payload.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+}
+
 std::string make_models_list(const std::string& model_id, std::int64_t created,
                              std::uint32_t max_model_len);
 std::string make_model_object(const std::string& model_id, std::int64_t created,

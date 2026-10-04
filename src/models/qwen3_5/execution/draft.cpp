@@ -599,6 +599,8 @@ auto dflash_decode_batch_body(DFlashBatchContext& state, std::int32_t batch_size
         Tensor licensed_tokens    = frame.licensed_tokens.slice(1, 0, batch_size);
         Tensor licensed_counts    = frame.licensed_counts.slice(0, 0, batch_size);
         Tensor accepted           = frame.accepted_drafts.slice(0, 0, batch_size);
+        const std::int32_t logprob_rows = frame.target_logits.ne[1] * frame.target_logits.ne[2];
+        const std::int32_t logprob_top_k = static_cast<std::int32_t>(kMaximumTokenLogprobs);
 
         state.execution.work.reset();
         Tensor compact_features = state.execution.work.alloc(
@@ -652,6 +654,14 @@ auto dflash_decode_batch_body(DFlashBatchContext& state, std::int32_t batch_size
                     .replay_records  = state.execution.replay_records,
                     .sampling        = frame.sampling,
                     .feature_sink    = &sink,
+                    .gather_logits =
+                        frame.target_logits.view(
+                            {frame.target_logits.ne[0], logprob_rows}),
+                    .logprob_ids    = frame.logprob_ids.view({logprob_top_k, logprob_rows}),
+                    .logprob_values = frame.logprob_values.view({logprob_top_k, logprob_rows}),
+                    .logprob_lse    = frame.logprob_lse.view({logprob_rows}),
+                    .logprob_active = frame.logprob_active,
+                    .logprob_sampling = frame.logprob_sampling,
                 },
                 target_envelope);
         }

@@ -127,6 +127,17 @@ struct TargetVerifyFrameView {
     const GdnReplayRecords* replay_records = nullptr;
     const ops::SamplingConfig* sampling    = nullptr;
     DFlashFeatureSink* feature_sink        = nullptr;
+    // Optional full-width logprob gather over the post-mask verify logits. The gather reads the
+    // pre-increment token counts, so target_verify_accept runs it after the forward and before the
+    // acceptance Op that increments the count array. Empty when the backend does not gather.
+    Tensor gather_logits;   // [vocab, width*batch] contiguous view of the verify logits
+    // Speculative gather, flattened over (verify column, batch lane) with the column axis fastest:
+    // the row for (col, lane) is col + lane*width (see speculation_logprob_column).
+    Tensor logprob_ids;     // [kMaximumTokenLogprobs, width*batch] (ne[0]-contiguous)
+    Tensor logprob_values;  // [kMaximumTokenLogprobs, width*batch] (ne[0]-contiguous)
+    Tensor logprob_lse;     // [width*batch]
+    Tensor logprob_active;  // device I32 [1]
+    const ops::SamplingConfig* logprob_sampling = nullptr; // [width*batch], row col + lane*width
 };
 
 void configure_text_card(TextContext& card, const ExecutionCore& execution,

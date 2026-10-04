@@ -109,7 +109,9 @@ public:
 
     std::vector<std::string> start();
     std::vector<std::string> reasoning_delta(const std::string& text);
-    std::vector<std::string> content_delta(const std::string& text);
+    // Emits one content delta event carrying the text and the logprob records that arrived with it.
+    std::vector<std::string> content_delta(const std::string& text,
+                                           std::vector<ninfer::TokenLogprob> records = {});
     OpenAIResponsesStreamFinish finish(const GenerationOutcome& outcome);
     std::string terminal(const BuiltOpenAIResponse& response);
     std::string failed(const ApiError& error);

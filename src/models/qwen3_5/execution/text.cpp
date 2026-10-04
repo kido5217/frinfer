@@ -21,6 +21,7 @@
 #include "ninfer/ops/gdn_gating.h"
 #include "ninfer/ops/gdn_gating_proj.h"
 #include "ninfer/ops/gdn_input_proj.h"
+#include "ninfer/ops/logprob_topk.h"
 #include "ninfer/ops/linear.h"
 #include "ninfer/ops/kv_cache_append.h"
 #include "ninfer/ops/speculative_round.h"
@@ -1288,6 +1289,15 @@ TextContext::prefill_impl(std::span<const int> ids, const TextPrefill* text_pref
                         logits, /*columns=*/1, /*batch=*/1, io_.mask_rows, io_.mask_active,
                         dimension(parameters_.model.resources().public_token_count),
                         static_cast<std::int32_t>(MaskTransport::lane_stride()), s);
+                }
+                // The logprob gather reads the pre-increment token counts, so it runs after the
+                // mask and before the sampler; it is device-gated and a no-op when off.
+                if (sampling_config_ != nullptr && io_.logprob_active.data != nullptr) {
+                    ops::logprob_topk(
+                        logits, sampling_config_,
+                        dimension(parameters_.model.resources().public_token_count),
+                        io_.logprob_ids, io_.logprob_values, io_.logprob_lse, io_.logprob_active,
+                        work_, s);
                 }
                 // Set io_.pos to the bonus token's absolute position (base + T) before picking so
                 // the sampler RNG is keyed by it (prefill purpose keeps it distinct from the first

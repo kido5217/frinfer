@@ -113,22 +113,20 @@ void validate_standard_output_controls(const Json& body) {
             }
         }
     }
+    bool logprobs_requested = false;
     if (body.contains("logprobs") && !body.at("logprobs").is_null()) {
         if (!body.at("logprobs").is_boolean()) {
             bad_request("logprobs must be a boolean", "logprobs");
         }
-        if (body.at("logprobs").get<bool>()) {
-            bad_request("logprobs=true requires per-token log probabilities in the response, which "
-                        "FrInfer does not provide",
-                        "logprobs", "logprobs_not_supported");
-        }
+        logprobs_requested = body.at("logprobs").get<bool>();
     }
     if (const std::optional<int> top_logprobs = optional_int(body, "top_logprobs")) {
-        if (*top_logprobs != 0) {
-            bad_request(
-                "nonzero top_logprobs requires alternative-token probabilities in the response, "
-                "which FrInfer does not provide",
-                "top_logprobs", "logprobs_not_supported");
+        if (*top_logprobs < 0 || *top_logprobs > 20) {
+            bad_request("top_logprobs must be in [0,20]", "top_logprobs");
+        }
+        if (*top_logprobs != 0 && !logprobs_requested) {
+            bad_request("top_logprobs requires logprobs to be true", "top_logprobs",
+                        "logprobs_not_supported");
         }
     }
 
@@ -986,6 +984,14 @@ OpenAIChatRequest parse_chat_completion_request(const Json& body, const RequestL
         bad_request("missing required field: model", "model");
     }
     output.model = body.at("model").get<std::string>();
+
+    if (const std::optional<bool> logprobs = get_optional_bool(body, "logprobs")) {
+        output.logprobs.include    = *logprobs;
+        output.generation.logprobs = *logprobs;
+    }
+    if (const std::optional<int> top_logprobs = optional_int(body, "top_logprobs")) {
+        output.logprobs.top_logprobs = *top_logprobs;
+    }
 
     const OpenAIPromptCachePolicy cache_policy = parse_openai_prompt_cache_policy(body);
 

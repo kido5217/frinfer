@@ -47,10 +47,16 @@ struct OrdinaryDecodeIngress {
     std::array<std::int32_t, kMaximumConcurrency> state_source_slots{};
     std::array<std::int32_t, kMaximumConcurrency> state_destination_slots{};
     std::array<ops::SamplingConfig, kMaximumConcurrency> sampling{};
+    // Host-controlled per-round gate: non-zero enables the logprob gather for every row.
+    std::int32_t logprob_active = 0;
 };
 
 struct OrdinaryDecodeEgress {
     std::array<TokenId, kMaximumConcurrency> sampled_tokens{};
+    // Top-k logprob gather for the round's [B] columns, laid out [kMaximumTokenLogprobs, B].
+    std::array<std::int32_t, kMaximumConcurrency * kMaximumTokenLogprobs> logprob_ids{};
+    std::array<float, kMaximumConcurrency * kMaximumTokenLogprobs> logprob_values{};
+    std::array<float, kMaximumConcurrency> logprob_lse{};
 };
 
 // Stable pinned/device transfer formats for concurrent MTP decode. The arrays use the maximum
@@ -69,6 +75,12 @@ struct MtpDecodeIngress {
     std::array<std::int32_t, kMaximumConcurrency> state_destination_slots{};
     std::array<std::int32_t, kMaximumConcurrency> rope_deltas{};
     std::array<ops::SamplingConfig, kMaximumConcurrency> sampling{};
+    // Per-verify-column configs for the logprob gather, flattened [width, B] with the column axis
+    // fastest: the gather row for (col, lane) is col + lane*width. The penalty count pointer is
+    // shared with the round's sampling array.
+    std::array<ops::SamplingConfig, kMaximumConcurrency * kMtpDecodeMaximumWidth> logprob_sampling{};
+    // Host-controlled per-round gate: non-zero enables the logprob gather for every verify column.
+    std::int32_t logprob_active = 0;
 };
 
 struct MtpDecodeEgress {
@@ -78,6 +90,13 @@ struct MtpDecodeEgress {
     // Step-major: all B rows for proposal step 0, followed by all B rows for step 1, etc.
     std::array<TokenId, kMaximumConcurrency * kMtpDecodeMaximumDrafts> next_drafts{};
     std::array<std::int32_t, kMaximumConcurrency> next_extents{};
+    // Per-verify-column gather, [kMaximumTokenLogprobs, width, B] (ne[0]-contiguous).
+    std::array<std::int32_t,
+               kMaximumConcurrency * kMtpDecodeMaximumWidth * kMaximumTokenLogprobs>
+        logprob_ids{};
+    std::array<float, kMaximumConcurrency * kMtpDecodeMaximumWidth * kMaximumTokenLogprobs>
+        logprob_values{};
+    std::array<float, kMaximumConcurrency * kMtpDecodeMaximumWidth> logprob_lse{};
 };
 
 // Prefill binds the current chunk independently of the compact decode batch.
@@ -106,12 +125,23 @@ struct DFlashDecodeIngress {
     std::array<std::int32_t, kMaximumConcurrency> state_source_slots{};
     std::array<std::int32_t, kMaximumConcurrency> state_destination_slots{};
     std::array<ops::SamplingConfig, kMaximumConcurrency> sampling{};
+    std::array<ops::SamplingConfig, kMaximumConcurrency * kDFlashDecodeMaximumWidth>
+        logprob_sampling{};
+    // Host-controlled per-round gate: non-zero enables the logprob gather for every verify column.
+    std::int32_t logprob_active = 0;
 };
 
 struct DFlashDecodeEgress {
     std::array<TokenId, kMaximumConcurrency * kDFlashDecodeMaximumWidth> licensed_tokens{};
     std::array<std::int32_t, kMaximumConcurrency> licensed_counts{};
     std::array<std::int32_t, kMaximumConcurrency> accepted_drafts{};
+    // Per-verify-column gather, [kMaximumTokenLogprobs, width, B] (ne[0]-contiguous).
+    std::array<std::int32_t,
+               kMaximumConcurrency * kDFlashDecodeMaximumWidth * kMaximumTokenLogprobs>
+        logprob_ids{};
+    std::array<float, kMaximumConcurrency * kDFlashDecodeMaximumWidth * kMaximumTokenLogprobs>
+        logprob_values{};
+    std::array<float, kMaximumConcurrency * kDFlashDecodeMaximumWidth> logprob_lse{};
 };
 
 struct OrdinaryDecodeStateLayout {
@@ -179,6 +209,11 @@ struct RoundStateLayout {
     TensorRegion rope_pos;
     TensorRegion rope_delta;
     TensorRegion logits;
+    // Prefill single-row logprob gather (and its device active gate).
+    TensorRegion logprob_ids;
+    TensorRegion logprob_values;
+    TensorRegion logprob_lse;
+    TensorRegion logprob_active;
     TensorRegion text_kv_table_row;
     TensorRegion backend_kv_table_row;
     std::optional<MtpPrefillStateLayout> mtp;
@@ -210,6 +245,10 @@ struct OrdinaryDecodeState {
     Tensor state_destination_slots;
     const ops::SamplingConfig* sampling = nullptr;
     Tensor sampled_tokens;
+    Tensor logprob_ids;
+    Tensor logprob_values;
+    Tensor logprob_lse;
+    Tensor logprob_active;
     Tensor logits;
     Tensor hidden;
 
@@ -269,6 +308,11 @@ struct MtpDecodeState {
     Tensor accepted_drafts;
     Tensor next_drafts;
     Tensor next_extents;
+    Tensor logprob_ids;
+    Tensor logprob_values;
+    Tensor logprob_lse;
+    Tensor logprob_active;
+    const ops::SamplingConfig* logprob_sampling = nullptr;
     Tensor verify_ids;
     Tensor target_positions;
     Tensor target_argmax;
@@ -308,6 +352,11 @@ struct DFlashDecodeState {
     Tensor licensed_tokens;
     Tensor licensed_counts;
     Tensor accepted_drafts;
+    Tensor logprob_ids;
+    Tensor logprob_values;
+    Tensor logprob_lse;
+    Tensor logprob_active;
+    const ops::SamplingConfig* logprob_sampling = nullptr;
     Tensor proposal_ids;
     Tensor proposal_positions;
     Tensor verify_positions;
@@ -334,6 +383,10 @@ struct RoundState {
     Tensor rope_pos;
     Tensor rope_delta;
     Tensor logits;
+    Tensor logprob_ids;
+    Tensor logprob_values;
+    Tensor logprob_lse;
+    Tensor logprob_active;
     Tensor text_kv_table_row;
     Tensor backend_kv_table_row;
     std::optional<MtpPrefillState> mtp;

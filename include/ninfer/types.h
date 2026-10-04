@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -250,6 +251,9 @@ struct ExecutionOptions {
     std::uint32_t requested_output_tokens = 0;
     bool allow_prefix_reuse               = true;
     ThinkingControlOptions thinking;
+    // Opt-in per-request log probabilities. When true the Engine gathers the top-k log-probability
+    // distribution per committed token (see GenerationResult::content_logprobs).
+    bool logprobs = false;
 };
 
 struct OutputOptions {
@@ -594,6 +598,27 @@ enum class FinishReason : std::uint8_t {
     Cancelled,
 };
 
+// One generated token's log probability under the full, pre-truncation, post-mask distribution and
+// its top-k alternatives, in the OpenAI spec shape. `bytes` is the tokenizer's decoded byte string
+// for this token; `top_ids`/`top_values` are ordered descending by value with lower token id
+// breaking ties, and always carry kMaximumTokenLogprobs entries (the response layer trims to the
+// requested top_logprobs).
+inline constexpr std::size_t kMaximumTokenLogprobs = 20;
+
+// OpenAI's sentinel logprob for a token outside the reported top set. The response layer emits it
+// (never a non-finite value or JSON null) when a chosen token has no finite top-k entry.
+inline constexpr float kLogprobSentinel = -9999.0f;
+
+struct TokenLogprob {
+    TokenId id        = 0;
+    float logprob     = 0.0f;
+    std::string bytes;
+    std::array<TokenId, kMaximumTokenLogprobs> top_ids{};
+    std::array<float, kMaximumTokenLogprobs> top_values{};
+    // Decoded byte string for each top-k alternative, aligned with top_ids.
+    std::array<std::string, kMaximumTokenLogprobs> top_bytes;
+};
+
 struct OutputDelta {
     OutputChannel channel = OutputChannel::Content;
     std::string text;
@@ -601,6 +626,9 @@ struct OutputDelta {
     // byte offset inside `text` where the region starts; the Engine keeps the full text in the
     // aggregate result, while a streaming consumer may withhold the region tail and signal it.
     std::optional<ToolCallDemotion> demotion;
+    // Opt-in token logprob records for the tokens whose text this delta publishes, in token order.
+    // Empty unless the request enabled logprobs.
+    std::vector<TokenLogprob> logprobs;
 };
 
 // Exact prompt accounting selected at admission. Streaming consumers receive this once before any
@@ -829,6 +857,8 @@ struct MaterializationDiagnostics {
 struct GenerationResult {
     PromptSummary prompt;
     std::vector<TokenId> generated_token_ids;
+    // One record per content token, in generation order, when the request enabled logprobs.
+    std::vector<TokenLogprob> content_logprobs;
     std::string content;
     std::string reasoning;
     std::vector<GeneratedToolCall> tool_calls;

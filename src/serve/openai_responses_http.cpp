@@ -357,7 +357,7 @@ void HttpServer::handle_responses(const httplib::Request& req, httplib::Response
         }
 
         try {
-            set_owned_json_content(res, response->body.dump(), prepared.lifetime);
+            set_owned_json_content(res, dump_openai_json(response->body), prepared.lifetime);
         } catch (const std::exception& exception) {
             lifecycle->response_failure(make_internal_request_failure(
                 RequestFailurePhase::ResponseRender, exception.what()));
@@ -436,9 +436,11 @@ void HttpServer::handle_responses(const httplib::Request& req, httplib::Response
                         render_and_write(transport,
                                          [&] { return stream->encoder->reasoning_delta(text); });
                     };
-                    output.on_content = [&](const std::string& text) {
-                        render_and_write(transport,
-                                         [&] { return stream->encoder->content_delta(text); });
+                    output.on_content = [&](const std::string& text,
+                                            std::vector<ninfer::TokenLogprob> records) {
+                        render_and_write(transport, [&] {
+                            return stream->encoder->content_delta(text, std::move(records));
+                        });
                     };
                     output.is_cancelled = [&] { return transport.poll(); };
 
@@ -566,7 +568,7 @@ void HttpServer::handle_response_get(const httplib::Request& req, httplib::Respo
         write_openai_error(res, response_not_found(id));
         return;
     }
-    res.set_content(stored->response.dump(), "application/json");
+    res.set_content(dump_openai_json(stored->response), "application/json");
 }
 
 void HttpServer::handle_response_delete(const httplib::Request& req, httplib::Response& res) {

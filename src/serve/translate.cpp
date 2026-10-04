@@ -331,6 +331,7 @@ ninfer::RequestOptions to_request_options(const GenerationRequest& request,
             request.thinking_budget ? request.thinking_budget : server.default_thinking_budget;
     }
     options.execution.sampling             = resolve_sampling_overrides(request.sampling, server);
+    options.execution.logprobs             = request.logprobs;
     if (request.grammar) {
         // The serve contract rejects a constrained request up front when the configured
         // speculative backend cannot carry one (design #48), naming the backend.

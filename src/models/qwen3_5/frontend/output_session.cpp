@@ -6,6 +6,7 @@
 #include "text/unicode.h"
 #include <algorithm>
 #include <array>
+#include <iterator>
 #include <limits>
 #include <optional>
 #include <stdexcept>
@@ -296,16 +297,21 @@ public:
     // deltas through the stop machinery. `match` is the round's shared best stop candidate; it is
     // null for control tokens, which never end the turn. Raw presentation publishes every byte as
     // content; the core still tracks the close boundary so the thinking budget follows R8.
-    void feed_token(std::string_view bytes, std::uint32_t committed_tokens, StopMatch* match) {
+    // Returns true when these bytes contributed to the content channel (raw mode counts all bytes).
+    bool feed_token(std::string_view bytes, std::uint32_t committed_tokens, StopMatch* match) {
         const fi::ChatParseResult parsed = core.preview_feed(bytes);
         if (raw_presentation) {
             feed_channel(preview_state, OutputChannel::Content, bytes, policy, preview_output,
                          committed_tokens, match);
-            return;
+            return !bytes.empty();
         }
         feed_channel(preview_state, OutputChannel::Reasoning, parsed.reasoning_delta, policy,
                      preview_output, committed_tokens, match);
         feed_content_delta(parsed.content_delta, committed_tokens, match);
+        // A token whose content bytes are entirely trailing format whitespace (for example the
+        // "\n\n" before a tool-call region) is withheld, not content: it must not contribute a
+        // logprob entry. Only a token with visible content of its own counts.
+        return visible_content_end(parsed.content_delta) > 0;
     }
 
     void feed_content_delta(std::string_view text, std::uint32_t committed_tokens,
@@ -320,13 +326,14 @@ public:
 
     // Reassembles complete UTF-8 text from the token's decoded bytes (the decode authority) and
     // feeds it to the core.
-    void feed_token_bytes(std::string_view bytes, std::uint32_t committed_tokens,
+    bool feed_token_bytes(std::string_view bytes, std::uint32_t committed_tokens,
                           StopMatch* match) {
         preview_state.utf8_pending.append(bytes);
         const std::string text = consume_generated_utf8(preview_state.utf8_pending);
-        if (text.empty()) { return; }
-        feed_token(text, committed_tokens, match);
+        if (text.empty()) { return false; }
+        const bool content = feed_token(text, committed_tokens, match);
         round_fed.append(text);
+        return content;
     }
 
     // Restarts the active preview over exactly the first `bytes` of this round's fed bytes, so a
@@ -414,6 +421,8 @@ public:
     PrefixExecutionTracker preview_prefix_execution;
     std::optional<std::uint32_t> preview_execution_split_after;
     PublishedOutput preview_output;
+    std::vector<TokenLogprob> preview_logprobs;
+    std::vector<TokenLogprob> content_logprobs;
     std::string round_fed;
     bool preview_ready = false;
 };
@@ -455,10 +464,14 @@ OutputSession::OutputSession(
           std::move(tokenizer), std::move(policy), output, starts_in_reasoning, thinking,
           std::move(thinking_control_tokens), std::move(tool_call_output))) {}
 
-runtime::OutputDecision OutputSession::preview_model(std::span<const TokenId> tokens,
-                                                     std::uint32_t total_budget_remaining,
-                                                     FinishReason limit_reason) {
+runtime::OutputDecision
+OutputSession::preview_model(std::span<const TokenId> tokens, std::uint32_t total_budget_remaining,
+                             FinishReason limit_reason,
+                             std::span<const runtime::RawTokenLogprob> logprobs) {
     if (impl_ == nullptr) { throw std::logic_error("output session is empty"); }
+    if (!logprobs.empty() && logprobs.size() != tokens.size()) {
+        throw std::invalid_argument("logprob preview does not align with the token round");
+    }
     if (impl_->state.terminal) { throw std::logic_error("output session is already terminal"); }
     if (impl_->preview_ready) { throw std::logic_error("output session already has a preview"); }
     if (impl_->thinking.control_pending) {
@@ -480,6 +493,7 @@ runtime::OutputDecision OutputSession::preview_model(std::span<const TokenId> to
     impl_->preview_prefix_execution = impl_->prefix_execution;
     impl_->preview_execution_split_after.reset();
     impl_->preview_output.clear();
+    impl_->preview_logprobs.clear();
     impl_->round_fed.clear();
     impl_->core.begin_preview();
 
@@ -534,11 +548,32 @@ runtime::OutputDecision OutputSession::preview_model(std::span<const TokenId> to
         StopMatch match;
         const std::string_view bytes =
             !impl_->preserve_special && decoded.special ? std::string_view{} : decoded.bytes;
-        impl_->feed_token_bytes(bytes, count, &match);
+        const std::size_t logprobs_before = impl_->preview_logprobs.size();
+        const bool contributes_content = impl_->feed_token_bytes(bytes, count, &match);
+        if (contributes_content && !logprobs.empty()) {
+            const runtime::RawTokenLogprob& raw = logprobs[index];
+            TokenLogprob record;
+            record.id         = raw.id;
+            record.logprob    = raw.logprob;
+            record.bytes.assign(bytes.data(), bytes.size());
+            record.top_ids    = raw.top_ids;
+            record.top_values = raw.top_values;
+            for (std::size_t k = 0; k < kMaximumTokenLogprobs; ++k) {
+                // Masked/short rows leave empty slots as id -1: they have no token to decode.
+                if (raw.top_ids[k] < 0) {
+                    record.top_ids[k] = -1;
+                    continue;
+                }
+                record.top_bytes[k] =
+                    std::string(impl_->tokenizer->decoded_token(raw.top_ids[k]).bytes);
+            }
+            impl_->preview_logprobs.push_back(std::move(record));
+        }
 
         if (match.found) {
             // The stop string owns the published prefix; the terminal flush only records the
             // terminal state over the accepted bytes.
+            impl_->preview_logprobs.resize(logprobs_before);
             impl_->rewind_core(before_fed);
             impl_->flush_terminal(/*merge_held=*/false);
             impl_->preview_state = terminal_state(std::move(impl_->preview_state));
@@ -551,6 +586,7 @@ runtime::OutputDecision OutputSession::preview_model(std::span<const TokenId> to
             if (!impl_->policy.publish_stop_token) {
                 impl_->preview_state  = std::move(before_state);
                 impl_->preview_output = std::move(before_output);
+                impl_->preview_logprobs.resize(logprobs_before);
                 impl_->rewind_core(before_fed);
             }
             impl_->flush_terminal(/*merge_held=*/true);
@@ -692,6 +728,10 @@ PublishedOutput OutputSession::commit_preview() {
     swap(impl_->prefix_execution, impl_->preview_prefix_execution);
     PublishedOutput output = std::move(impl_->preview_output);
     impl_->preview_output.clear();
+    impl_->content_logprobs.insert(
+        impl_->content_logprobs.end(), std::make_move_iterator(impl_->preview_logprobs.begin()),
+        std::make_move_iterator(impl_->preview_logprobs.end()));
+    impl_->preview_logprobs.clear();
     impl_->preview_ready = false;
     impl_->core.commit();
     return output;
@@ -717,6 +757,11 @@ ThinkingBudgetStats OutputSession::thinking_stats() const noexcept {
         .injected_tokens        = impl_->thinking.injected_tokens,
         .applied                = impl_->thinking.applied,
     };
+}
+
+std::span<const TokenLogprob> OutputSession::content_logprobs() const noexcept {
+    if (impl_ == nullptr) { return {}; }
+    return std::span<const TokenLogprob>(impl_->content_logprobs);
 }
 
 std::optional<std::string> OutputSession::matched_stop_string() const {

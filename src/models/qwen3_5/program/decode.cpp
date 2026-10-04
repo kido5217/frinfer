@@ -6,6 +6,7 @@
 #include "core/nvtx.h"
 #include "core/device.h"
 #include "ninfer/ops/apply_mask.h"
+#include "ninfer/ops/logprob_topk.h"
 #include "ninfer/ops/prepare_ragged_prefix.h"
 #include "ninfer/ops/sampling.h"
 #include "ninfer/ops/scatter.h"
@@ -54,18 +55,25 @@ auto ordinary_batch_body(OrdinaryBatchContext& state, std::int32_t batch_size,
                                    state_destinations, envelope, hidden, logits);
         ops::scatter(hidden, state_destinations, state.continuation_hidden_store,
                      state.execution.device.stream);
+        const std::int32_t token_domain =
+            dimension(state.execution.parameters.model.resources().public_token_count);
         if (state.execution.io.mask_rows.data != nullptr) {
-            ops::apply_mask(
-                logits, /*columns=*/1, batch_size, state.execution.io.mask_rows,
-                state.execution.io.mask_active,
-                dimension(state.execution.parameters.model.resources().public_token_count),
-                static_cast<std::int32_t>(MaskTransport::lane_stride()),
-                state.execution.device.stream);
+            ops::apply_mask(logits, /*columns=*/1, batch_size, state.execution.io.mask_rows,
+                            state.execution.io.mask_active, token_domain,
+                            static_cast<std::int32_t>(MaskTransport::lane_stride()),
+                            state.execution.device.stream);
         }
-        ops::sample(logits, sampled,
-                    dimension(state.execution.parameters.model.resources().public_token_count),
-                    ordinary.sampling, cache_positions, ops::kSamplePurposeDecode,
-                    state.execution.work, state.execution.device.stream);
+        // The gather is a pure view of the sampler's distribution and must see the pre-increment
+        // token counts, so it is enqueued before sample(). It is gated on device so an off-round
+        // pays only the flag check.
+        Tensor top_ids    = ordinary.logprob_ids.slice(1, 0, batch_size);
+        Tensor top_values = ordinary.logprob_values.slice(1, 0, batch_size);
+        Tensor lse        = ordinary.logprob_lse.slice(0, 0, batch_size);
+        ops::logprob_topk(logits, ordinary.sampling, token_domain, top_ids, top_values, lse,
+                          ordinary.logprob_active, state.execution.work,
+                          state.execution.device.stream);
+        ops::sample(logits, sampled, token_domain, ordinary.sampling, cache_positions,
+                    ops::kSamplePurposeDecode, state.execution.work, state.execution.device.stream);
         CUDA_CHECK(cudaMemcpyAsync(&state.host_egress, ordinary.egress.data,
                                    sizeof(qwen3_5::OrdinaryDecodeEgress), cudaMemcpyDeviceToHost,
                                    state.execution.device.stream));
@@ -142,10 +150,11 @@ DecodeGraphExecutable& install_graph_profile(DecodeGraphFamily& family, DecodeGr
 } // namespace
 
 void ProgramImpl::install_sampling(SequenceState& sequence, RequestControl& request,
-                                   const ops::SamplingConfig& config) {
+                                   const ops::SamplingConfig& config, bool logprobs) {
     Tensor counts = token_counts.slice(1, static_cast<std::int32_t>(sequence.lane), 1)
                         .view({dimension(parameters.model.resources().public_token_count)});
     request.sampling_host     = config;
+    request.logprobs          = logprobs;
     request.speculative_stats = SpeculativeStats{
         .backend               = speculative_backend,
         .enabled               = speculative_backend != SpeculativeBackend::None,
@@ -308,12 +317,13 @@ ProgramImpl::decode_ordinary_batch(std::span<const std::uint32_t> lanes,
         maximum_frontier = std::max(maximum_frontier, sequence.execution_frontier);
     }
 
-    const auto start = Clock::now();
-    try {
-        std::optional<nvtx::ScopedRange> submit_range;
-        submit_range.emplace(nvtx::Name::DecodeOrdinarySubmit, nvtx::Category::Decode,
-                             static_cast<std::uint64_t>(lanes.size()));
-        DecodeGraphExecutable* executable = nullptr;
+        const auto start = Clock::now();
+        bool any_logprobs = false;
+        try {
+            std::optional<nvtx::ScopedRange> submit_range;
+            submit_range.emplace(nvtx::Name::DecodeOrdinarySubmit, nvtx::Category::Decode,
+                                 static_cast<std::uint64_t>(lanes.size()));
+            DecodeGraphExecutable* executable = nullptr;
         ops::CausalAttentionExecutionEnvelope envelope{maximum_frontier + 1, maximum_frontier + 1};
         if (use_cuda_graph) {
             DecodeGraphProfile& profile =
@@ -338,8 +348,10 @@ ProgramImpl::decode_ordinary_batch(std::span<const std::uint32_t> lanes,
             ordinary_host_ingress->state_source_slots[row]      = selectors.source;
             ordinary_host_ingress->state_destination_slots[row] = selectors.destination;
             ordinary_host_ingress->sampling[row]                = request.sampling_host;
+            any_logprobs |= request.logprobs;
             ensure_sequence_kv_mapped(sequence, frontier + 1, 0);
         }
+        ordinary_host_ingress->logprob_active = any_logprobs ? 1 : 0;
 
         execution::OrdinaryBatchContext schedule_state{
             {device, parameters, work, state_images->linear(),
@@ -371,6 +383,12 @@ ProgramImpl::decode_ordinary_batch(std::span<const std::uint32_t> lanes,
             const std::uint32_t base_S = sequence.ledger_frontier;
             const TokenId token        = ordinary_host_egress->sampled_tokens[row];
             validate_licensed_tokens(std::span<const TokenId>(&token, 1));
+            if (any_logprobs) {
+                pending_logprobs_[row] = assemble_logprob(
+                    ordinary_host_egress->logprob_ids.data(),
+                    ordinary_host_egress->logprob_values.data(), static_cast<std::int32_t>(row),
+                    token);
+            }
             sequence.text_kv_valid = base_E + 1;
             commit_sequence_kv(sequence, sequence.text_kv_valid, 0);
             sequence.tail_hidden_valid = true;
@@ -389,6 +407,10 @@ ProgramImpl::decode_ordinary_batch(std::span<const std::uint32_t> lanes,
         return runtime::BatchedGeneratedRound{
             .tokens =
                 std::span<const TokenId>(ordinary_host_egress->sampled_tokens.data(), lanes.size()),
+            .logprobs = any_logprobs
+                            ? std::span<const runtime::RawTokenLogprob>(pending_logprobs_.data(),
+                                                                        lanes.size())
+                            : std::span<const runtime::RawTokenLogprob>{},
             .timing = timing.finish(),
         };
     } catch (...) {
@@ -463,6 +485,13 @@ ProgramImpl::decode_mtp_batch(std::span<const std::uint32_t> lanes,
                                                        capacity);
         }
 
+        // The gather covers every [width, batch] row, including lanes with no request this round.
+        // Seed the whole array with a safe zero config (greedy, no penalties) before the active
+        // lanes overwrite their entries, so an idle lane can never hand the gather a stale config.
+        std::fill(mtp_host_ingress->logprob_sampling.begin(),
+                  mtp_host_ingress->logprob_sampling.end(), ops::SamplingConfig{});
+
+        bool any_logprobs = false;
         for (std::size_t row = 0; row < lanes.size(); ++row) {
             SequenceState& sequence           = active_sequence(lanes[row]);
             const RequestControl& request     = requests[lanes[row]];
@@ -497,9 +526,17 @@ ProgramImpl::decode_mtp_batch(std::span<const std::uint32_t> lanes,
             mtp_host_ingress->state_destination_slots[row] = selectors.destination;
             mtp_host_ingress->rope_deltas[row]             = sequence.rope_delta;
             mtp_host_ingress->sampling[row]                = request.sampling_host;
+            any_logprobs |= request.logprobs;
+            for (std::uint32_t column = 0; column < width; ++column) {
+                // The config a gather row uses must sit at that row's index (col + lane*width).
+                mtp_host_ingress->logprob_sampling[speculation_logprob_column(
+                    static_cast<std::int32_t>(column), static_cast<std::int32_t>(row),
+                    static_cast<std::int32_t>(width))] = request.sampling_host;
+            }
             ensure_sequence_kv_mapped(sequence, frontier + extent + 1,
                                       std::min(capacity, frontier + extent + draft_window));
         }
+        mtp_host_ingress->logprob_active = any_logprobs ? 1 : 0;
 
         execution::MtpBatchContext schedule_state{{device, parameters, work, state_images->linear(),
                                                    replay_records ? &*replay_records : nullptr, io,
@@ -564,6 +601,19 @@ ProgramImpl::decode_mtp_batch(std::span<const std::uint32_t> lanes,
                 .prompt_tokens = 0,
                 .produced      = static_cast<std::uint32_t>(count_i),
             };
+            if (any_logprobs) {
+                for (std::int32_t index = 0; index < count_i; ++index) {
+                    const TokenId token = mtp_host_egress->licensed_tokens[
+                        row * width + static_cast<std::size_t>(index)];
+                    pending_logprobs_[row * width + static_cast<std::size_t>(index)] =
+                        assemble_logprob(
+                            mtp_host_egress->logprob_ids.data(),
+                            mtp_host_egress->logprob_values.data(),
+                            speculation_logprob_column(index, static_cast<std::int32_t>(row),
+                                                      static_cast<std::int32_t>(width)),
+                            token);
+                }
+            }
             request.lifecycle = Lifecycle::Pending;
             request.timings.decode_seconds += seconds;
         }
@@ -572,6 +622,10 @@ ProgramImpl::decode_mtp_batch(std::span<const std::uint32_t> lanes,
                                                    lanes.size() * width),
             .row_counts = std::span<const std::int32_t>(mtp_host_egress->licensed_counts.data(),
                                                         lanes.size()),
+            .logprobs   = any_logprobs
+                              ? std::span<const runtime::RawTokenLogprob>(pending_logprobs_.data(),
+                                                                          lanes.size() * width)
+                              : std::span<const runtime::RawTokenLogprob>{},
             .row_stride = width,
             .timing     = timing.finish(),
         };
@@ -660,6 +714,12 @@ ProgramImpl::decode_dflash_batch(std::span<const std::uint32_t> lanes,
                                      draft_window + 1ULL))};
         }
 
+        // See the MTP body: cover the inactive lanes of the [width, batch] gather with a safe
+        // zero config before the active lanes overwrite their rows.
+        std::fill(dflash_host_ingress->logprob_sampling.begin(),
+                  dflash_host_ingress->logprob_sampling.end(), ops::SamplingConfig{});
+
+        bool any_logprobs = false;
         for (std::size_t row = 0; row < lanes.size(); ++row) {
             SequenceState& sequence           = active_sequence(lanes[row]);
             const RequestControl& request     = requests[lanes[row]];
@@ -691,9 +751,17 @@ ProgramImpl::decode_dflash_batch(std::span<const std::uint32_t> lanes,
             dflash_host_ingress->state_source_slots[row] = selectors.source;
             dflash_host_ingress->state_destination_slots[row] = selectors.destination;
             dflash_host_ingress->sampling[row]                = request.sampling_host;
+            any_logprobs |= request.logprobs;
+            for (std::uint32_t column = 0; column < width; ++column) {
+                // The config a gather row uses must sit at that row's index (col + lane*width).
+                dflash_host_ingress->logprob_sampling[speculation_logprob_column(
+                    static_cast<std::int32_t>(column), static_cast<std::int32_t>(row),
+                    static_cast<std::int32_t>(width))] = request.sampling_host;
+            }
             ensure_sequence_kv_mapped(sequence, frontier + extent + 1U,
                                       backend_kv_cache() ? frontier : 0U);
         }
+        dflash_host_ingress->logprob_active = any_logprobs ? 1 : 0;
 
         execution::DFlashBatchContext schedule_state{
             {device, parameters, work, state_images->linear(),
@@ -751,6 +819,19 @@ ProgramImpl::decode_dflash_batch(std::span<const std::uint32_t> lanes,
                 }
             }
             sequence.dflash_context_frontier = base_E;
+            if (any_logprobs) {
+                for (std::int32_t index = 0; index < count_i; ++index) {
+                    const TokenId token = dflash_host_egress->licensed_tokens[
+                        row * width + static_cast<std::size_t>(index)];
+                    pending_logprobs_[row * width + static_cast<std::size_t>(index)] =
+                        assemble_logprob(
+                            dflash_host_egress->logprob_ids.data(),
+                            dflash_host_egress->logprob_values.data(),
+                            speculation_logprob_column(index, static_cast<std::int32_t>(row),
+                                                      static_cast<std::int32_t>(width)),
+                            token);
+                }
+            }
             request.pending                  = PendingCandidate{
                                  .kind          = PendingKind::Speculative,
                                  .base_E        = base_E,
@@ -766,6 +847,10 @@ ProgramImpl::decode_dflash_batch(std::span<const std::uint32_t> lanes,
                                                    lanes.size() * width),
             .row_counts = std::span<const std::int32_t>(dflash_host_egress->licensed_counts.data(),
                                                         lanes.size()),
+            .logprobs   = any_logprobs
+                              ? std::span<const runtime::RawTokenLogprob>(pending_logprobs_.data(),
+                                                                          lanes.size() * width)
+                              : std::span<const runtime::RawTokenLogprob>{},
             .row_stride = width,
             .timing     = timing.finish(),
         };

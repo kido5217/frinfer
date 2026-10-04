@@ -1,5 +1,7 @@
 #include "serve/openai_responses_store.h"
 
+#include "serve/openai_common.h"
+
 #include <algorithm>
 #include <limits>
 #include <stdexcept>
@@ -24,9 +26,9 @@ std::size_t estimate_turn_bytes(const ChatTurn& turn) {
 
 std::size_t record_envelope_bytes(const StoredOpenAIResponse& record) {
     std::size_t bytes = sizeof(StoredOpenAIResponse) + record.id.size() +
-                        record.session_key.size() + record.response.dump().size();
+                        record.session_key.size() + dump_openai_json(record.response).size();
     for (const nlohmann::json& item : record.input_items) {
-        bytes += sizeof(nlohmann::json) + item.dump().size();
+        bytes += sizeof(nlohmann::json) + dump_openai_json(item).size();
     }
     return bytes;
 }
