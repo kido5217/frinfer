@@ -1,4 +1,4 @@
-#include "serve/constraint_contract.h"
+#include "product/constraint/constraint_contract.h"
 #include "serve/openai_chat.h"
 #include "serve/openai_common.h"
 #include "serve/request_validation.h"
@@ -223,6 +223,16 @@ const Json& parse_json_schema_wrapper(const Json& format) {
     return wrapper;
 }
 
+// Converts an admitted JSON Schema document through the shared protocol-neutral constraint
+// contract, re-throwing its fail-closed error as this gateway's ApiException.
+std::string schema_to_grammar(const Json& schema) {
+    try {
+        return ninfer::constraint::json_schema_constraint_grammar(schema);
+    } catch (const ninfer::constraint::ConstraintError& error) {
+        bad_request(error.what(), error.param(), error.code());
+    }
+}
+
 void parse_constraints(const Json& body, GenerationRequest& output) {
     // Explicit rejections for the constrained-decoding spellings FrInfer does not provide:
     // vLLM's structured_outputs and the retired guided_* family promise constraint semantics a
@@ -247,10 +257,11 @@ void parse_constraints(const Json& body, GenerationRequest& output) {
         }
         std::string text = value.get<std::string>();
         if (!text.empty()) {
-            if (text.size() > kConstraintPayloadLimit) {
-                bad_request("grammar exceeds " + std::to_string(kConstraintPayloadLimit) +
-                                " bytes",
-                            "grammar", "constraint_too_large");
+            if (text.size() > ninfer::constraint::kConstraintPayloadLimit) {
+                bad_request(
+                    "grammar exceeds " + std::to_string(ninfer::constraint::kConstraintPayloadLimit) +
+                        " bytes",
+                    "grammar", "constraint_too_large");
             }
             grammar = std::move(text);
         }
@@ -267,13 +278,13 @@ void parse_constraints(const Json& body, GenerationRequest& output) {
         }
         const std::string type = format.at("type").get<std::string>();
         if (type == "json_object") {
-            schema_grammar = json_schema_constraint_grammar(Json{{"type", "object"}});
+            schema_grammar = schema_to_grammar(Json{{"type", "object"}});
         } else if (type == "json_schema") {
             if (!format.contains("json_schema") || format.at("json_schema").is_null()) {
                 bad_request("response_format.json_schema is required for type json_schema",
                             "response_format.json_schema", "json_schema_invalid");
             }
-            schema_grammar = json_schema_constraint_grammar(parse_json_schema_wrapper(format));
+            schema_grammar = schema_to_grammar(parse_json_schema_wrapper(format));
         } else if (type != "text") {
             bad_request(
                 "this response_format requires constrained output, which FrInfer cannot guarantee; "

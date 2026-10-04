@@ -70,4 +70,9 @@ struct Options {
 [[nodiscard]] Options parse_options(int argc, char** argv);
 [[nodiscard]] std::string usage_text(const char* argv0);
 
+// The fail-closed code for a constraint rejection at Engine submission, selected by the flag that
+// requested it (grammar_invalid for --grammar/--grammar-file, json_schema_invalid for
+// --json-schema/--json-schema-file).
+[[nodiscard]] const char* constraint_error_code(ConstraintSource source) noexcept;
+
 } // namespace ninfer::cli

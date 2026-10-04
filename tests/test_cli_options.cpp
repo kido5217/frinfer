@@ -166,6 +166,23 @@ int main() {
     failures += check(thinking_options.constraint.thinking_enabled &&
                           thinking_options.enable_thinking.value_or(false),
                       "a constrained request with reasoning effort did not resolve thinking on");
+    failures += check(
+        std::string(ninfer::cli::constraint_error_code(ninfer::cli::ConstraintSource::Grammar)) ==
+                "grammar_invalid" &&
+            std::string(ninfer::cli::constraint_error_code(
+                ninfer::cli::ConstraintSource::JsonSchema)) == "json_schema_invalid",
+        "constraint_error_code did not map the Engine rejection per originating flag");
+    failures += check(rejects([&] {
+                          (void)parse({"ninfer-cli", "model.ninfer", "--prompt", "hello",
+                                       "--grammar", grammar, "--thinking-budget", "37"});
+                      }),
+                      "a constraint resolving thinking off accepted an inert --thinking-budget");
+    const ninfer::cli::Options thinking_budget =
+        parse({"ninfer-cli", "model.ninfer", "--prompt", "hello", "--grammar", grammar,
+               "--reasoning-effort", "medium", "--thinking-budget", "37"});
+    failures +=
+        check(thinking_budget.thinking_budget == 37 && thinking_budget.constraint.thinking_enabled,
+              "a thinking-on constrained request rejected its --thinking-budget");
 
     constexpr std::string_view kSchema =
         R"({"type":"object","additionalProperties":false,"required":["answer"],"properties":{"answer":{"type":"number"}}})";

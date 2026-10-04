@@ -579,6 +579,7 @@ checkpoint catalog。
 | generic `.ninfer` framing, descriptors, binding primitives, materialization | `src/artifact/` |
 | semantic Ops | `src/ops/`, `include/ninfer/ops/` |
 | shared JSON/message-to-owning-input adapter | `src/product/prompt_input/` |
+| 协议无关的 JSON Schema→GBNF 约束合同 | `src/product/constraint/` |
 | media URL/path/data acquisition | `src/product/media_acquire/`, CLI and serving |
 | media decode from already-owned bytes | `src/media/decode/` |
 | HTTP Gateway | `src/serve/` |

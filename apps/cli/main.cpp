@@ -6,7 +6,6 @@
 #include "product/speculative_options.h"
 
 #include "ninfer/engine.h"
-#include "serve/generation_service.h"
 
 #include <cstdint>
 #include <exception>
@@ -326,15 +325,9 @@ int main(int argc, char** argv) {
         return 0;
     } catch (const ninfer::RequestError& error) {
         if (error.kind() == ninfer::RequestErrorKind::InvalidConstraint) {
-            // Reuse the serve's fail-closed mapping so the CLI reports the same code for a
-            // grammar the Engine cannot compile as the serve route does.
-            const ninfer::serve::ConstraintSource source =
-                cli.constraint.source == ninfer::cli::ConstraintSource::JsonSchema
-                    ? ninfer::serve::ConstraintSource::JsonSchema
-                    : ninfer::serve::ConstraintSource::Grammar;
-            const ninfer::serve::ApiError mapped =
-                ninfer::serve::request_error_to_api_error(error, source);
-            logger->error("{}: {}", mapped.code, ninfer::product::format_pretty_text(error.what()));
+            // Report the same fail-closed code the serve route uses for the originating flag.
+            logger->error("{}: {}", ninfer::cli::constraint_error_code(cli.constraint.source),
+                          ninfer::product::format_pretty_text(error.what()));
         } else {
             logger->error("{}", ninfer::product::format_pretty_text(error.what()));
         }

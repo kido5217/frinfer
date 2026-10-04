@@ -1,7 +1,6 @@
 #include "options.h"
+#include "product/constraint/constraint_contract.h"
 #include "product/speculative_options.h"
-#include "serve/constraint_contract.h"
-#include "serve/request.h"
 
 #include <cerrno>
 #include <cmath>
@@ -75,6 +74,13 @@ std::string read_constraint_file(const char* path, std::string_view flag) {
     if (std::filesystem::is_directory(path, error)) {
         throw std::invalid_argument(std::string(flag) + " is a directory: " + path);
     }
+    error.clear();
+    const std::uintmax_t size = std::filesystem::file_size(path, error);
+    if (!error && size > ninfer::constraint::kConstraintPayloadLimit) {
+        throw std::invalid_argument(std::string(flag) + ": constraint_too_large: file exceeds " +
+                                    std::to_string(ninfer::constraint::kConstraintPayloadLimit) +
+                                    " bytes");
+    }
     std::ifstream input(path, std::ios::binary);
     if (!input) { throw std::invalid_argument(std::string(flag) + " cannot open file: " + path); }
     std::ostringstream buffer;
@@ -85,23 +91,21 @@ std::string read_constraint_file(const char* path, std::string_view flag) {
     return buffer.str();
 }
 
-// Converts a JSON Schema document through the serve route's context-accurate allowlist and
-// vendored converter, so the CLI and serve admit exactly the same documents and report the same
-// fail-closed codes (`json_schema_invalid`, `json_schema_unsupported`, `constraint_too_large`).
+// Converts a JSON Schema document through the shared protocol-neutral constraint contract, so the
+// CLI and the serve route admit exactly the same documents and report the same fail-closed codes
+// (`json_schema_invalid`, `json_schema_unsupported`, `constraint_too_large`).
 std::string convert_json_schema(const std::string& text, std::string_view flag) {
-    ninfer::serve::RequestJson schema;
+    nlohmann::ordered_json schema;
     try {
-        schema = ninfer::serve::RequestJson::parse(text);
+        schema = nlohmann::ordered_json::parse(text);
     } catch (const std::exception& error) {
         throw std::invalid_argument(std::string(flag) + ": json_schema_invalid: " +
                                     "JSON Schema is not valid JSON: " + error.what());
     }
     try {
-        return ninfer::serve::json_schema_constraint_grammar(schema);
-    } catch (const ninfer::serve::ApiException& error) {
-        const std::string code =
-            error.error().code.empty() ? "json_schema_invalid" : error.error().code;
-        throw std::invalid_argument(std::string(flag) + ": " + code + ": " + error.error().message);
+        return ninfer::constraint::json_schema_constraint_grammar(schema);
+    } catch (const ninfer::constraint::ConstraintError& error) {
+        throw std::invalid_argument(std::string(flag) + ": " + error.code() + ": " + error.what());
     }
 }
 
@@ -117,6 +121,10 @@ ReasoningEffort parse_reasoning_effort(std::string_view text) {
 }
 
 } // namespace
+
+const char* constraint_error_code(ConstraintSource source) noexcept {
+    return source == ConstraintSource::JsonSchema ? "json_schema_invalid" : "grammar_invalid";
+}
 
 std::string usage_text(const char* argv0) {
     return std::string("usage: ") + argv0 +
@@ -312,10 +320,10 @@ Options parse_options(int argc, char** argv) {
             "--json-schema/--json-schema-file");
     }
     if (has_grammar) {
-        if (grammar_source_text->size() > ninfer::serve::kConstraintPayloadLimit) {
+        if (grammar_source_text->size() > ninfer::constraint::kConstraintPayloadLimit) {
             throw std::invalid_argument(
                 std::string(grammar_flag) + ": constraint_too_large: grammar exceeds " +
-                std::to_string(ninfer::serve::kConstraintPayloadLimit) + " bytes");
+                std::to_string(ninfer::constraint::kConstraintPayloadLimit) + " bytes");
         }
         options.constraint.source = ConstraintSource::Grammar;
         options.constraint.gbnf   = std::move(*grammar_source_text);
@@ -341,6 +349,13 @@ Options parse_options(int argc, char** argv) {
         const bool explicitly_enabled =
             options.enable_thinking.value_or(false) ||
             (options.reasoning_effort && *options.reasoning_effort != ReasoningEffort::None);
+        // Match the CLI's own `--no-thinking --thinking-budget` rule: a budget is meaningless when
+        // the resolved mode is non-thinking, so reject it here rather than leaving it inert.
+        if (!explicitly_enabled && options.thinking_budget) {
+            throw std::invalid_argument(
+                "--thinking-budget cannot be combined with a constraint that resolves thinking "
+                "off; pass --reasoning-effort or drop --thinking-budget");
+        }
         options.enable_thinking             = explicitly_enabled;
         options.constraint.thinking_enabled = explicitly_enabled;
     }
