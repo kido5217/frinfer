@@ -39,6 +39,7 @@
           pkgs.pkg-config
           cuda.cuda_nvcc
           cuda.cuda_cudart
+          cuda.cuda_profiler_api
           cuda.cuda_nvtx
           cuda.nsight_compute
           cuda.nsight_systems
