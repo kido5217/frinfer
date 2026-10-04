@@ -25,7 +25,7 @@ the `frinfer` product binaries. The rest of this README describes the combined p
 ### Changes from upstream
 
 Maintained: add or update a row whenever a fork feature changes or its status changes.
-Last updated 2026-10-04 (`r6-2-g9ae684ed`, `9ae684ed`).
+Last updated 2026-10-04 (`feat/serve-logprobs`, `ae8f6acd`).
 
 | What | Why | How | Status | Source |
 |---|---|---|---|---|
