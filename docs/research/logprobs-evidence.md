@@ -24,7 +24,8 @@ Sources of record (all read this session, 2026-10-04):
   `c5c8ee5977010a424b2bd06a42ee76913f3ac4cc5ee4defdfde429ebbd3860b9`). Cited as
   `<schema>:<line>` against that file. The `master` ref serves the identical blob.
 - **FrInfer** master @ `014e985d` (the checkout at gate start): `src/runtime/engine/engine_core.h`,
-  `src/models/qwen3_5/program/**`, `include/ninfer/ops/sampling.h`, `include/ninfer/ops/apply_mask.h`,
+  `src/models/qwen3_5/program/**`, `src/models/qwen3_5/execution/**` (cited as `execution/…`),
+  `include/ninfer/ops/sampling.h`, `include/ninfer/ops/apply_mask.h`,
   `include/ninfer/ops/target_logprobs.h`, `include/ninfer/types.h`, `include/ninfer/engine.h`,
   `src/serve/**`, `bench/**`, `tests/**`. Cited as `<path>:<line>`.
 - The survey `docs/research/llmcpp-port-serve.md` @ `research/llmcpp-serve` `dc60901a` (candidate 2),
@@ -77,11 +78,11 @@ Request:
   with assistant messages."
 
 Aggregate output: `OutputMessage.content[]` → `OutputTextContent` (`OutputMessage:56861`,
-`OutputMessageContent:56911`, `OutputTextContent:81035`) which **requires** `logprobs`:
+`OutputMessageContent:56912`, `OutputTextContent:81031`) which **requires** `logprobs`:
 
-- `LogProb[]` (`LogProb:81030`, required `token`, `logprob`, `bytes`, `top_logprobs`):
+- `LogProb[]` (`LogProb:81009`, required `token`, `logprob`, `bytes`, `top_logprobs`):
   `{token, logprob, bytes, top_logprobs: TopLogProb[]}`;
-- `TopLogProb` (`:81000`, required `token`, `logprob`, `bytes`).
+- `TopLogProb` (`:80992`, required `token`, `logprob`, `bytes`).
 
 Streaming: `response.output_text.delta` (`ResponseTextDeltaEvent:72575`) and
 `response.output_text.done` (`ResponseTextDoneEvent:72632`) both **require** `logprobs`:
@@ -214,17 +215,25 @@ outputs: top_ids    I32   [K, rows]   K = 20
   enqueued *before* `sample` when penalties are active (so `token_counts` is pre-increment).
 - The chosen token's own entry is derived from the top-K list (guaranteed membership per §2.2);
   no post-sample lookup Op is needed.
+- **Relation to the existing `target_logprobs` Op.** `include/ninfer/ops/target_logprobs.h:44`
+  already computes `logits[target_ids] − logsumexp(valid rows)` — exactly the chosen token's
+  log-probability — but only for caller-supplied target ids and with no top-K. It is the
+  CausalScoring primitive and remains so; `logprob_topk` subsumes that value for this path (the
+  chosen token is in the reported top-K), so reusing `target_logprobs` would add a second
+  full-vocabulary pass.
 
 ### 2.4 Placement per backend
 
 - **Ordinary**: enqueue after `ops::apply_mask` (`decode.cpp:57-64`) and before `ops::sample`
   (`:65`), over the one column, guarded by `active`.
 - **MTP / DFlash**: enqueue after the shared forward, over all `k+1` columns of `target_logits`
-  (`[V, k+1, B]`), before acceptance or immediately after it; the Engine publishes only the
-  **accepted prefix** of the round (`A+1` positions, known from `licensed_counts`/`accepted` at
-  `engine_core.h:1131-1181`). Rejected columns are discarded. The anchor column (0) predicts the
-  first token committed in this round and is published; the previous round's tokens are not
-  re-reported.
+  (`[V, k+1, B]`), and **before** the acceptance Op that consumes-and-increments the count array for
+  those columns (`speculative/target_verification.cpp:16-40`) — not "immediately after", which
+  would read post-increment penalties. The Engine publishes only the licensed prefix (`A+1`,
+  `engine_core.h:1131-1181`); rejected columns are discarded. Anchor column 0 predicts the first
+  token committed in this round and is published; the previous round's tokens are not re-reported.
+  **Open (see §5):** if the sampler's penalty state evolves *per column within* a round, one
+  pre-acceptance gather reproduces only the round-start counts and #181 must snapshot per column.
 - **Prefill**: enqueue after the prefill mask (`prefill.cpp:165`) for the single row so the first
   generated token carries a logprob.
 
@@ -245,11 +254,12 @@ Per row the work is `O(V)` for `logsumexp` plus `O(V·K)` for the bounded top-K 
 comparisons per row at `V = 151 936`. The Op runs **only when requested**: the device `active` flag
 gates the body, so an ordinary round with logprobs off pays one flag check.
 
-**Measured (prototype, §4):** V = 151 936, standalone launch, rows=1 ≈45.7 µs (0.33 % of the 13.7 ms
-step), rows=8 ≈80.4 µs (0.59 %), masked rows ≈25–46 µs, a speculative block (rows=8, `k+1=5` → 40
-row-instances) ≈228.5 µs (1.67 %). The 1-row figure is launch-dominated — a real integration runs
-inside the captured decode graph, so these are upper bounds. Cost scales with `k+1` on the
-speculative backends.
+**Measured (prototype, §4):** V = 151 936, standalone launch, 5-run medians (min–max): rows=1
+≈46–48 µs (≈0.34 % of the 13.7 ms step), rows=8 ≈80–85 µs (≈0.6 %), masked rows ≈24 µs (r1) /
+≈48–56 µs (r8), a speculative block (rows=8, `k+1=5` → 40 row-instances) ≈228 µs (1.66 %). The
+1-row figure is launch-dominated — a real integration runs inside the captured decode graph, so
+these are upper bounds. Cost scales with `k+1` on the speculative backends. rows=8 timings are noisy
+(spread up to ≈46 %, §4.3), so treat them as order-of-magnitude.
 
 ### 2.6 Buffers, capture, and host transport
 
@@ -352,15 +362,25 @@ All 13 case/row lines report `top-20 exact = yes` and `chosen ok = yes`; **overa
 
 ### 4.2 Cost — CUDA events, 10 warm-up + 100 iterations, V = 151 936
 
-| case | rows | mean µs/call | % of 13.7 ms step |
-|---|---:|---:|---:|
-| plain-t1 | 1 / 8 | 45.7 / 80.4 | 0.334 / 0.587 |
-| plain-t07 | 1 / 8 | 48.0 / 80.4 | 0.350 / 0.587 |
-| greedy | 1 / 8 | 49.9 / 80.6 | 0.364 / 0.588 |
-| penalty | 1 / 8 | 45.8 / 80.4 | 0.335 / 0.587 |
-| masked | 1 / 8 | 25.4 / 45.9 | 0.185 / 0.335 |
-| mask-penalty | 1 / 8 | 23.6 / 45.9 | 0.172 / 0.335 |
-| spec-k4 (rows 8 × w 5) | 40 | 228.5 | 1.668 |
+Five repeated `--bench` runs per case (raw: `results/reruns.txt`; `results/summary.md` is the
+harness's own single run, kept for the correctness tables); figures are the **median** with
+(min–max) of the per-call mean:
+
+| case | rows | median µs (min–max) | median % of 13.7 ms |
+|---|---:|---|---:|
+| plain-t1 | 1 | 47.9 (46.0–56.0) | 0.350 |
+| plain-t1 | 8 | 83.3 (80.6–85.3) | 0.608 |
+| plain-t07 | 1 | 45.9 (45.8–48.2) | 0.335 |
+| plain-t07 | 8 | 83.3 (80.7–96.1) | 0.608 |
+| greedy | 1 | 46.1 (46.0–48.2) | 0.336 |
+| greedy | 8 | 85.3 (80.8–105.3) | 0.622 |
+| penalty | 1 | 46.0 (46.0–50.3) | 0.336 |
+| penalty | 8 | 80.6 (80.5–83.0) | 0.588 |
+| masked | 1 | 23.6 (23.4–25.6) | 0.172 |
+| masked | 8 | 48.1 (46.0–68.3) | 0.351 |
+| mask-penalty | 1 | 23.6 (23.2–25.7) | 0.172 |
+| mask-penalty | 8 | 55.7 (46.0–64.5) | 0.407 |
+| spec-k4 (rows 8 × w 5) | 40 | 227.5 (227.2–266.9) | 1.660 |
 
 Masked rows are ≈2× cheaper because the harness masks a contiguous suffix, so CTAs landing entirely
 in the masked region skip the sum/top-K pass.
@@ -368,7 +388,13 @@ in the masked region skip the sum/top-K pass.
 ### 4.3 Caveats and scope of the measurement
 
 - **Design correction**: the split-CTA layout of §2.3 supersedes the one-CTA-per-row sketch, which
-  measured ~336 µs at rows=1. This is the gate's most important output after the spec shape.
+  the spike's first implementation measured ~336 µs at rows=1 (that unsplit variant is **not** in the
+  shipped harness, so the ~7× ratio is a development observation, not reproducible from this tree).
+  This is the gate's most important output after the spec shape.
+- **Timing reproducibility (review finding, fixed here)**: rows=8 timings vary run to run — spread up
+  to ≈46 % (masked r8), with occasional outliers (greedy r8 to 105 µs) — so §4.2 reports medians and
+  ranges, not single points. rows=1 is comparatively stable (≤≈21 %). No case's *worst* observation
+  exceeds 1.95 % of the 13.7 ms step, so the cost conclusion is robust even at the noisy extreme.
 - **Upper bound, not an in-situ figure**: the prototype times a **standalone launch**. In the real
   integration the Op is inside the captured decode graph (launch overhead removed), so the true
   added cost should be lower, especially at rows=1 where launch overhead dominates.
@@ -394,4 +420,6 @@ the devShell (misleading "driver version is insufficient" error); `run.sh` prepe
   still needs a per-column assertion during implementation.
 - Whether `refusal[]` entries ever arise (the Engine's refusal path) and how they are populated.
 - The content-stream alignment rule of §2.8, with schema tests.
+- Whether the sampler's penalty state evolves per column within a speculative round (§2.4): if it
+  does, the gather must snapshot `token_counts` per column rather than read round-start counts.
 - `docs/serving.md` capability list + the schema tests, updated together.
