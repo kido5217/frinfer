@@ -1,5 +1,6 @@
 #pragma once
 #include "models/qwen3_5/program/internal.h"
+#include "models/qwen3_5/program/logprob_assembly.h"
 
 #include "core/arena.h"
 #include "core/gdn_replay_records.h"
@@ -24,7 +25,6 @@
 
 #include <algorithm>
 #include <array>
-#include <cmath>
 #include <cstdint>
 #include <limits>
 #include <memory>
@@ -42,26 +42,6 @@ using RewriteCheckpointKind = qwen3_5::RewriteCheckpointKind;
 using RewriteCheckpointSpec = qwen3_5::RewriteCheckpointSpec;
 
 using ReusePath = ninfer::PrefixReusePath;
-
-// Builds one RawTokenLogprob from a gather result and the drawn token. The gather tensors are
-// ninfer [kMaximumTokenLogprobs, columns] (ne[0]-contiguous), so element (k, column) is at
-// k + column*kMaximumTokenLogprobs. The drawn token is normally the finite top-1, so its own value
-// comes from the matching entry; -9999.0 is the OpenAI sentinel for "outside the reported top set".
-[[nodiscard]] inline runtime::RawTokenLogprob
-assemble_logprob(const std::int32_t* ids, const float* values, std::int32_t column, TokenId token) {
-    runtime::RawTokenLogprob record;
-    record.id      = token;
-    record.logprob = kLogprobSentinel;
-    for (std::size_t k = 0; k < kMaximumTokenLogprobs; ++k) {
-        const std::size_t slot = k + static_cast<std::size_t>(column) * kMaximumTokenLogprobs;
-        record.top_ids[k]      = ids[slot];
-        record.top_values[k]   = values[slot];
-        if (record.top_ids[k] == token && std::isfinite(record.top_values[k])) {
-            record.logprob = record.top_values[k];
-        }
-    }
-    return record;
-}
 
 [[nodiscard]] constexpr bool is_rewrite_checkpoint_restore(ReusePath path) noexcept {
     return path == ReusePath::PrivateTurnClosure || path == ReusePath::PrivateResponseReplay;

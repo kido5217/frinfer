@@ -1,6 +1,8 @@
 #include "ninfer/ops/logprob_topk.h"
 #include "ops/op_tester.h"
 
+#include "models/qwen3_5/program/logprob_assembly.h"
+
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
@@ -259,6 +261,100 @@ int run_inactive_case() {
     return failures;
 }
 
+// The speculative (MTP/DFlash) gather view is a ninfer [V, width, batch] logits tensor flattened to
+// [V, width*batch]; the gather row for (verify column `col`, batch lane `lane`) is col + lane*width.
+// This drives the Op with that layout, then assembles each column through the production host
+// helper, so the old row-major index (col*batch + lane) shows up as a wrong top-1 / -9999.0 sentinel.
+int run_speculation_multilane_case() {
+    constexpr std::int32_t width = 3;
+    constexpr std::int32_t batch = 4;
+    constexpr std::int32_t vocab = 64;
+    const std::int32_t rows      = width * batch;
+
+    std::vector<std::int32_t> expected(static_cast<std::size_t>(rows));
+    std::vector<float> logits(static_cast<std::size_t>(vocab) * rows, -4.0f);
+    for (std::int32_t lane = 0; lane < batch; ++lane) {
+        for (std::int32_t col = 0; col < width; ++col) {
+            const std::int32_t row = col + lane * width;
+            expected[static_cast<std::size_t>(row)] = 1 + row;
+            logits[static_cast<std::size_t>(row) * vocab + (1 + row)] = 8.0f;
+        }
+    }
+
+    std::vector<std::uint16_t> packed(logits.size());
+    for (std::size_t i = 0; i < logits.size(); ++i) { packed[i] = f32_to_bf16(logits[i]); }
+    GuardedDeviceBuffer device_logits(packed.size() * sizeof(std::uint16_t));
+    device_logits.copy_from_host(packed.data(), device_logits.bytes());
+
+    std::vector<ops::SamplingConfig> configs(static_cast<std::size_t>(rows));
+    DeviceBuffer config_buffer(configs.size() * sizeof(ops::SamplingConfig));
+    config_buffer.copy_from_host(configs.data(), config_buffer.bytes);
+
+    GuardedDeviceBuffer device_ids(static_cast<std::size_t>(K) * rows * sizeof(std::int32_t));
+    GuardedDeviceBuffer device_values(static_cast<std::size_t>(K) * rows * sizeof(float));
+    GuardedDeviceBuffer device_lse(static_cast<std::size_t>(rows) * sizeof(float));
+    GuardedDeviceBuffer device_active(sizeof(std::int32_t));
+    std::int32_t active = 1;
+    device_active.copy_from_host(&active, sizeof(active));
+
+    Tensor logits_tensor(device_logits.data(), DType::BF16, {vocab, rows});
+    Tensor ids_tensor(device_ids.data(), DType::I32, {K, rows});
+    Tensor values_tensor(device_values.data(), DType::FP32, {K, rows});
+    Tensor lse_tensor(device_lse.data(), DType::FP32, {rows});
+    Tensor active_tensor(device_active.data(), DType::I32, {1});
+    auto* config_pointer = reinterpret_cast<const ops::SamplingConfig*>(config_buffer.p);
+
+    WorkspaceArena workspace(ops::logprob_topk_workspace_capacity_bytes(vocab, rows));
+    ops::logprob_topk(logits_tensor, config_pointer, vocab, ids_tensor, values_tensor, lse_tensor,
+                      active_tensor, workspace, nullptr);
+    cuda_synchronize();
+
+    const auto ids =
+        from_device<std::int32_t>(device_ids.data(), static_cast<std::size_t>(K) * rows);
+    const auto values =
+        from_device<float>(device_values.data(), static_cast<std::size_t>(K) * rows);
+
+    int failures      = 0;
+    int old_wrong     = 0;
+    for (std::int32_t lane = 0; lane < batch; ++lane) {
+        for (std::int32_t col = 0; col < width; ++col) {
+            const std::int32_t row = ninfer::models::qwen3_5::detail::speculation_logprob_column(
+                col, lane, width);
+            if (row != col + lane * width) {
+                std::cerr << "speculation column: got " << row << " want " << col + lane * width
+                          << "\n";
+                failures += 1;
+            }
+            if (ids[static_cast<std::size_t>(row) * K] != expected[static_cast<std::size_t>(row)]) {
+                std::cerr << "speculation gather row " << row << ": top1 "
+                          << ids[static_cast<std::size_t>(row) * K] << " want "
+                          << expected[static_cast<std::size_t>(row)] << "\n";
+                failures += 1;
+            }
+            const auto record = ninfer::models::qwen3_5::detail::assemble_logprob(
+                ids.data(), values.data(), row, expected[static_cast<std::size_t>(row)]);
+            if (record.id != expected[static_cast<std::size_t>(row)] ||
+                record.top_ids[0] != expected[static_cast<std::size_t>(row)] ||
+                !std::isfinite(record.logprob) || record.logprob == kLogprobSentinel) {
+                std::cerr << "speculation assemble row " << row << ": top1 " << record.top_ids[0]
+                          << " logprob " << record.logprob << "\n";
+                failures += 1;
+            }
+            // The pre-fix row-major index must be detectably wrong at some (col, lane).
+            const std::int32_t old_row = col * batch + lane;
+            if (old_row != row && ids[static_cast<std::size_t>(old_row) * K] !=
+                                       expected[static_cast<std::size_t>(row)]) {
+                old_wrong += 1;
+            }
+        }
+    }
+    if (old_wrong == 0) {
+        std::cerr << "speculation test is insensitive: the old index aliases the correct one\n";
+        failures += 1;
+    }
+    return failures;
+}
+
 template <class Function>
 int expect_invalid(const char* label, Function&& function) {
     try {
@@ -361,6 +457,7 @@ int main() {
     failures += run_case("logprob_topk split boundary V=128", 128, 2, CaseSpec{});
     failures += run_case("logprob_topk split boundary V=129", 129, 2, CaseSpec{});
     failures += run_inactive_case();
+    failures += run_speculation_multilane_case();
     failures += run_validation_cases();
 
     std::cout << (failures ? "FAIL" : "OK") << " logprob_topk\n";

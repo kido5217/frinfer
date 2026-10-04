@@ -75,8 +75,9 @@ struct MtpDecodeIngress {
     std::array<std::int32_t, kMaximumConcurrency> state_destination_slots{};
     std::array<std::int32_t, kMaximumConcurrency> rope_deltas{};
     std::array<ops::SamplingConfig, kMaximumConcurrency> sampling{};
-    // Per-verify-column configs for the logprob gather (column-major [width, B]); a Gather row is
-    // c*B+b. The penalty count pointer is shared with the round's sampling array.
+    // Per-verify-column configs for the logprob gather, flattened [width, B] with the column axis
+    // fastest: the gather row for (col, lane) is col + lane*width. The penalty count pointer is
+    // shared with the round's sampling array.
     std::array<ops::SamplingConfig, kMaximumConcurrency * kMtpDecodeMaximumWidth> logprob_sampling{};
     // Host-controlled per-round gate: non-zero enables the logprob gather for every verify column.
     std::int32_t logprob_active = 0;
@@ -89,7 +90,7 @@ struct MtpDecodeEgress {
     // Step-major: all B rows for proposal step 0, followed by all B rows for step 1, etc.
     std::array<TokenId, kMaximumConcurrency * kMtpDecodeMaximumDrafts> next_drafts{};
     std::array<std::int32_t, kMaximumConcurrency> next_extents{};
-    // Per-verify-column gather, laid out [kMaximumTokenLogprobs, width, B].
+    // Per-verify-column gather, [kMaximumTokenLogprobs, width, B] (ne[0]-contiguous).
     std::array<std::int32_t,
                kMaximumConcurrency * kMtpDecodeMaximumWidth * kMaximumTokenLogprobs>
         logprob_ids{};
@@ -134,7 +135,7 @@ struct DFlashDecodeEgress {
     std::array<TokenId, kMaximumConcurrency * kDFlashDecodeMaximumWidth> licensed_tokens{};
     std::array<std::int32_t, kMaximumConcurrency> licensed_counts{};
     std::array<std::int32_t, kMaximumConcurrency> accepted_drafts{};
-    // Per-verify-column gather, laid out [kMaximumTokenLogprobs, width, B].
+    // Per-verify-column gather, [kMaximumTokenLogprobs, width, B] (ne[0]-contiguous).
     std::array<std::int32_t,
                kMaximumConcurrency * kDFlashDecodeMaximumWidth * kMaximumTokenLogprobs>
         logprob_ids{};

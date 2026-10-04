@@ -368,9 +368,13 @@ on the output text Item and `ResponseLogProb[]` (no `bytes`) on `response.output
 `response.output_text.done`. When neither route opts in, no distribution is gathered and the
 default path pays only a device flag check.
 
-The speculative (MTP/DFlash) path gathers the same distribution for every accepted column; its
-gather cost is a larger fraction of a step than the ordinary decode path, so speculative logprobs
-are intended for evaluation rather than high-throughput serving.
+The speculative (MTP/DFlash) path gathers the same distribution for every accepted column. That
+gather reads the whole vocabulary for every verify column, so its cost is a larger fraction of a
+step than the ordinary decode path: measured end-to-end at V=151936, the spec full batch costs
+about 3.3-3.6 % of a decode step, against 0.49 % for one decode row and 0.96 % for eight. The
+evidence gate's 1.7 % spec budget is not reachable in-project because `ninfer_ops` is built with
+`-rdc=true` (the gate's own prototype measures about 2.5 % under that device link), so speculative
+logprobs are intended for evaluation rather than high-throughput serving.
 
 ### llama.cpp-compatible request observations
 

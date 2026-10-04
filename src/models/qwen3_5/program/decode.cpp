@@ -485,6 +485,12 @@ ProgramImpl::decode_mtp_batch(std::span<const std::uint32_t> lanes,
                                                        capacity);
         }
 
+        // The gather covers every [width, batch] row, including lanes with no request this round.
+        // Seed the whole array with a safe zero config (greedy, no penalties) before the active
+        // lanes overwrite their entries, so an idle lane can never hand the gather a stale config.
+        std::fill(mtp_host_ingress->logprob_sampling.begin(),
+                  mtp_host_ingress->logprob_sampling.end(), ops::SamplingConfig{});
+
         bool any_logprobs = false;
         for (std::size_t row = 0; row < lanes.size(); ++row) {
             SequenceState& sequence           = active_sequence(lanes[row]);
@@ -522,8 +528,10 @@ ProgramImpl::decode_mtp_batch(std::span<const std::uint32_t> lanes,
             mtp_host_ingress->sampling[row]                = request.sampling_host;
             any_logprobs |= request.logprobs;
             for (std::uint32_t column = 0; column < width; ++column) {
-                mtp_host_ingress->logprob_sampling[column * max_concurrency + row] =
-                    request.sampling_host;
+                // The config a gather row uses must sit at that row's index (col + lane*width).
+                mtp_host_ingress->logprob_sampling[speculation_logprob_column(
+                    static_cast<std::int32_t>(column), static_cast<std::int32_t>(row),
+                    static_cast<std::int32_t>(width))] = request.sampling_host;
             }
             ensure_sequence_kv_mapped(sequence, frontier + extent + 1,
                                       std::min(capacity, frontier + extent + draft_window));
@@ -601,8 +609,8 @@ ProgramImpl::decode_mtp_batch(std::span<const std::uint32_t> lanes,
                         assemble_logprob(
                             mtp_host_egress->logprob_ids.data(),
                             mtp_host_egress->logprob_values.data(),
-                            index * static_cast<std::int32_t>(max_concurrency) +
-                                static_cast<std::int32_t>(row),
+                            speculation_logprob_column(index, static_cast<std::int32_t>(row),
+                                                      static_cast<std::int32_t>(width)),
                             token);
                 }
             }
@@ -706,6 +714,11 @@ ProgramImpl::decode_dflash_batch(std::span<const std::uint32_t> lanes,
                                      draft_window + 1ULL))};
         }
 
+        // See the MTP body: cover the inactive lanes of the [width, batch] gather with a safe
+        // zero config before the active lanes overwrite their rows.
+        std::fill(dflash_host_ingress->logprob_sampling.begin(),
+                  dflash_host_ingress->logprob_sampling.end(), ops::SamplingConfig{});
+
         bool any_logprobs = false;
         for (std::size_t row = 0; row < lanes.size(); ++row) {
             SequenceState& sequence           = active_sequence(lanes[row]);
@@ -740,8 +753,10 @@ ProgramImpl::decode_dflash_batch(std::span<const std::uint32_t> lanes,
             dflash_host_ingress->sampling[row]                = request.sampling_host;
             any_logprobs |= request.logprobs;
             for (std::uint32_t column = 0; column < width; ++column) {
-                dflash_host_ingress->logprob_sampling[column * max_concurrency + row] =
-                    request.sampling_host;
+                // The config a gather row uses must sit at that row's index (col + lane*width).
+                dflash_host_ingress->logprob_sampling[speculation_logprob_column(
+                    static_cast<std::int32_t>(column), static_cast<std::int32_t>(row),
+                    static_cast<std::int32_t>(width))] = request.sampling_host;
             }
             ensure_sequence_kv_mapped(sequence, frontier + extent + 1U,
                                       backend_kv_cache() ? frontier : 0U);
@@ -812,8 +827,8 @@ ProgramImpl::decode_dflash_batch(std::span<const std::uint32_t> lanes,
                         assemble_logprob(
                             dflash_host_egress->logprob_ids.data(),
                             dflash_host_egress->logprob_values.data(),
-                            index * static_cast<std::int32_t>(max_concurrency) +
-                                static_cast<std::int32_t>(row),
+                            speculation_logprob_column(index, static_cast<std::int32_t>(row),
+                                                      static_cast<std::int32_t>(width)),
                             token);
                 }
             }
