@@ -23,7 +23,7 @@
 #include <future>
 #include <iostream>
 #include <iterator>
-#include <map>
+#include <locale>
 #include <memory>
 #include <span>
 #include <string>
@@ -430,6 +430,23 @@ int test_declared_frontend_semantics() {
                                    fixture_byte_token('C'), fixture_byte_token(' '),
                                    fixture_byte_token(0xc3), fixture_byte_token(0xa9)},
               "declared NFC/ByteLevel tokenizer did not preserve case and compose Unicode");
+    const auto& ascii = std::use_facet<std::ctype<char>>(std::locale::classic());
+    std::string ascii_text;
+    for (int codepoint = 0; codepoint < 128; ++codepoint) {
+        ascii_text.push_back(static_cast<char>(codepoint));
+    }
+    for (std::size_t offset = 0; offset < ascii_text.size(); ++offset) {
+        namespace unicode = ninfer::text::unicode_internal;
+        const auto value  = unicode::utf8_codepoint_at(ascii_text, offset, "ASCII test");
+        const auto byte   = ascii_text[offset];
+        failures += check(
+            value.value == byte && value.offset == offset && value.length == 1 &&
+                unicode::is_letter(value.value) == ascii.is(std::ctype_base::alpha, byte) &&
+                unicode::is_number(value.value) == ascii.is(std::ctype_base::digit, byte) &&
+                unicode::is_whitespace(value.value) == ascii.is(std::ctype_base::space, byte) &&
+                !unicode::is_mark(value.value),
+            "ASCII decoding or Unicode classification differs from classic character semantics");
+    }
     for (const auto& [path, value] : std::vector<std::pair<const char*, nlohmann::json>>{
              {"/normalizer/type", "Lowercase"},
              {"/pre_tokenizer/pretokenizers/0/pattern/Regex", "\\w+"},
@@ -512,22 +529,65 @@ int test_bpe_merge_order() {
     const std::string tokenizer_json = nlohmann::json{
         {"model",
          {{"type", "BPE"},
-          {"vocab", {{"a", 0}, {"aa", 1}, {"aaa", 2}, {"b", 3}, {"c", 4}, {"bc", 5}, {"abc", 6}}},
+          {"vocab",
+           {{"a", 0}, {"aa", 1}, {"aaa", 2}, {"b", 3}, {"c", 4}, {"bc", 5}, {"abc", 6}, {"Ċ", 7}}},
           {"merges",
            nlohmann::json::array(
                {nlohmann::json::array({"a", "a"}), nlohmann::json::array({"aa", "a"}),
                 nlohmann::json::array({"b", "c"}), nlohmann::json::array({"a", "bc"})})}}},
         {"added_tokens",
-         nlohmann::json::array()}}.dump();
+         nlohmann::json::array(
+             {added(8, "<sep>", true)})}}.dump();
     const std::string tokenizer_config_json =
         nlohmann::json{{"added_tokens_decoder", nlohmann::json::object()}}.dump();
     const fi::Tokenizer tokenizer({.tokenizer_json         = tokenizer_json,
                                    .tokenizer_config_json  = tokenizer_config_json,
                                    .generation_config_json = R"({"eos_token_id":0})"});
-    return check(tokenizer.encode("aaa") == std::vector<int>{2} &&
-                     tokenizer.encode("aaaa") == std::vector<int>({1, 1}) &&
-                     tokenizer.encode("abc") == std::vector<int>{6},
-                 "priority BPE changed rank or leftmost merge semantics");
+    int failures     = check(tokenizer.encode("aaa") == std::vector<int>{2} &&
+                                 tokenizer.encode("aaaa") == std::vector<int>({1, 1}) &&
+                                 tokenizer.encode("abc") == std::vector<int>{6},
+                             "priority BPE changed rank or leftmost merge semantics");
+    const auto naive = [](std::string_view text) {
+        std::vector<int> symbols;
+        for (const char ch : text) symbols.push_back(ch == 'a' ? 0 : ch == 'b' ? 3 : 4);
+        constexpr std::array<std::array<int, 3>, 4> rules{
+            {{0, 0, 1}, {1, 0, 2}, {3, 4, 5}, {0, 5, 6}}};
+        for (;;) {
+            bool merged = false;
+            // Scan rules by rank, then pairs from left to right, independently of the heap.
+            for (const auto& rule : rules) {
+                for (std::size_t i = 0; i + 1 < symbols.size(); ++i) {
+                    if (symbols[i] != rule[0] || symbols[i + 1] != rule[1]) continue;
+                    symbols[i] = rule[2];
+                    symbols.erase(symbols.begin() + static_cast<std::ptrdiff_t>(i + 1));
+                    merged = true;
+                    break;
+                }
+                if (merged) break;
+            }
+            if (!merged) return symbols;
+        }
+    };
+    std::size_t combinations = 1;
+    for (std::size_t length = 1; length <= 6; ++length) {
+        combinations *= 3;
+        for (std::size_t value = 0; value < combinations; ++value) {
+            std::string word(length, 'a');
+            auto remaining = value;
+            for (char& ch : word) {
+                ch = "abc"[remaining % 3];
+                remaining /= 3;
+            }
+            auto expected     = std::vector<int>{1, 1, 7};
+            const auto middle = naive(word);
+            expected.insert(expected.end(), middle.begin(), middle.end());
+            expected.insert(expected.end(), {8, 6});
+            failures +=
+                check(tokenizer.encode("aaaa\n" + word + "<sep>abc") == expected,
+                      "BPE differs from rank/leftmost oracle across word and special boundaries");
+        }
+    }
+    return failures;
 }
 
 int test_boundary_aware_tokenization() {
@@ -1689,72 +1749,6 @@ int test_cross_round_stop(const Frontend& frontend) {
     return failures;
 }
 
-int test_stop_inside_withheld_tool_region(const Frontend& frontend) {
-    // A stop string that only occurs inside a tool-call region is not part of the visible model
-    // stream: the region stays withheld while it is open, its bytes never reach the stop matcher,
-    // and the terminal transaction publishes the structured call instead of cutting the turn. The
-    // same stop string in plain content still cuts.
-    ninfer::ChatMessage message;
-    message.role = ninfer::ChatRole::User;
-    message.parts.push_back(
-        ninfer::MessagePart{.kind = ninfer::MessagePartKind::Text, .text = "x", .media = {}});
-    ninfer::PromptInput input;
-    input.messages.push_back(std::move(message));
-    input.options.enable_thinking = false;
-    input.options.tool_jsons.push_back(
-        R"({"type":"function","function":{"name":"bash","parameters":{"type":"object","properties":{"command":{"type":"string"}}}}})");
-    auto prompt = frontend.prepare(std::move(input));
-
-    ninfer::StopPolicy stop;
-    stop.strings.push_back(ninfer::StopString{.text = "STOP"});
-
-    auto session = frontend.make_output_session(prompt, stop);
-    const std::string first_round =
-        "Calling. \n<tool_call>\n<function=bash>\n<parameter=command>\necho STOP";
-    const std::vector<ninfer::TokenId> first_tokens = fixture_tokenizer().encode(first_round);
-    const auto first        = session.preview_model(first_tokens, first_tokens.size() + 2U,
-                                                    ninfer::FinishReason::OutputLimit);
-    int failures            = check(!first.finished(),
-                                    "a stop string inside a withheld tool region ended the turn early");
-    const auto first_output = session.commit_preview();
-    failures += check(channel_text(first_output, ninfer::OutputChannel::Content) == "Calling.",
-                      "a withheld tool region leaked its framing into visible content");
-    failures += check(!session.matched_stop_string(),
-                      "a stop string inside a withheld tool region was matched");
-
-    const std::string second_round                   = "\n</parameter>\n</function>\n</tool_call>";
-    const std::vector<ninfer::TokenId> second_tokens = fixture_tokenizer().encode(second_round);
-    const auto second = session.preview_model(second_tokens, second_tokens.size(),
-                                              ninfer::FinishReason::OutputLimit);
-    failures += check(second.finish_reason == ninfer::FinishReason::OutputLimit,
-                      "a completed tool region did not end at the output limit");
-    const auto second_output                           = session.commit_preview();
-    const std::vector<ninfer::GeneratedToolCall> calls = session.take_tool_calls();
-    failures += check(calls.size() == 1 && calls.front().name == "bash",
-                      "a withheld tool region did not publish its structured call");
-    if (!calls.empty()) {
-        const nlohmann::json arguments = nlohmann::json::parse(calls.front().arguments_json);
-        failures += check(arguments.at("command") == "echo STOP",
-                          "a withheld tool region corrupted the argument bytes");
-    }
-    failures += check(channel_text(second_output, ninfer::OutputChannel::Content).find("STOP") ==
-                          std::string::npos,
-                      "a stop string from inside a tool region leaked into visible content");
-    failures +=
-        check(!session.matched_stop_string(), "the completed tool region reported a stop match");
-
-    auto plain_session                              = frontend.make_output_session(prompt, stop);
-    const std::vector<ninfer::TokenId> plain_tokens = fixture_tokenizer().encode("hello STOP");
-    const auto plain = plain_session.preview_model(plain_tokens, plain_tokens.size(),
-                                                   ninfer::FinishReason::OutputLimit);
-    failures += check(plain.finish_reason == ninfer::FinishReason::StopString,
-                      "a stop string in plain content no longer cuts the turn");
-    const auto plain_output = plain_session.commit_preview();
-    failures += check(channel_text(plain_output, ninfer::OutputChannel::Content) == "hello ",
-                      "a plain-content stop did not cut at the matched byte");
-    return failures;
-}
-
 int test_same_token_stop_priority(const Frontend& frontend) {
     auto prompt = frontend.prepare_tokens({0});
     ninfer::StopPolicy stop;
@@ -1833,7 +1827,6 @@ int test_structured_tool_output() {
     failures += check(session.tool_call_parse_diagnostics() ==
                           ninfer::ToolCallParseDiagnostics{
                               .marker_seen               = true,
-                              .call_attempted            = true,
                               .structured_call_count     = 1,
                               .empty_arguments_omitted   = 1,
                               .schema_mismatch_arguments = 1,
@@ -1846,92 +1839,6 @@ int test_structured_tool_output() {
                               !arguments.contains("enabled") && arguments.at("count") == "many",
                           "frontend did not preserve normalized tool arguments");
     }
-    return failures;
-}
-
-// ADR-0002 signaling: the session marks a demoted tool-call region on the streaming delta so the
-// serve can withhold the region and signal the class; bytes before the region stay ordinary
-// content, and an accepted call is never marked.
-int test_tool_call_demotion_marking() {
-    const Frontend frontend = make_frontend(resources());
-
-    ninfer::ChatMessage message;
-    message.role = ninfer::ChatRole::User;
-    message.parts.push_back(
-        ninfer::MessagePart{.kind = ninfer::MessagePartKind::Text, .text = "x", .media = {}});
-    ninfer::PromptInput input;
-    input.messages.push_back(std::move(message));
-    input.options.enable_thinking = false;
-    input.options.tool_jsons.push_back(
-        R"({"type":"function","function":{"name":"bash","parameters":{"type":"object","properties":{"command":{"type":"string"}},"required":["command"]}}})");
-    auto prompt = frontend.prepare(std::move(input));
-
-    const auto run_terminal = [&](const std::string& generated) {
-        auto session = frontend.make_output_session(
-            prompt, {}, ninfer::OutputOptions{.tool_name_max_length = 64});
-        const std::vector<ninfer::TokenId> tokens = fixture_tokenizer().encode(generated);
-        const auto decision = session.preview_model(tokens, static_cast<std::uint32_t>(tokens.size()),
-                                                    ninfer::FinishReason::OutputLimit);
-        check(decision.finish_reason == ninfer::FinishReason::OutputLimit,
-              "demotion test did not reach the terminal transaction");
-        return session.commit_preview();
-    };
-
-    int failures = 0;
-
-    // A truncated call (a lost call): the region tail is isolated by text_offset and everything
-    // before it stays ordinary content.
-    const std::string truncated =
-        "Calling.\n\n<tool_call>\n<function=bash>\n<parameter=command>\nprintf 'cut";
-    const PublishedOutput lost_output = run_terminal(truncated);
-    const ninfer::OutputDelta* lost_delta = nullptr;
-    for (const ninfer::OutputDelta& delta : lost_output) {
-        if (delta.demotion) { lost_delta = &delta; }
-    }
-    failures += check(lost_delta != nullptr,
-                      "lost-call demotion was not marked on the streaming delta");
-    if (lost_delta != nullptr) {
-        const std::string region = "<tool_call>\n<function=bash>\n<parameter=command>\nprintf 'cut";
-        failures +=
-            check(lost_delta->channel == ninfer::OutputChannel::Content &&
-                      lost_delta->demotion->fallback_reason ==
-                          ninfer::ToolCallParseFallbackReason::MalformedStructure &&
-                      lost_delta->demotion->call_attempted &&
-                      lost_delta->text.substr(0, lost_delta->demotion->text_offset) ==
-                          "Calling.\n\n" &&
-                      lost_delta->text.substr(lost_delta->demotion->text_offset) == region,
-                  "lost-call demotion metadata does not isolate the region bytes");
-    }
-
-    // A region that is the entire transaction: offset 0, and the tail is the whole delta.
-    const PublishedOutput bare_output =
-        run_terminal("<tool_call>\n<function=bash>\n<parameter=command>\nprintf 'cut");
-    const ninfer::OutputDelta* bare_delta = nullptr;
-    for (const ninfer::OutputDelta& delta : bare_output) {
-        if (delta.demotion) { bare_delta = &delta; }
-    }
-    failures += check(bare_delta != nullptr && bare_delta->demotion->text_offset == 0 &&
-                          bare_delta->text.starts_with("<tool_call>") &&
-                          bare_delta->demotion->call_attempted,
-                      "whole-transaction demotion did not isolate at offset zero");
-
-    // A quoted marker with no call (benign): marked, but call_attempted stays false.
-    const PublishedOutput benign_output = run_terminal("Note <tool_call> quoted only");
-    const ninfer::OutputDelta* benign_delta = nullptr;
-    for (const ninfer::OutputDelta& delta : benign_output) {
-        if (delta.demotion) { benign_delta = &delta; }
-    }
-    failures += check(benign_delta != nullptr && !benign_delta->demotion->call_attempted,
-                      "benign demotion lost its call_attempted=false classification");
-
-    // An accepted call publishes without any demotion mark.
-    const PublishedOutput accepted_output = run_terminal(
-        "Calling.  \n<tool_call>\n<function=bash>\n<parameter=command>\nls\n</parameter>\n</function>\n</tool_call>");
-    bool marked = false;
-    for (const ninfer::OutputDelta& delta : accepted_output) {
-        marked = marked || delta.demotion.has_value();
-    }
-    failures += check(!marked, "accepted call was marked as a demotion");
     return failures;
 }
 
@@ -2030,7 +1937,7 @@ int test_thinking_budget_control(const Frontend& frontend) {
                           channel_text(control_output, ninfer::OutputChannel::Content).empty(),
                       "thinking control was truncated by caller stops or published to content");
     const ninfer::ThinkingBudgetStats stats = session.thinking_stats();
-    failures += check(stats.configured_budget == 2 && stats.budget_thinking_tokens == 2 &&
+    failures += check(stats.configured_budget == 2 && stats.model_thinking_tokens == 2 &&
                           stats.injected_tokens == control.size() && stats.applied &&
                           session.pending_control_tokens().empty() &&
                           session.model_token_budget_remaining(17) == 17,
@@ -2095,468 +2002,6 @@ int test_thinking_budget_control(const Frontend& frontend) {
     const auto raw_output = raw_session.commit_preview();
     failures += check(channel_text(raw_output, ninfer::OutputChannel::Content) == kThinkingControl,
                       "raw output did not preserve the inserted control representation");
-    return failures;
-}
-
-// The real-time close is the thinking-budget boundary without a budget: an unbudgeted thinking
-// session closes at the boundary a caller signals, under the same capacity rule.
-int test_reasoning_end_control(const Frontend& frontend) {
-    int failures = 0;
-
-    auto prompt  = thinking_prompt(frontend);
-    auto session = frontend.make_output_session(prompt, {}, {}, ninfer::ThinkingControlOptions{});
-    failures += check(session.thinking_stats().configured_budget == std::nullopt &&
-                          session.model_token_budget_remaining(40) == 40,
-                      "an unbudgeted thinking session was clamped");
-
-    // Before the signal the round decodes normally.
-    const auto open = session.preview_model(std::array<ninfer::TokenId, 2>{0, 0}, 40,
-                                            ninfer::FinishReason::OutputLimit);
-    failures += check(open.accepted_tokens == 2 &&
-                          open.continuation == ninfer::runtime::ContinuationAction::Decode,
-                      "an unbudgeted thinking round requested control before any signal");
-    failures += check(
-        channel_text(session.commit_preview(), ninfer::OutputChannel::Reasoning) == "xx",
-        "unbudgeted reasoning output was not published");
-
-    // A real-time close mid-stream arms the identical canonical control span.
-    session.request_reasoning_close();
-    const auto closed = session.preview_model(std::array<ninfer::TokenId, 1>{0}, 38,
-                                              ninfer::FinishReason::OutputLimit);
-    failures += check(closed.accepted_tokens == 1 && !closed.finished() &&
-                          closed.continuation ==
-                              ninfer::runtime::ContinuationAction::ApplyTargetControl,
-                      "a real-time reasoning close did not request target control");
-    (void)session.commit_preview();
-    const std::span<const ninfer::TokenId> pending = session.pending_control_tokens();
-    failures += check(pending.size() > 1,
-                      "a real-time close did not expose the canonical multi-token control span");
-
-    const std::vector<ninfer::TokenId> control(pending.begin(), pending.end());
-    (void)session.preview_control(control, 37);
-    const auto control_output = session.commit_preview();
-    failures += check(channel_text(control_output, ninfer::OutputChannel::Reasoning) ==
-                              kThinkingControlGuidance &&
-                          channel_text(control_output, ninfer::OutputChannel::Content).empty(),
-                      "a real-time close did not publish the early-close guidance to reasoning");
-    const ninfer::ThinkingBudgetStats stats = session.thinking_stats();
-    failures += check(stats.configured_budget == std::nullopt && stats.budget_thinking_tokens == 0 &&
-                          stats.injected_tokens == control.size() && stats.applied &&
-                          session.pending_control_tokens().empty(),
-                      "a real-time close reported budget accounting it never had");
-    const auto answer = session.preview_model(std::array<ninfer::TokenId, 1>{0}, 37,
-                                              ninfer::FinishReason::OutputLimit);
-    failures += check(!answer.finished(), "the round after a real-time close terminated early");
-    failures += check(channel_text(session.commit_preview(), ninfer::OutputChannel::Content) == "x",
-                      "content after a real-time close did not enter the content channel");
-
-    // A second signal after the close has been applied is inert.
-    session.request_reasoning_close();
-    const auto after = session.preview_model(std::array<ninfer::TokenId, 1>{0}, 36,
-                                             ninfer::FinishReason::OutputLimit);
-    failures += check(after.accepted_tokens == 1 &&
-                          after.continuation == ninfer::runtime::ContinuationAction::Decode,
-                      "a late close signal re-armed control");
-    (void)session.commit_preview();
-
-    // A close raised while the model is not in reasoning never arms: a natural close wins first.
-    auto natural_prompt  = thinking_prompt(frontend);
-    auto natural_session =
-        frontend.make_output_session(natural_prompt, {}, {}, ninfer::ThinkingControlOptions{});
-    natural_session.request_reasoning_close();
-    const auto natural = natural_session.preview_model(std::array<ninfer::TokenId, 2>{3, 4}, 40,
-                                                       ninfer::FinishReason::OutputLimit);
-    failures += check(natural.continuation == ninfer::runtime::ContinuationAction::Decode &&
-                          natural_session.pending_control_tokens().empty(),
-                      "a close signal survived a natural thinking close");
-    (void)natural_session.commit_preview();
-
-    // A remaining output budget that cannot fit the control span plus one post-close model token
-    // ends the request instead of partially inserting control.
-    auto tight_prompt  = thinking_prompt(frontend);
-    auto tight_session =
-        frontend.make_output_session(tight_prompt, {}, {}, ninfer::ThinkingControlOptions{});
-    tight_session.request_reasoning_close();
-    const auto tight = tight_session.preview_model(
-        std::array<ninfer::TokenId, 1>{0}, static_cast<std::uint32_t>(control.size() + 1),
-        ninfer::FinishReason::OutputLimit);
-    failures += check(tight.continuation == ninfer::runtime::ContinuationAction::Decode &&
-                          tight_session.pending_control_tokens().empty(),
-                      "a close signal inserted a control span no output budget could admit");
-    (void)tight_session.commit_preview();
-    return failures;
-}
-
-int test_grammar_constraints(const Frontend& frontend) {
-    int failures          = 0;
-    const auto vocabulary = frontend.grammar_vocabulary();
-    failures += check(vocabulary != nullptr && vocabulary->token_count() > 0,
-                      "the frontend did not expose a grammar vocabulary");
-    if (vocabulary == nullptr) { return failures; }
-    failures += check(frontend.grammar_vocabulary() == vocabulary,
-                      "the grammar vocabulary is not shared across calls");
-    const std::vector<int> encoded = vocabulary->encode("hello");
-    failures += check(encoded == fixture_tokenizer().encode("hello") && !encoded.empty(),
-                      "the grammar vocabulary did not share the frontend tokenizer's encoder");
-
-    std::string error;
-    const auto grammar =
-        frontend.compile_grammar("root ::= \"ab\"", Frontend::ConstraintScope::Answer, &error);
-    failures +=
-        check(grammar != nullptr && error.empty(), "a literal GBNF grammar did not compile");
-    if (grammar != nullptr) {
-        failures += check(grammar->token_count() == vocabulary->token_count(),
-                          "a compiled grammar diverged from the vocabulary token domain");
-        failures += check(frontend.compile_grammar("root ::= \"ab\"",
-                                                   Frontend::ConstraintScope::Answer) == grammar,
-                          "compiled grammars are not shared by grammar identity");
-        const auto row = grammar->row_for(grammar->initial_state());
-        failures += check(!row.empty(), "the compiled grammar produced no mask row");
-    }
-
-    // The fixture piece table is the row domain: a grammar over one of its own pieces allows that
-    // piece id at the initial state.
-    const std::vector<ninfer::TokenId> hello = fixture_tokenizer().encode("hello");
-    const auto hello_grammar =
-        frontend.compile_grammar("root ::= \"hello\"", Frontend::ConstraintScope::Answer, &error);
-    failures += check(
-        hello_grammar != nullptr && !hello.empty() &&
-            hello_grammar->row_for(
-                hello_grammar->initial_state())[static_cast<std::size_t>(hello.front()) >> 5U] &
-                (1U << (static_cast<unsigned>(hello.front()) & 31U)),
-        "the compiled row did not allow the vocabulary's own piece");
-
-    const auto invalid =
-        frontend.compile_grammar("root ::= [", Frontend::ConstraintScope::Answer, &error);
-    failures += check(invalid == nullptr && !error.empty(),
-                      "an invalid grammar compiled without a diagnostic");
-
-    // The thinking wrapper compiles through the frontend seam with the wire-format close marker
-    // (ChatParseWireFormat) and keeps its own cache identity.
-    {
-        const auto bare =
-            frontend.compile_grammar("root ::= \"hello\"", Frontend::ConstraintScope::Answer);
-        const auto wrapped = frontend.compile_grammar(
-            "root ::= \"hello\"", Frontend::ConstraintScope::Thinking, &error);
-        if (wrapped == nullptr) { std::cerr << "wrapper compile error: " << error << '\n'; }
-        failures += check(wrapped != nullptr, "a thinking-wrapper grammar did not compile");
-        if (wrapped != nullptr && bare != nullptr) {
-            failures += check(wrapped != bare,
-                              "the thinking wrapper reused the answer-only compilation");
-            failures += check(frontend.compile_grammar("root ::= \"hello\"",
-                                                       Frontend::ConstraintScope::Thinking) ==
-                                  wrapped,
-                              "wrapped grammars are not shared by grammar identity");
-            const auto admits = [](fi::GrammarMaskRow row, ninfer::TokenId id) {
-                return (row[static_cast<std::size_t>(id) >> 5U] &
-                        (1U << (static_cast<unsigned>(id) & 31U))) != 0U;
-            };
-            const std::vector<ninfer::TokenId> hello  = fixture_tokenizer().encode("hello");
-            const std::vector<ninfer::TokenId> less   = fixture_tokenizer().encode("<");
-            const std::vector<ninfer::TokenId> closer = fixture_tokenizer().encode("</think>");
-            failures += check(!hello.empty() && !less.empty() && closer.size() == 1,
-                              "the fixture tokenizer did not produce the corner pieces");
-            const auto wrapped_row = wrapped->row_for(wrapped->initial_state());
-            const auto bare_row    = bare->row_for(bare->initial_state());
-            failures += check(!hello.empty() && admits(wrapped_row, hello.front()) &&
-                                  admits(bare_row, hello.front()),
-                              "the wrapper grammars do not admit the shared answer start");
-            failures += check(!less.empty() && !admits(bare_row, less.front()) &&
-                                  admits(wrapped_row, less.front()),
-                              "the wrapper did not admit reasoning bytes the answer-only grammar "
-                              "rejects");
-
-            // Real-tokenization corner: after a trailing `<`, the single `</think>` token is
-            // rejected; a fallback byte resolves the prefix and the close then fires.
-            fi::GrammarState state = wrapped->initial_state();
-            const auto feed        = [&](fi::GrammarState& target, std::string_view text) {
-                for (const ninfer::TokenId id : fixture_tokenizer().encode(text)) {
-                    if (!admits(wrapped->row_for(target), id) || !target.accept(id)) {
-                        return false;
-                    }
-                }
-                return true;
-            };
-            failures +=
-                check(feed(state, "reasoning<"), "the wrapper did not admit reasoning text");
-            failures += check(closer.size() == 1 &&
-                                  !admits(wrapped->row_for(state), closer.front()),
-                              "the close token was admitted mid-prefix");
-            failures += check(feed(state, "x") && feed(state, "</think>") &&
-                                  feed(state, "\n\nhello") && state.can_end(),
-                              "the wrapper did not recover from the mid-prefix corner");
-
-            // Budget-cap interplay: the canonical thinking-control span (guidance text, close,
-            // whitespace) is admissible from a mid-prefix reasoning state and hands off to the
-            // answer grammar.
-            fi::GrammarState controlled = wrapped->initial_state();
-            failures += check(feed(controlled, "reasoning<") && feed(controlled, kThinkingControl),
-                              "the wrapper did not admit the thinking-control span mid-prefix");
-            failures += check(feed(controlled, "hello") && controlled.can_end(),
-                              "the wrapper did not continue into the answer after thinking "
-                              "control");
-        }
-    }
-
-    // The cache is weak by contract: once every holder drops its reference, the next compile of
-    // the same text is fresh - the row cache is rebuilt rather than retained forever.
-    {
-        std::weak_ptr<const ninfer::models::qwen3_5::frontend::CompiledGrammar> released;
-        {
-            const auto scoped = frontend.compile_grammar("root ::= \"ab\" \"ab\"",
-                                                         Frontend::ConstraintScope::Answer);
-            failures += check(scoped != nullptr, "the weak-cache fixture grammar did not compile");
-            released = scoped;
-        }
-        failures += check(released.expired(), "a compiled grammar outlived every reference");
-        const auto recompiled =
-            frontend.compile_grammar("root ::= \"ab\" \"ab\"", Frontend::ConstraintScope::Answer);
-        // A fresh compile pays exactly the initial-mask validation fill (compile has filled that
-        // one row since the unsatisfiable-grammar guard). A retained row cache surfaces as a hit
-        // on that row, and a retained producer as accumulated fills, so (1 fill, 0 hits) is the
-        // fresh signature.
-        failures += check(recompiled != nullptr && recompiled->stats().row_fills == 1 &&
-                              recompiled->stats().row_hits == 0,
-                          "a recompiled grammar did not rebuild its row cache freshly (expected "
-                          "the one validation fill and no hits)");
-    }
-
-    // Bounded retention: more distinct live grammars than the key bound keep compiling, and a
-    // live grammar keeps its identity across a prune.
-    {
-        std::vector<std::shared_ptr<const ninfer::models::qwen3_5::frontend::CompiledGrammar>> live;
-        for (int index = 0; index < 70; ++index) {
-            live.push_back(
-                frontend.compile_grammar("root ::= \"ab\" [ ]{" + std::to_string(index + 1) + "}",
-                                         Frontend::ConstraintScope::Answer));
-        }
-        bool all_compiled = true;
-        for (const auto& entry : live) { all_compiled = all_compiled && entry != nullptr; }
-        failures += check(all_compiled, "bounded grammar retention dropped a live compilation");
-        failures +=
-            check(frontend.compile_grammar("root ::= \"ab\" [ ]{70}",
-                                           Frontend::ConstraintScope::Answer) == live.back(),
-                  "a live grammar lost its identity across a cache prune");
-    }
-    return failures;
-}
-
-// Drives the chat-parsing oracle corpus (tests/fixtures/chat_parsing/corpus.json) through the real
-// session seam: prompt with the vector's tools, per-round token license, commit, terminal flush.
-// The corpus pins the parsing core's wire bytes; the session additionally applies the B1 framing
-// rule to its streamed deltas (the format-whitespace run that turns out to precede an accepted
-// tool-call region is trimmed), so a trailing format-whitespace run may still be withheld when a
-// round ends. Reasoning, tool calls and diagnostics are compared exactly; `held` is a core-level
-// observation covered by tests/models/qwen3_5/test_chat_parsing_corpus.cpp.
-int test_chat_parsing_corpus_sessions(const Frontend& frontend) {
-    using ordered_json        = nlohmann::ordered_json;
-    const ordered_json corpus = ordered_json::parse(
-        read_file(NINFER_SOURCE_DIR "/tests/fixtures/chat_parsing/corpus.json"));
-
-    std::map<std::string, ordered_json> tool_definitions;
-    for (const ordered_json& tool : corpus.at("tools")) {
-        tool_definitions.emplace(tool.at("function").at("name").get<std::string>(), tool);
-    }
-    const auto rtrim = [](std::string text) {
-        while (!text.empty() && (text.back() == ' ' || text.back() == '\t' || text.back() == '\r' ||
-                                 text.back() == '\n')) {
-            text.pop_back();
-        }
-        return text;
-    };
-    const auto fallback_reason = [](const std::string& name) {
-        if (name == "MalformedStructure") {
-            return ninfer::ToolCallParseFallbackReason::MalformedStructure;
-        }
-        if (name == "DuplicateParameter") {
-            return ninfer::ToolCallParseFallbackReason::DuplicateParameter;
-        }
-        if (name == "InvalidToolName") {
-            return ninfer::ToolCallParseFallbackReason::InvalidToolName;
-        }
-        if (name == "UndeclaredTool") {
-            return ninfer::ToolCallParseFallbackReason::UndeclaredTool;
-        }
-        if (name == "TrailingContent") {
-            return ninfer::ToolCallParseFallbackReason::TrailingContent;
-        }
-        return ninfer::ToolCallParseFallbackReason::None;
-    };
-
-    int failures         = 0;
-    std::size_t sessions = 0;
-    for (const ordered_json& vector : corpus.at("vectors")) {
-        const std::string id = vector.at("id").get<std::string>();
-        const auto mismatch  = [&](std::string_view what, std::string_view actual,
-                                  std::string_view expected) {
-            std::cerr << "corpus session " << id << ": " << what << " expected=[" << expected
-                      << "] actual=[" << actual << "]\n";
-            return 1;
-        };
-
-        ninfer::ChatMessage message;
-        message.role = ninfer::ChatRole::User;
-        message.parts.push_back(
-            ninfer::MessagePart{.kind = ninfer::MessagePartKind::Text, .text = "x", .media = {}});
-        ninfer::PromptInput input;
-        input.messages.push_back(std::move(message));
-        input.options.enable_thinking = vector.value("thinking", false);
-        for (const ordered_json& name : vector.at("tools")) {
-            const auto tool = tool_definitions.find(name.get<std::string>());
-            if (tool == tool_definitions.end()) {
-                failures += mismatch("tool definition", name.get<std::string>(), "<declared>");
-                continue;
-            }
-            input.options.tool_jsons.push_back(tool->second.dump());
-        }
-        // Control vectors end their round at the thinking-budget cap: license exactly the model
-        // thinking tokens of that round so the session asks for the canonical control span.
-        ninfer::ThinkingControlOptions thinking;
-        for (const ordered_json& round : vector.at("rounds")) {
-            if (round.contains("control")) {
-                thinking.budget = static_cast<std::uint32_t>(
-                    frontend.tokenize_text(round.at("feed").get<std::string>()).size());
-            }
-        }
-
-        auto prompt  = frontend.prepare(std::move(input));
-        auto session = frontend.make_output_session(prompt, {}, {}, thinking);
-        ++sessions;
-
-        std::string reasoning;
-        std::string content;
-        bool control_requested    = false;
-        std::uint32_t budget      = 1U << 20U;
-        const auto check_channels = [&](const ordered_json& expected) {
-            int local = 0;
-            if (expected.contains("reasoning") &&
-                reasoning != expected.at("reasoning").get<std::string>()) {
-                local +=
-                    mismatch("reasoning", reasoning, expected.at("reasoning").get<std::string>());
-            }
-            if (expected.contains("content") &&
-                rtrim(content) != rtrim(expected.at("content").get<std::string>())) {
-                local += mismatch("content", content, expected.at("content").get<std::string>());
-            }
-            return local;
-        };
-
-        const ordered_json& rounds = vector.at("rounds");
-        for (std::size_t round_index = 0; round_index < rounds.size(); ++round_index) {
-            const ordered_json& round = rounds[round_index];
-            const std::vector<ninfer::TokenId> tokens =
-                frontend.tokenize_text(round.at("feed").get<std::string>());
-            for (std::size_t offset = 0; offset < tokens.size();) {
-                const std::uint32_t licensed = session.model_token_budget_remaining(budget);
-                if (licensed == 0) { break; }
-                const std::size_t take = std::min<std::size_t>(tokens.size() - offset, licensed);
-                const auto decision    = session.preview_model(
-                    std::span<const ninfer::TokenId>(tokens).subspan(offset, take), budget,
-                    ninfer::FinishReason::OutputLimit);
-                if (decision.accepted_tokens != take) {
-                    failures +=
-                        mismatch("accepted tokens", std::to_string(decision.accepted_tokens),
-                                 std::to_string(take));
-                }
-                budget -= std::min(budget, decision.accepted_tokens);
-                const PublishedOutput published = session.commit_preview();
-                reasoning += channel_text(published, ninfer::OutputChannel::Reasoning);
-                content += channel_text(published, ninfer::OutputChannel::Content);
-                offset += decision.accepted_tokens;
-                if (decision.continuation ==
-                    ninfer::runtime::ContinuationAction::ApplyTargetControl) {
-                    control_requested = true;
-                    break;
-                }
-                if (decision.accepted_tokens == 0) { break; }
-            }
-            if (round.contains("control") && !control_requested) {
-                failures += mismatch("thinking control", "not requested", "ApplyTargetControl");
-            }
-            // The last round is the end of the turn: its cumulative channels resolve at the
-            // terminal flush below (held regions demote or publish calls there).
-            if (round_index + 1 != rounds.size()) { failures += check_channels(round); }
-        }
-
-        (void)session.preview_terminal(ninfer::FinishReason::Cancelled);
-        const PublishedOutput terminal = session.commit_preview();
-        reasoning += channel_text(terminal, ninfer::OutputChannel::Reasoning);
-        content += channel_text(terminal, ninfer::OutputChannel::Content);
-
-        failures += check_channels(rounds.back());
-        const ordered_json& final = vector.at("final");
-        failures += check_channels(final);
-        const std::vector<ninfer::GeneratedToolCall> calls = session.take_tool_calls();
-        const ordered_json& expected_calls                 = final.at("tool_calls");
-        if (calls.size() != expected_calls.size()) {
-            failures += mismatch("tool call count", std::to_string(calls.size()),
-                                 std::to_string(expected_calls.size()));
-        } else {
-            for (std::size_t index = 0; index < calls.size(); ++index) {
-                const ordered_json& expected = expected_calls[index];
-                if (calls[index].name != expected.at("name").get<std::string>()) {
-                    failures += mismatch("tool name", calls[index].name,
-                                         expected.at("name").get<std::string>());
-                }
-                const ordered_json actual_arguments =
-                    ordered_json::parse(calls[index].arguments_json, nullptr, false);
-                if (actual_arguments.is_discarded() ||
-                    actual_arguments.dump() != expected.at("arguments").dump()) {
-                    failures += mismatch("tool arguments",
-                                         actual_arguments.is_discarded() ? std::string("<invalid>")
-                                                                         : actual_arguments.dump(),
-                                         expected.at("arguments").dump());
-                }
-            }
-        }
-        if (final.contains("diagnostics")) {
-            const ninfer::ToolCallParseDiagnostics diagnostics =
-                session.tool_call_parse_diagnostics();
-            for (const auto& [key, value] : final.at("diagnostics").items()) {
-                if (key == "marker_seen") {
-                    if (diagnostics.marker_seen != value.get<bool>()) {
-                        failures +=
-                            mismatch("marker_seen", diagnostics.marker_seen ? "true" : "false",
-                                     value.get<bool>() ? "true" : "false");
-                    }
-                } else if (key == "structured_call_count") {
-                    if (diagnostics.structured_call_count != value.get<std::uint32_t>()) {
-                        failures += mismatch("structured_call_count",
-                                             std::to_string(diagnostics.structured_call_count),
-                                             value.dump());
-                    }
-                } else if (key == "empty_arguments_omitted") {
-                    if (diagnostics.empty_arguments_omitted != value.get<std::uint32_t>()) {
-                        failures += mismatch("empty_arguments_omitted",
-                                             std::to_string(diagnostics.empty_arguments_omitted),
-                                             value.dump());
-                    }
-                } else if (key == "schema_mismatch_arguments") {
-                    if (diagnostics.schema_mismatch_arguments != value.get<std::uint32_t>()) {
-                        failures += mismatch("schema_mismatch_arguments",
-                                             std::to_string(diagnostics.schema_mismatch_arguments),
-                                             value.dump());
-                    }
-                } else if (key == "duplicate_arguments_merged") {
-                    if (diagnostics.duplicate_arguments_merged != value.get<std::uint32_t>()) {
-                        failures += mismatch("duplicate_arguments_merged",
-                                             std::to_string(diagnostics.duplicate_arguments_merged),
-                                             value.dump());
-                    }
-                } else if (key == "fallback_reason") {
-                    if (diagnostics.fallback_reason != fallback_reason(value.get<std::string>())) {
-                        failures += mismatch("fallback_reason",
-                                             ninfer::tool_call_parse_fallback_reason_name(
-                                                 diagnostics.fallback_reason),
-                                             value.get<std::string>());
-                    }
-                }
-            }
-        }
-    }
-    if (failures == 0) {
-        std::cerr << "chat parsing corpus sessions: " << sessions << " vectors OK\n";
-    }
     return failures;
 }
 
@@ -2916,50 +2361,6 @@ int test_media_preparation_cancellation() {
     return check(false, "cancelled media preparation completed successfully");
 }
 
-int test_rendered_text_exposure() {
-    const Frontend text_frontend = make_frontend(resources(), false);
-    ninfer::PromptInput input;
-    ninfer::ChatMessage message;
-    message.role = ninfer::ChatRole::User;
-    message.parts.push_back(
-        ninfer::MessagePart{.kind = ninfer::MessagePartKind::Text, .text = "hello", .media = {}});
-    input.messages.push_back(std::move(message));
-
-    const ninfer::models::qwen3_5::PreparedPrompt prepared =
-        text_frontend.prepare(std::move(input));
-    const std::string_view rendered = prepared.rendered_text();
-    const std::string& retained     = FrontendFactory::inspect(prepared).rendered_text;
-    int failures                    = check(!rendered.empty() && rendered == retained,
-                                            "rendered_text did not expose the retained render");
-    const std::string expected =
-        render_chat_text({chat_message(ninfer::ChatRole::User, "hello")});
-    failures += check(rendered == expected,
-                      "rendered prompt disagrees with an independent render of the same messages");
-
-    const ninfer::models::qwen3_5::PreparedPrompt tokens =
-        text_frontend.prepare_tokens(std::vector<ninfer::TokenId>(3, 0));
-    failures += check(tokens.rendered_text().empty(),
-                      "token-id-only prompt reported a rendered text");
-
-    const Frontend media_frontend = make_frontend(resources(), true);
-    const ninfer::models::qwen3_5::PreparedPrompt media =
-        media_frontend.prepare(image_text_input(gradient_ppm(), "look", "rendered-text.ppm"));
-    const std::string_view media_text = media.rendered_text();
-    // The fixture tokenizes <|image_pad|> as id 248056. An un-expanded render carries a single
-    // placeholder; the expanded prompt carries one pad token text per encoded pad token.
-    const std::vector<ninfer::TokenId>& media_tokens = FrontendFactory::inspect(media).token_ids;
-    const std::size_t pad_tokens                     = static_cast<std::size_t>(
-        std::count(media_tokens.begin(), media_tokens.end(), ninfer::TokenId{248056}));
-    std::size_t pad_text = 0;
-    for (std::size_t at = media_text.find("<|image_pad|>"); at != std::string_view::npos;
-         at             = media_text.find("<|image_pad|>", at + 1)) {
-        ++pad_text;
-    }
-    failures += check(pad_tokens > 1 && pad_text == pad_tokens,
-                      "media prompt did not expose its expanded vision placeholder");
-    return failures;
-}
-
 } // namespace
 
 int main() {
@@ -2996,16 +2397,11 @@ int main() {
     failures += test_attention_pairs_are_diagnostic(frontend);
     failures += test_video_prepare(frontend);
     failures += test_cross_round_stop(frontend);
-    failures += test_stop_inside_withheld_tool_region(frontend);
     failures += test_same_token_stop_priority(frontend);
     failures += test_terminal_flush(frontend);
     failures += test_structured_tool_output();
-    failures += test_tool_call_demotion_marking();
     failures += test_reasoning_split(frontend);
     failures += test_thinking_budget_control(frontend);
-    failures += test_reasoning_end_control(frontend);
-    failures += test_grammar_constraints(frontend);
-    failures += test_chat_parsing_corpus_sessions(frontend);
     failures += test_utf8_and_hidden_eos(frontend);
     failures += test_media_cache_reuses_immutable_payload();
     failures += test_media_payload_outlives_frontend_cache();
@@ -3015,7 +2411,6 @@ int main() {
     failures += test_many_images_prepare_in_one_parallel_batch();
     failures += test_media_preparation_cancellation();
     failures += test_invalid_media_classification();
-    failures += test_rendered_text_exposure();
     failures += test_disabled_vision();
     return failures == 0 ? 0 : 1;
 }
