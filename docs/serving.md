@@ -359,8 +359,8 @@ top-20 is always gathered and the response trims to the requested `top_logprobs`
 one `logprobs` chunk per committed content delta. Refusal token arrays are empty because refusal
 output is not supported. The Responses route mirrors this with the aggregate `LogProb[]` (which
 carries `bytes`) on the output text Item and `ResponseLogProb[]` (no `bytes`) on
-`response.output_text.delta`; the same distribution graph is not gathered when neither route opts
-in, so the default path pays only a device flag check.
+`response.output_text.delta`. When neither route opts in, no distribution is gathered and the
+default path pays only a device flag check.
 
 ### llama.cpp-compatible request observations
 
