@@ -1,10 +1,14 @@
 #include "options.h"
 #include "product/speculative_options.h"
+#include "serve/constraint_contract.h"
+#include "serve/request.h"
 
 #include <cerrno>
 #include <cmath>
 #include <cstdlib>
+#include <fstream>
 #include <limits>
+#include <sstream>
 #include <stdexcept>
 #include <string_view>
 
@@ -66,6 +70,41 @@ KvCapacityPolicy parse_kv_capacity(const char* text) {
     return KvCapacityPolicy::explicit_capacity(parse_u32(text, "kv-capacity"));
 }
 
+std::string read_constraint_file(const char* path, std::string_view flag) {
+    std::error_code error;
+    if (std::filesystem::is_directory(path, error)) {
+        throw std::invalid_argument(std::string(flag) + " is a directory: " + path);
+    }
+    std::ifstream input(path, std::ios::binary);
+    if (!input) { throw std::invalid_argument(std::string(flag) + " cannot open file: " + path); }
+    std::ostringstream buffer;
+    buffer << input.rdbuf();
+    if (input.bad()) {
+        throw std::invalid_argument(std::string(flag) + " failed to read file: " + path);
+    }
+    return buffer.str();
+}
+
+// Converts a JSON Schema document through the serve route's context-accurate allowlist and
+// vendored converter, so the CLI and serve admit exactly the same documents and report the same
+// fail-closed codes (`json_schema_invalid`, `json_schema_unsupported`, `constraint_too_large`).
+std::string convert_json_schema(const std::string& text, std::string_view flag) {
+    ninfer::serve::RequestJson schema;
+    try {
+        schema = ninfer::serve::RequestJson::parse(text);
+    } catch (const std::exception& error) {
+        throw std::invalid_argument(std::string(flag) + ": json_schema_invalid: " +
+                                    "JSON Schema is not valid JSON: " + error.what());
+    }
+    try {
+        return ninfer::serve::json_schema_constraint_grammar(schema);
+    } catch (const ninfer::serve::ApiException& error) {
+        const std::string code =
+            error.error().code.empty() ? "json_schema_invalid" : error.error().code;
+        throw std::invalid_argument(std::string(flag) + ": " + code + ": " + error.error().message);
+    }
+}
+
 ReasoningEffort parse_reasoning_effort(std::string_view text) {
     if (text == "none") { return ReasoningEffort::None; }
     if (text == "minimal") { return ReasoningEffort::Minimal; }
@@ -91,6 +130,8 @@ std::string usage_text(const char* argv0) {
            "       [--presence-penalty F] [--frequency-penalty F] [--seed N] [--greedy]\n"
            "       [--stop-token-id N]... [--stop <text>]... [--reasoning-stop <text>]...\n"
            "       [--chat-template FILE]\n"
+           "       [--grammar GBNF|--grammar-file FILE|--json-schema JSON|--json-schema-file "
+           "FILE]\n"
            "       [--raw-output] [--print-token-ids] [--no-thinking] [--thinking-budget N]\n"
            "       [--reasoning-effort none|minimal|low|medium|high|xhigh|max] [--vision]\n"
            "       [--no-cuda-graph]\n"
@@ -108,7 +149,11 @@ std::string usage_text(const char* argv0) {
            "--max-context above the model's native position capacity activates the YaRN context "
            "extension (spec defaults); the DFlash draft backend rejects it.\n"
            "Sampling defaults come from the loaded model and thinking mode; flags override "
-           "individual fields.\n";
+           "individual fields.\n"
+           "Constrained decoding takes exactly one of --grammar (GBNF text), --grammar-file, "
+           "--json-schema (a JSON Schema document), or --json-schema-file; the Engine compiles "
+           "GBNF and the serve contract converts and validates JSON Schema. A constrained "
+           "request resolves thinking off unless --reasoning-effort enables it.\n";
 }
 
 Options parse_options(int argc, char** argv) {
@@ -120,6 +165,10 @@ Options parse_options(int argc, char** argv) {
     if (argc < 2) { throw std::invalid_argument(".ninfer model path is required"); }
     options.artifact_path     = argv[1];
     bool kv_capacity_explicit = false;
+    std::optional<std::string> grammar_source_text;
+    std::string grammar_flag;
+    std::optional<std::string> schema_source_text;
+    std::string schema_flag;
 
     for (int i = 2; i < argc; ++i) {
         const std::string_view arg(argv[i]);
@@ -134,6 +183,21 @@ Options parse_options(int argc, char** argv) {
             options.chat_template_path = value(arg);
         } else if (arg == "--messages") {
             options.messages_path = value(arg);
+        } else if (arg == "--grammar" || arg == "--grammar-file") {
+            if (grammar_source_text) {
+                throw std::invalid_argument("--grammar and --grammar-file are mutually exclusive");
+            }
+            grammar_flag        = std::string(arg);
+            grammar_source_text = arg == "--grammar" ? std::string(value(arg))
+                                                     : read_constraint_file(value(arg), arg);
+        } else if (arg == "--json-schema" || arg == "--json-schema-file") {
+            if (schema_source_text) {
+                throw std::invalid_argument(
+                    "--json-schema and --json-schema-file are mutually exclusive");
+            }
+            schema_flag        = std::string(arg);
+            schema_source_text = arg == "--json-schema" ? std::string(value(arg))
+                                                        : read_constraint_file(value(arg), arg);
         } else if (arg == "--max-new") {
             options.max_new = parse_u32(value(arg), "max-new");
         } else if (arg == "--max-context") {
@@ -235,6 +299,51 @@ Options parse_options(int argc, char** argv) {
         throw std::invalid_argument("--thinking-budget cannot be combined with --no-thinking");
     }
     if (options.greedy) { options.sampling.temperature = 0.0F; }
+
+    if (grammar_source_text && grammar_source_text->empty()) {
+        throw std::invalid_argument(std::string(grammar_flag) +
+                                    ": grammar_invalid: grammar must not be empty");
+    }
+    const bool has_grammar = grammar_source_text.has_value();
+    const bool has_schema  = schema_source_text.has_value();
+    if (has_grammar && has_schema) {
+        throw std::invalid_argument(
+            "constrained_decoding_conflict: --grammar/--grammar-file cannot be combined with "
+            "--json-schema/--json-schema-file");
+    }
+    if (has_grammar) {
+        if (grammar_source_text->size() > ninfer::serve::kConstraintPayloadLimit) {
+            throw std::invalid_argument(
+                std::string(grammar_flag) + ": constraint_too_large: grammar exceeds " +
+                std::to_string(ninfer::serve::kConstraintPayloadLimit) + " bytes");
+        }
+        options.constraint.source = ConstraintSource::Grammar;
+        options.constraint.gbnf   = std::move(*grammar_source_text);
+    } else if (has_schema) {
+        options.constraint.source = ConstraintSource::JsonSchema;
+        options.constraint.gbnf   = convert_json_schema(*schema_source_text, schema_flag);
+    }
+
+    if (options.constraint.source != ConstraintSource::None) {
+        // A backend that cannot carry a constraint is rejected before submission, mirroring the
+        // serve policy and code (design #48) instead of the Engine's generic InvalidConstraint.
+        const SpeculativeBackend backend = options.speculative.backend;
+        if (backend != SpeculativeBackend::None && backend != SpeculativeBackend::Mtp) {
+            throw std::invalid_argument(
+                "constrained_decoding_not_supported: constrained generation is not supported "
+                "with the " +
+                std::string(product::speculative_backend_name(backend)) +
+                " speculative backend; use the ordinary or MTP backend");
+        }
+        // A constrained request resolves thinking off unless it explicitly enables it through a
+        // non-none reasoning effort (the serve's issue #86 rule). The resolved flag drives both
+        // prompt rendering and the Engine's reasoning-wrapper selection.
+        const bool explicitly_enabled =
+            options.enable_thinking.value_or(false) ||
+            (options.reasoning_effort && *options.reasoning_effort != ReasoningEffort::None);
+        options.enable_thinking             = explicitly_enabled;
+        options.constraint.thinking_enabled = explicitly_enabled;
+    }
     return options;
 }
 
