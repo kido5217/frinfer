@@ -49,6 +49,11 @@ Alternatively, `cmake --preset dev` enables products, tests and benchmarks toget
 After building, `ctest --preset dev` runs the same CTest suite. See
 [Build system](../docs/maintainer/build-system.md) for local interpreter presets.
 
+The devShell provides `just` as a thin wrapper over these commands: `just build`
+configures with the `dev` preset and builds, `just test` runs `ctest --preset dev`
+(extra arguments forward to ctest), and `just test-one <target>` builds and re-runs a
+single test.
+
 The chat-template reference test uses Python Jinja2.
 
 Run a focused target for a localized change:
