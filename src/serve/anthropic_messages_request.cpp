@@ -1,3 +1,4 @@
+#include "product/constraint/constraint_contract.h"
 #include "serve/anthropic_messages.h"
 #include "serve/request_validation.h"
 
@@ -893,16 +894,70 @@ void parse_thinking(const Json& body, GenerationRequest& request, ParsePurpose p
     }
 }
 
-void parse_effort(const Json& body, GenerationRequest& request, ParsePurpose purpose) {
+// Anthropic carries an enforced answer as `output_config.format`:
+// `{type: "json_schema", schema: <JSON Schema>}` (unlike the OpenAI wrapper there is no
+// name/description/strict metadata layer). Extraction is fail-closed: a missing or malformed
+// wrapper reports `json_schema_invalid` on the offending Anthropic field path.
+const Json& parse_output_format(const Json& format) {
+    if (!format.is_object()) {
+        bad_request("output_config.format must be an object", "output_config.format",
+                    "json_schema_invalid");
+    }
+    if (!format.contains("type") || !format.at("type").is_string() ||
+        format.at("type").get<std::string>() != "json_schema") {
+        bad_request("output_config.format.type must be 'json_schema'", "output_config.format.type",
+                    "json_schema_invalid");
+    }
+    if (!format.contains("schema") || format.at("schema").is_null()) {
+        bad_request("output_config.format.schema is required for type json_schema",
+                    "output_config.format.schema", "json_schema_invalid");
+    }
+    if (!format.at("schema").is_object()) {
+        bad_request("output_config.format.schema must be a JSON Schema object",
+                    "output_config.format.schema", "json_schema_invalid");
+    }
+    return format.at("schema");
+}
+
+// Converts an admitted JSON Schema document through the shared protocol-neutral constraint
+// contract and renders its fail-closed error on this route's field path. The contract's own
+// `param` is OpenAI-rooted, so the Anthropic adapter reports `output_config.format` while
+// preserving the contract's message and code (`json_schema_invalid`, `json_schema_unsupported`,
+// `constraint_too_large`).
+std::string schema_to_grammar(const Json& schema) {
+    try {
+        return ninfer::constraint::json_schema_constraint_grammar(schema);
+    } catch (const ninfer::constraint::ConstraintError& error) {
+        bad_request(error.what(), "output_config.format", error.code());
+    }
+}
+
+void parse_output_config(const Json& body, GenerationRequest& request, ParsePurpose purpose) {
     if (!body.contains("output_config") || body.at("output_config").is_null()) { return; }
     const Json& config = body.at("output_config");
     if (!config.is_object()) { bad_request("output_config must be an object", "output_config"); }
+
+    // output_config.format is the route's only constraint kind and reaches the same shared
+    // constraint contract the OpenAI `response_format` json_schema path uses. Output-only:
+    // count_tokens has no answer stream, so the field is ignored there (unchanged behavior).
     if (purpose == ParsePurpose::Messages && config.contains("format") &&
         !config.at("format").is_null()) {
-        bad_request("output_config.format requires constrained decoding, which FrInfer does not "
-                    "provide",
-                    "output_config.format", "output_config_format_not_supported");
+        // The retired top-level `output_format` beta spelling carries the same constraint; naming
+        // both is a request that asks for two spellings of one constrained answer.
+        if (body.contains("output_format") && !body.at("output_format").is_null()) {
+            bad_request("output_config.format cannot be combined with output_format",
+                        "output_config.format", "constrained_decoding_conflict");
+        }
+        request.grammar = schema_to_grammar(parse_output_format(config.at("format")));
+        request.constraint_source = ConstraintSource::JsonSchema;
+        // The tool-call parser owns the turn when tools are declared, so a constrained answer and
+        // a `tools` field cannot share it (even an empty array), mirroring the OpenAI route.
+        if (body.contains("tools") && !body.at("tools").is_null()) {
+            bad_request("tools with a constrained response is not supported",
+                        "output_config.format", "constrained_decoding_not_supported");
+        }
     }
+
     if (!config.contains("effort") || config.at("effort").is_null()) { return; }
     if (!config.at("effort").is_string()) {
         bad_request("output_config.effort must be a string", "output_config.effort");
@@ -1021,7 +1076,7 @@ void parse_common_prompt(const Json& body, GenerationRequest& request, ParsePurp
     parse_system(body, request);
     parse_messages(body, request);
     parse_thinking(body, request, purpose, effective_max_tokens);
-    parse_effort(body, request, purpose);
+    parse_output_config(body, request, purpose);
     apply_anthropic_prompt_cache_policy(body, request);
     if (body.contains("container") && !body.at("container").is_null()) {
         bad_request("container requires an external execution environment that FrInfer does not "
