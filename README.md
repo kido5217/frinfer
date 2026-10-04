@@ -25,7 +25,7 @@ the `frinfer` product binaries. The rest of this README describes the combined p
 ### Changes from upstream
 
 Maintained: add or update a row whenever a fork feature changes or its status changes.
-Last updated 2026-10-04 (`feat/nvfp4-moe-codec`, `6262bcc9`).
+Last updated 2026-10-05 (`feat/nvfp4-moe-codec`, `6b9e1649`).
 
 | What | Why | How | Status | Source |
 |---|---|---|---|---|
