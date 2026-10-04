@@ -55,6 +55,7 @@ The built-in recipes are ordinary Python functions in
 | `qwen3_6_27b` | Q4/Q5 projections, Q6 vocabulary weights | None |
 | `qwen3_8_27b` | Q4/Q5 projections, Q8 vocabulary weights | None |
 | `qwen3_6_35b_a3b` | Q4 experts, Q5/Q6 expert down, Q8 shared/projection weights | None |
+| `qwen3_6_35b_a3b_nvfp4` | Imported NVFP4 routed experts (one parent per expert), Q8 shared/projection weights | `quantized` |
 | `qwen3_6_27b_nvfp4` | Imported NVFP4, selected BF16 projections, Q8 vocabulary weights | `quantized` |
 | `qwen3_8_27b_nvfp4` | Imported NVFP4/FP8, FP8 embedding generated from BF16 | `quantized` |
 
@@ -81,6 +82,24 @@ MTP and Vision use the main source. DFlash and DFlash2 use the corresponding nam
 as `--source dflash=PATH` or `--source dflash2=PATH`. An artifact may contain several optional
 components; the Engine loads only the ones selected at startup, including at most one speculative
 backend. Component availability and startup selection are independent.
+
+For a Qwen3.6-35B-A3B NVFP4 artifact, `qwen3_6_35b_a3b_nvfp4` imports the routed experts from a
+compressed-tensors NVFP4 checkpoint whose every expert projection is `nvfp4-pack-quantized` (the
+all-NVFP4 `-Fast` packing). Each expert's gate, up and down become their own `nvfp4` parent: gate
+and up are separate source tensors and the source carries an FP32 divisor per expert, with gate and
+up sharing that divisor within an expert. The source's own tokenizer resource carries an older
+split pattern the Engine rejects, so pass the official checkpoint's tokenizer resources:
+
+```bash
+python3 -m tools.convert \
+  --model /path/to/Qwen3.6-35B-A3B-NVFP4-Fast \
+  --recipe qwen3_6_35b_a3b_nvfp4 \
+  --resource tokenizer.json=/path/to/Qwen3.6-35B-A3B/tokenizer.json \
+  --resource tokenizer_config.json=/path/to/Qwen3.6-35B-A3B/tokenizer_config.json \
+  --components text \
+  --name qwen3.6-35b-a3b-nvfp4 \
+  --out models/qwen3_6_35b_a3b_nvfp4.ninfer
+```
 
 ## Change part of a recipe
 

@@ -174,10 +174,48 @@ def qwen3_8_27b_nvfp4(model, recipe, sources):
         )
 
 
+def qwen3_6_35b_a3b_nvfp4(model, recipe, sources):
+    if "num_experts" not in model.config:
+        raise ValueError("this official recipe requires Qwen3.5 MoE mathematics")
+    _optional(model, recipe)
+    # The compressed-tensors checkpoint is self-contained: its per-expert tensors are the
+    # quantized source. An explicit --source quantized=... overrides the base store.
+    quantized = (
+        sources["quantized"]
+        if any(name == "quantized" for name in sources)
+        else sources["base"]
+    )
+    _assign(recipe, "text/token_embedding", Q8)
+    _assign(recipe, "text/output_head", Q6)
+    for name, parameter in model.parameters.items():
+        if not name.startswith("text/layers/") or not parameter.projection:
+            continue
+        if name.endswith(
+            (
+                "/gdn/a_projection",
+                "/gdn/b_projection",
+                "/moe/router",
+                "/moe/shared_score",
+            )
+        ):
+            continue
+        if "/moe/experts/" in name:
+            recipe.assign(
+                name,
+                format="nvfp4",
+                method=import_encoded,
+                source=model.source(name, quantized, "nvfp4"),
+                activation_policy="AllowA4",
+            )
+        else:
+            _assign(recipe, name, Q8)
+
+
 RECIPES = {
     "qwen3_6_27b": qwen3_6_27b,
     "qwen3_6_27b_nvfp4": qwen3_6_27b_nvfp4,
     "qwen3_8_27b": qwen3_8_27b,
     "qwen3_8_27b_nvfp4": qwen3_8_27b_nvfp4,
     "qwen3_6_35b_a3b": qwen3_6_35b_a3b,
+    "qwen3_6_35b_a3b_nvfp4": qwen3_6_35b_a3b_nvfp4,
 }

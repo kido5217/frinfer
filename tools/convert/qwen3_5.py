@@ -653,9 +653,34 @@ class _Builder:
             inputs=(prefix + "ffn_input",),
         )
         self.group(p + "router", p + "shared_score")
+        # A compressed-tensors checkpoint stores each routed expert as its own quantized
+        # tensor (gate_proj/up_proj/down_proj); the BF16 official checkpoint fuses them into
+        # one expert-major gate_up_proj/down_proj pair. Both map to the same logical experts.
+        per_expert = store.has(sp + "experts.0.gate_proj.weight_packed") or store.has(
+            sp + "experts.0.gate_proj.weight"
+        )
         gate_up, downs = [], []
         for expert in range(e):
             ep = p + f"experts/{expert}/"
+            if per_expert:
+                for role in ("gate", "up"):
+                    self.add(
+                        ep + role,
+                        store,
+                        sp + f"experts.{expert}.{role}_proj.weight",
+                        (ir, h),
+                        inputs=(prefix + "ffn_input",),
+                    )
+                    gate_up.append(ep + role)
+                self.add(
+                    ep + "down",
+                    store,
+                    sp + f"experts.{expert}.down_proj.weight",
+                    (h, ir),
+                    inputs=(ep + "product",),
+                )
+                downs.append(ep + "down")
+                continue
             for role, half in (("gate", 0), ("up", 1)):
                 self.add(
                     ep + role,

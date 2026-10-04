@@ -235,18 +235,71 @@ prepare_sparse_moe_weights(const WeightInput& router, const WeightInput& shared_
                 matrix(shared_down) == std::vector<std::uint64_t>{2048, 512},
             "SparseMoe shared expert geometry differs");
     const std::array router_inputs{router, shared_score};
-    const auto router_bank  = single(router_inputs);
+    const auto router_bank = single(router_inputs);
+    const auto shared      = prepare_linear_swiglu_weight(shared_gate, shared_up);
+    const auto down        = prepare_linear_weight(shared_down);
+    require(router_bank.weight.qtype == QType::BF16 && shared.weight.qtype == QType::Q8_G32_FP16 &&
+                down.weight.qtype == QType::Q8_G32_FP16,
+            "SparseMoe router/shared bank formats are unsupported");
+    const auto& gate_parent = expert_gate_up.front().weight.parts.front().parent;
+    const auto& down_parent = expert_down.front().weight.parts.front().parent;
+    require(gate_parent != nullptr && down_parent != nullptr, "SparseMoe routed bank has no parent");
+    const auto gate_format = gate_parent->geometry.format;
+    const auto down_format = down_parent->geometry.format;
+
+    if (gate_format == QType::NVFP4 || down_format == QType::NVFP4) {
+        require(gate_format == QType::NVFP4 && down_format == QType::NVFP4,
+                "SparseMoe routed banks must share the nvfp4 codec");
+        const auto expert_divisor = [](const WeightInput& input) {
+            if (!input.activation_input_divisor) {
+                require(!allows_a4(input.policy),
+                        "NVFP4 A4 native input requires an activation divisor");
+                return 1.0F;
+            }
+            require(std::isfinite(*input.activation_input_divisor) &&
+                        *input.activation_input_divisor > 0,
+                    "NVFP4 native input requires a positive activation divisor");
+            return *input.activation_input_divisor;
+        };
+        SparseMoeWeights out;
+        out.router_shared_gate = router_bank.weight;
+        out.shared_gate_up     = shared.weight;
+        out.shared_down        = down.weight;
+        out.routed_gate_up.qtype = QType::NVFP4;
+        out.routed_down.qtype    = QType::NVFP4;
+        out.routed_gate_up_experts.reserve(expert_gate_up.size());
+        out.routed_down_experts.reserve(expert_down.size());
+        for (std::size_t index = 0; index < expert_gate_up.size(); index += 2) {
+            const float gate_divisor = expert_divisor(expert_gate_up[index]);
+            const float up_divisor   = expert_divisor(expert_gate_up[index + 1]);
+            require(gate_divisor == up_divisor,
+                    "SparseMoe nvfp4 gate/up activation divisors differ");
+            const auto gate = native_weight(expert_gate_up[index].weight, gate_divisor);
+            const auto up   = native_weight(expert_gate_up[index + 1].weight, up_divisor);
+            for (const auto* weight : {&gate, &up}) {
+                require(weight->qtype == QType::NVFP4 &&
+                            std::isfinite(weight->weight_scale_divisor) &&
+                            weight->weight_scale_divisor > 0,
+                        "SparseMoe nvfp4 gate/up parent is invalid");
+            }
+            out.routed_gate_up_experts.push_back(gate);
+            out.routed_gate_up_experts.push_back(up);
+        }
+        for (const auto& input : expert_down) {
+            const auto weight = native_weight(input.weight, expert_divisor(input));
+            require(weight.qtype == QType::NVFP4 && std::isfinite(weight.weight_scale_divisor) &&
+                        weight.weight_scale_divisor > 0,
+                    "SparseMoe nvfp4 down parent is invalid");
+            out.routed_down_experts.push_back(weight);
+        }
+        return out;
+    }
+
     const auto gate_up_bank = single(expert_gate_up);
     const auto down_bank    = single(expert_down);
-    const auto shared       = prepare_linear_swiglu_weight(shared_gate, shared_up);
-    const auto down         = prepare_linear_weight(shared_down);
-    const auto gate_format  = gate_up_bank.weight.qtype;
-    const auto down_format  = down_bank.weight.qtype;
-    require(router_bank.weight.qtype == QType::BF16 && shared.weight.qtype == QType::Q8_G32_FP16 &&
-                down.weight.qtype == QType::Q8_G32_FP16 &&
-                ((gate_format == QType::Q4_G64_FP16 &&
-                  (down_format == QType::Q5_G64_FP16 || down_format == QType::Q6_G64_FP16)) ||
-                 (gate_format == QType::Q8_G32_FP16 && down_format == QType::Q8_G32_FP16)),
+    require((gate_format == QType::Q4_G64_FP16 &&
+             (down_format == QType::Q5_G64_FP16 || down_format == QType::Q6_G64_FP16)) ||
+                (gate_format == QType::Q8_G32_FP16 && down_format == QType::Q8_G32_FP16),
             "SparseMoe native bank formats are unsupported");
     return {router_bank.weight, gate_up_bank.weight, down_bank.weight, shared.weight, down.weight};
 }

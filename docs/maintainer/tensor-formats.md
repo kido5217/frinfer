@@ -264,6 +264,15 @@ calibration is not part of this weight format. In particular, a
 site-level input divisor used by an NVFP4 execution path is a separate model-role tensor and cannot
 be inferred from `nvfp4`, its block scales, or `d_w`.
 
+The Qwen3.6-35B-A3B MoE routed banks use this same format. Each routed expert projection is its
+own complete `nvfp4` parent — `[512,2048]` for gate and up, `[2048,512]` for down. The split follows
+the source and logical boundaries: gate and up are separate tensors and separate logical
+parameters, and the compressed-tensors source selects an FP32 divisor per expert (one divisor per
+parent is the format's granularity), so neither the whole routed bank nor a fused gate/up bank is a
+single parent. Within an expert, gate and up share the source's divisor. The routed bank is the
+expert-ordered collection of those parents: gate/up alternate per expert and down is expert-major.
+The shared-expert banks stay `q8_g32_fp16`.
+
 ### 3.4 `fp8_e4m3fn_row_bf16`
 
 `fp8_e4m3fn_row_bf16` is a rank-two weight matrix `[N,K]` with positive dimensions. Every logical
