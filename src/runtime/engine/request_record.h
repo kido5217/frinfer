@@ -178,6 +178,8 @@ struct RequestRecord {
     std::optional<BeginSummary> admitted_begin;
     std::optional<BeginSummary> begin;
     std::vector<TokenId> generated;
+    // Content-token logprob records accumulated in generation order when the request opted in.
+    std::vector<TokenLogprob> content_logprobs;
     std::string content;
     std::string reasoning;
     std::optional<LaneId> lane;

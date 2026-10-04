@@ -38,6 +38,35 @@ struct ItemIds {
     std::vector<std::string> call_ids;
 };
 
+Json token_bytes_json(std::string_view bytes) {
+    Json array = Json::array();
+    for (const unsigned char byte : bytes) { array.push_back(static_cast<int>(byte)); }
+    return array;
+}
+
+// Aggregate Responses LogProb[] (`include_bytes`) or streaming ResponseLogProb[] (no bytes).
+Json response_logprobs_json(const std::vector<ninfer::TokenLogprob>& records, int top_logprobs,
+                            bool include_bytes) {
+    Json output = Json::array();
+    for (const ninfer::TokenLogprob& record : records) {
+        Json top = Json::array();
+        for (int k = 0;
+             k < top_logprobs && k < static_cast<int>(ninfer::kMaximumTokenLogprobs); ++k) {
+            if (record.top_ids[static_cast<std::size_t>(k)] < 0) { break; }
+            const std::string& token = record.top_bytes[static_cast<std::size_t>(k)];
+            Json entry               = {{"token", token},
+                                      {"logprob", record.top_values[static_cast<std::size_t>(k)]}};
+            if (include_bytes) { entry["bytes"] = token_bytes_json(token); }
+            top.push_back(std::move(entry));
+        }
+        Json entry = {{"token", record.bytes}, {"logprob", record.logprob}};
+        if (include_bytes) { entry["bytes"] = token_bytes_json(record.bytes); }
+        entry["top_logprobs"] = std::move(top);
+        output.push_back(std::move(entry));
+    }
+    return output;
+}
+
 void add_wire_function_identity(Json& object, const OpenAIResponsesCreateRequest& request,
                                 std::string_view engine_name) {
     const auto position = request.tool_identities.find(std::string(engine_name));
@@ -81,7 +110,7 @@ Json response_common(const std::string& id, std::int64_t created_at,
         {"text", Json{{"format", Json{{"type", "text"}}}}},
         {"tool_choice", request.tool_choice},
         {"tools", request.tools},
-        {"top_logprobs", 0},
+        {"top_logprobs", request.prompt.generation.top_logprobs},
         {"top_p", runtime.top_p},
         {"truncation", "disabled"}};
 }
@@ -123,7 +152,11 @@ BuiltOpenAIResponse build_response(const std::string& id, std::int64_t created_a
                  {"role", "assistant"},
                  {"content", Json::array({Json{{"type", "output_text"},
                                                {"annotations", Json::array()},
-                                               {"text", outcome.text}}})}});
+                                               {"text", outcome.text},
+                                               {"logprobs", response_logprobs_json(
+                                                                outcome.content_logprobs,
+                                                                request.prompt.generation.top_logprobs,
+                                                                /*include_bytes=*/true)}}})}});
     }
 
     ids.function_calls.resize(outcome.tool_calls.size());
@@ -283,7 +316,10 @@ public:
                            {"status", "in_progress"},
                            {"role", "assistant"},
                            {"content", Json::array()}};
-        const Json part = {{"type", "output_text"}, {"annotations", Json::array()}, {"text", ""}};
+        const Json part = {{"type", "output_text"},
+                           {"annotations", Json::array()},
+                           {"text", ""},
+                           {"logprobs", Json::array()}};
         return {sse(event("response.output_item.added",
                           Json{{"output_index", message_index}, {"item", item}})),
                 sse(event("response.content_part.added", Json{{"item_id", ids.message},
@@ -297,8 +333,12 @@ public:
         if (!message_started || message_done) { return {}; }
         message_done    = true;
         content_text    = final_text;
-        const Json part = {
-            {"type", "output_text"}, {"annotations", Json::array()}, {"text", content_text}};
+        const Json aggregate = response_logprobs_json(
+            content_logprobs, request.prompt.generation.top_logprobs, /*include_bytes=*/true);
+        const Json part = {{"type", "output_text"},
+                           {"annotations", Json::array()},
+                           {"text", content_text},
+                           {"logprobs", aggregate}};
         const Json item = {{"id", ids.message},
                            {"type", "message"},
                            {"status", item_status},
@@ -308,7 +348,7 @@ public:
                                                             {"output_index", message_index},
                                                             {"content_index", 0},
                                                             {"text", content_text},
-                                                            {"logprobs", Json::array()}})),
+                                                            {"logprobs", aggregate}})),
                 sse(event("response.content_part.done", Json{{"item_id", ids.message},
                                                              {"output_index", message_index},
                                                              {"content_index", 0},
@@ -334,6 +374,7 @@ public:
     bool terminal_emitted  = false;
     std::string reasoning_text;
     std::string content_text;
+    std::vector<ninfer::TokenLogprob> content_logprobs;
     ItemIds ids;
 };
 
@@ -390,6 +431,27 @@ std::vector<std::string> OpenAIResponsesEventStream::content_delta(const std::st
                                                             {"content_index", 0},
                                                             {"delta", text},
                                                             {"logprobs", Json::array()}})));
+    return events;
+}
+
+std::vector<std::string> OpenAIResponsesEventStream::content_logprobs(
+    std::vector<ninfer::TokenLogprob> records) {
+    if (!impl_->started || impl_->finish_built) {
+        throw std::logic_error("invalid content logprob event state");
+    }
+    if (records.empty()) { return {}; }
+    std::vector<std::string> events                = impl_->ensure_message();
+    const Json logprobs = response_logprobs_json(
+        records, impl_->request.prompt.generation.top_logprobs, /*include_bytes=*/false);
+    impl_->content_logprobs.insert(impl_->content_logprobs.end(),
+                                   std::make_move_iterator(records.begin()),
+                                   std::make_move_iterator(records.end()));
+    events.push_back(sse(impl_->event("response.output_text.delta",
+                                      Json{{"item_id", impl_->ids.message},
+                                           {"output_index", impl_->message_index},
+                                           {"content_index", 0},
+                                           {"delta", ""},
+                                           {"logprobs", logprobs}})));
     return events;
 }
 

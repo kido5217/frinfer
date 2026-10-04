@@ -131,7 +131,6 @@ The endpoint supports:
 
 Options whose observable behavior the Engine cannot provide are rejected when they request that
 behavior. This includes nonzero `logit_bias`,
-requested log probabilities,
 audio/file input or audio output, `strict:true`, required or named tool choice,
 `parallel_tool_calls:false` with enabled tools, explicit low/high image detail, web search,
 moderation, low/high verbosity, stored Chat Completions, and non-empty legacy `functions`.
@@ -143,6 +142,7 @@ receive the same explicit rejection instead of being treated as unknown hints.
 Semantically neutral fields do not make an otherwise executable request fail. All-zero
 `logit_bias`, `logprobs:false`, `top_logprobs:0`, `verbosity:"medium"`, empty legacy tool controls,
 text-only `audio` configuration, and `prediction` are accepted without changing Engine execution.
+`logprobs:true` and `top_logprobs` in `[0,20]` are supported (see token log probabilities above).
 Metadata, user/safety identifiers, service-tier and prompt-cache hints are likewise advisory.
 Unknown top-level fields are ignored.
 
@@ -341,6 +341,27 @@ and reasoning-token details; choices carry `logprobs: null` when log probabiliti
 requested, and aggregate assistant messages carry `refusal: null` because refusal output is not
 supported.
 
+#### Token log probabilities
+
+`logprobs:true` and `top_logprobs` in `[0,20]` are supported on the Chat Completions and Responses
+routes. `top_logprobs` above zero requires `logprobs:true`; on Responses, opt in with
+`include:["message.output_text.logprobs"]` (a nonzero `top_logprobs` also enables it).
+
+Reported values are the full-vocabulary log-softmax of the post-mask, penalty-adjusted,
+temperature-scaled sampler logits, **before** `top_k`/`min_p`/`top_p` truncation. Stochastic rows
+scale by the request temperature; greedy rows use `T=1`. This is the distribution the model assigns
+to the token independently of the truncation knobs, not the post-truncation distribution.
+
+Each reported token is a `ChatCompletionTokenLogprob` `{token, logprob, bytes, top_logprobs}`.
+`top_logprobs` carries the most likely alternatives at that position (fewer than requested when the
+distribution is short); `bytes` is the UTF-8 byte array of `token`. Only content tokens appear; the
+top-20 is always gathered and the response trims to the requested `top_logprobs`. Streaming emits
+one `logprobs` chunk per committed content delta. Refusal token arrays are empty because refusal
+output is not supported. The Responses route mirrors this with the aggregate `LogProb[]` (which
+carries `bytes`) on the output text Item and `ResponseLogProb[]` (no `bytes`) on
+`response.output_text.delta`; the same distribution graph is not gathered when neither route opts
+in, so the default path pays only a device flag check.
+
 ### llama.cpp-compatible request observations
 
 Every successful Chat Completions response includes a top-level `timings` object. This is a
@@ -531,10 +552,10 @@ wire response contains typed `output` Items.
 | `parallel_tool_calls` | `true` by default; `false` is accepted only when no effective tool is callable |
 | `max_tool_calls` | non-negative integer accepted as a hosted-tool no-op; FrInfer does not execute hosted tools |
 | `truncation` | omitted or `disabled`; overlong input fails instead of silently dropping Items |
-| `top_logprobs` | omitted or `0` |
+| `top_logprobs` | integer in `[0,20]`; with `include:["message.output_text.logprobs"]` (a nonzero value also enables logprobs) |
 | `service_tier` | omitted, `auto`, or `default`; the response reports `default` |
 | `background` | omitted or `false` |
-| `include` | omitted or an empty array |
+| `include` | omitted, empty, or `["message.output_text.logprobs"]` |
 | `stream_options.include_obfuscation` | optional boolean; accepted as a transport hint, but this local server emits no padding |
 | cache and client hints | `prompt_cache_key`, `prompt_cache_options`, `prompt_cache_retention`, and explicit breakpoints follow [OpenAI prompt caching](#openai-prompt-caching); `safety_identifier` and `user` are accepted as client hints |
 

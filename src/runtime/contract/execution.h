@@ -49,13 +49,25 @@ struct BeginSummary {
     [[nodiscard]] friend constexpr bool operator==(BeginSummary, BeginSummary) noexcept = default;
 };
 
+// Device-gather result for one committed token before tokenizer bytes are attached. Row-major over
+// the [rows,row_stride] token extent; empty when logprobs were not requested for the round.
+struct RawTokenLogprob {
+    TokenId id        = 0;
+    float logprob     = 0.0f;
+    std::array<TokenId, kMaximumTokenLogprobs> top_ids{};
+    std::array<float, kMaximumTokenLogprobs> top_values{};
+};
+
 struct GeneratedRound {
     std::span<const TokenId> tokens;
+    // Optional per-token logprob records aligned with `tokens`.
+    std::span<const RawTokenLogprob> logprobs;
 };
 
 struct BatchedGeneratedRound {
     std::span<const TokenId> tokens;
     std::span<const std::int32_t> row_counts;
+    std::span<const RawTokenLogprob> logprobs;
     std::uint32_t row_stride = 1;
     ExecutionTiming timing;
 };

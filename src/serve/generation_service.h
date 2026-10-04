@@ -47,6 +47,8 @@ struct GenerationMetrics {
 struct GenerationOutcome {
     std::string text;
     std::string reasoning;
+    // Per-content-token logprob records when the request opted in; empty otherwise.
+    std::vector<ninfer::TokenLogprob> content_logprobs;
     std::vector<ninfer::GeneratedToolCall> tool_calls;
     ninfer::ToolCallParseDiagnostics tool_call_parse;
     int prompt_tokens     = 0;
@@ -64,6 +66,8 @@ struct StreamSink {
     std::function<void(const ninfer::GenerationTimingObservation& timing)> on_timing;
     std::function<void(const std::string& delta_text)> on_content;
     std::function<void(const std::string& delta_text)> on_reasoning;
+    // Content-token logprob records that arrived with the current output delta, in token order.
+    std::function<void(std::vector<ninfer::TokenLogprob>)> on_logprobs;
     // ADR-0002: a demoted tool-call region (`text` holds only the region bytes). The route either
     // signals the class (call loss) or republishes the bytes as ordinary content (benign).
     std::function<void(const std::string& text, const ninfer::ToolCallDemotion& demotion)>

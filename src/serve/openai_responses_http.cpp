@@ -440,6 +440,11 @@ void HttpServer::handle_responses(const httplib::Request& req, httplib::Response
                         render_and_write(transport,
                                          [&] { return stream->encoder->content_delta(text); });
                     };
+                    output.on_logprobs = [&](std::vector<ninfer::TokenLogprob> records) {
+                        render_and_write(transport, [&] {
+                            return stream->encoder->content_logprobs(std::move(records));
+                        });
+                    };
                     output.is_cancelled = [&] { return transport.poll(); };
 
                     outcome = service_->run(stream->prepared, &output);

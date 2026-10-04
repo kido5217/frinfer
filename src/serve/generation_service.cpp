@@ -227,19 +227,30 @@ public:
     }
 
     void publish(ninfer::OutputDelta delta) override {
-        if (delta.text.empty()) { return; }
+        if (delta.text.empty()) {
+            if (!delta.logprobs.empty() && sink_->on_logprobs) {
+                sink_->on_logprobs(std::move(delta.logprobs));
+            }
+            return;
+        }
         if (delta.demotion && sink_->on_tool_call_demoted) {
             const ninfer::ToolCallDemotion demotion = *delta.demotion;
             if (demotion.text_offset > 0 && sink_->on_content) {
                 sink_->on_content(delta.text.substr(0, demotion.text_offset));
             }
             sink_->on_tool_call_demoted(delta.text.substr(demotion.text_offset), demotion);
+            if (!delta.logprobs.empty() && sink_->on_logprobs) {
+                sink_->on_logprobs(std::move(delta.logprobs));
+            }
             return;
         }
         if (delta.channel == ninfer::OutputChannel::Reasoning) {
             if (sink_->on_reasoning) { sink_->on_reasoning(delta.text); }
         } else {
             if (sink_->on_content) { sink_->on_content(delta.text); }
+        }
+        if (!delta.logprobs.empty() && sink_->on_logprobs) {
+            sink_->on_logprobs(std::move(delta.logprobs));
         }
     }
 
@@ -436,6 +447,7 @@ GenerationOutcome GenerationService::run(PreparedRequest& prepared, const Stream
     GenerationOutcome outcome;
     outcome.text                = std::move(result.content);
     outcome.reasoning           = std::move(result.reasoning);
+    outcome.content_logprobs    = std::move(result.content_logprobs);
     outcome.prompt_tokens       = static_cast<int>(result.prompt.prompt_tokens);
     outcome.completion_tokens   = static_cast<int>(result.generated_token_ids.size());
     outcome.reasoning_tokens    = static_cast<int>(result.reasoning_tokens);

@@ -737,6 +737,25 @@ private:
         };
     }
 
+    // Attaches fresh content logprob records to the deltas published this commit: the existing
+    // content delta when present, otherwise a logprobs-only content delta.
+    static void attach_streaming_logprobs(PublishedOutput& output,
+                                          std::span<const TokenLogprob> records) {
+        if (records.empty()) { return; }
+        for (OutputDelta& delta : output) {
+            if (delta.channel == OutputChannel::Content) {
+                delta.logprobs.assign(records.begin(), records.end());
+                return;
+            }
+        }
+        if (output.size() < 2) {
+            OutputDelta delta;
+            delta.channel = OutputChannel::Content;
+            delta.logprobs.assign(records.begin(), records.end());
+            output.push_back(std::move(delta));
+        }
+    }
+
     void append_output(const std::shared_ptr<Request>& request, PublishedOutput output,
                        std::optional<GenerationTimingObservation> timing = std::nullopt) {
         if (output.empty() && !timing) { return; }
@@ -884,6 +903,7 @@ private:
         GenerationResult result;
         result.prompt                  = request->prompt_summary;
         result.generated_token_ids     = std::move(request->generated);
+        result.content_logprobs        = std::move(request->content_logprobs);
         result.content                 = std::move(request->content);
         result.reasoning               = std::move(request->reasoning);
         result.tool_calls              = request->output.take_tool_calls();
@@ -1147,8 +1167,14 @@ private:
                     finish_reasons[row] = FinishReason::Cancelled;
                     continue;
                 }
+                std::span<const runtime::RawTokenLogprob> row_logprobs{};
+                if (!pending.logprobs().empty()) {
+                    row_logprobs = pending.logprobs().subspan(
+                        static_cast<std::size_t>(row) * pending.row_stride(), count);
+                }
                 const OutputDecision decision = request->output.preview_model(
-                    row_tokens, request->budget->remaining(), request->budget->limit_reason());
+                    row_tokens, request->budget->remaining(), request->budget->limit_reason(),
+                    row_logprobs);
                 if (decision.accepted_tokens == 0 || decision.accepted_tokens > count ||
                     (!decision.finished() && decision.accepted_tokens != count) ||
                     (decision.finished() && decision.continuation != ContinuationAction::Decode) ||
@@ -1261,7 +1287,18 @@ private:
                     if (decode_round) { Scheduling::consume_service_work(*request, accepted); }
                 }
                 auto published = request->output.commit_preview();
-                auto timing    = record_committed_output(request, accepted);
+                const std::span<const TokenLogprob> session_logprobs =
+                    request->output.content_logprobs();
+                const std::size_t already = request->content_logprobs.size();
+                if (session_logprobs.size() > already) {
+                    const std::span<const TokenLogprob> fresh = session_logprobs.subspan(already);
+                    if (request->consumer_mode == OutputConsumerMode::Streaming) {
+                        attach_streaming_logprobs(published, fresh);
+                    }
+                    request->content_logprobs.insert(request->content_logprobs.end(), fresh.begin(),
+                                                     fresh.end());
+                }
+                auto timing = record_committed_output(request, accepted);
                 append_output(request, std::move(published), std::move(timing));
                 if (decisions[row].terminal) {
                     if (cancelled[row]) {

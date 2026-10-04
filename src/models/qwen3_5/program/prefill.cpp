@@ -6,6 +6,7 @@
 #include "core/device.h"
 #include "ninfer/ops/apply_mask.h"
 #include "ninfer/ops/gdn_replay.h"
+#include "ninfer/ops/logprob_topk.h"
 #include "ninfer/ops/sampling.h"
 #include "ninfer/ops/scalar.h"
 #include "ninfer/ops/scatter.h"
@@ -160,14 +161,19 @@ void sample_from_hidden(PrefillContext& state, const Tensor& hidden, std::int32_
     Tensor logits = state.execution.io.logits.slice(1, 0, 1);
     project(hidden, state.execution.parameters.text.output_head, logits, state.execution.work,
             state.execution.device.stream);
+    const std::int32_t token_domain =
+        dimension(state.execution.parameters.model.resources().public_token_count);
     if (state.execution.io.mask_rows.data != nullptr) {
         // Prefill samples its single row from the shared step logits, so it reads mask row 0.
         ops::apply_mask(logits, /*columns=*/1, /*batch=*/1, state.execution.io.mask_rows,
-                        state.execution.io.mask_active,
-                        dimension(state.execution.parameters.model.resources().public_token_count),
+                        state.execution.io.mask_active, token_domain,
                         static_cast<std::int32_t>(MaskTransport::lane_stride()),
                         state.execution.device.stream);
     }
+    ops::logprob_topk(logits, state.sampling, token_domain, state.execution.io.logprob_ids,
+                      state.execution.io.logprob_values, state.execution.io.logprob_lse,
+                      state.execution.io.logprob_active, state.execution.work,
+                      state.execution.device.stream);
     CUDA_CHECK(cudaMemcpyAsync(state.execution.io.pos.data, &absolute_position,
                                sizeof(absolute_position), cudaMemcpyHostToDevice,
                                state.execution.device.stream));
@@ -655,7 +661,7 @@ void ProgramImpl::start_sequence(std::uint32_t lane, SequenceState& sequence,
             : speculative_backend == SpeculativeBackend::DFlash ? prompt_tokens
                                                                 : 0U;
         ensure_sequence_kv_mapped(sequence, prompt_tokens, backend_materialized);
-        install_sampling(sequence, request, request_plan.sampling);
+        install_sampling(sequence, request, request_plan.sampling, request_plan.logprobs);
         sequence.rope_delta = staged.prompt.rope_delta;
         set_device_i32(io.rope_delta, sequence.rope_delta);
 
@@ -1016,6 +1022,7 @@ runtime::PrefillStepResult ProgramImpl::advance_prefill(SequenceState& sequence,
             staged.initial_mtp_extent,
             0,
             dflash_prefill_host_ingress};
+        set_device_i32(io.logprob_active, request.logprobs ? 1 : 0);
 
         if (staged.mtp_bridge == MtpBridgeMode::BeforeSuffix) {
             if (staged.cursor != staged.base || staged.base == 0 ||
@@ -1189,6 +1196,15 @@ runtime::PrefillStepResult ProgramImpl::advance_prefill(SequenceState& sequence,
         }
 
         copy_round_token();
+        const bool pending_logprob = request.logprobs;
+        if (pending_logprob) {
+            CUDA_CHECK(cudaMemcpyAsync(
+                pending_logprobs_[0].top_ids.data(), io.logprob_ids.data,
+                kMaximumTokenLogprobs * sizeof(TokenId), cudaMemcpyDeviceToHost, device.stream));
+            CUDA_CHECK(cudaMemcpyAsync(
+                pending_logprobs_[0].top_values.data(), io.logprob_values.data,
+                kMaximumTokenLogprobs * sizeof(float), cudaMemcpyDeviceToHost, device.stream));
+        }
         std::array<TokenId, qwen3_5::kMtpDecodeMaximumDrafts> initial_drafts{};
         if (staged.prepare_mtp && staged.initial_mtp_extent != 0) {
             CUDA_CHECK(cudaMemcpyAsync(initial_drafts.data(), io.mtp->draft_tokens.data,
@@ -1203,6 +1219,12 @@ runtime::PrefillStepResult ProgramImpl::advance_prefill(SequenceState& sequence,
         const std::uint32_t prompt_tokens = staged.prompt_tokens;
 
         validate_licensed_tokens(std::span<const TokenId>(host_tokens, 1));
+        if (pending_logprob) {
+            pending_logprobs_[0] =
+                assemble_logprob(pending_logprobs_[0].top_ids.data(),
+                                 pending_logprobs_[0].top_values.data(), /*columns=*/1,
+                                 /*column=*/0, host_tokens[0]);
+        }
         if (sequence.ledger.size() != prompt_tokens) {
             throw std::logic_error("candidate token ledger does not match prompt length");
         }
@@ -1240,7 +1262,13 @@ runtime::PrefillStepResult ProgramImpl::advance_prefill(SequenceState& sequence,
         request.lifecycle = Lifecycle::Pending;
         return runtime::PrefillStepResult{
             .summary = summary,
-            .round   = runtime::GeneratedRound{.tokens = std::span<const TokenId>(host_tokens, 1)},
+            .round   = runtime::GeneratedRound{
+                .tokens   = std::span<const TokenId>(host_tokens, 1),
+                .logprobs = pending_logprob
+                                ? std::span<const runtime::RawTokenLogprob>(pending_logprobs_.data(),
+                                                                            1)
+                                : std::span<const runtime::RawTokenLogprob>{},
+            },
             .processed_prompt_tokens = processed_prompt_tokens,
             .complete                = true,
             .timing                  = timing.finish(),

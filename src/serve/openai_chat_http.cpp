@@ -99,7 +99,8 @@ void HttpServer::handle_chat_completions(const httplib::Request& req, httplib::R
             return;
         }
         try {
-            set_owned_json_content(res, make_chat_completion_response(identity, outcome),
+            set_owned_json_content(res,
+                                   make_chat_completion_response(identity, outcome, request.logprobs),
                                    prepared.lifetime);
         } catch (const std::exception& exception) {
             lifecycle->response_failure(make_internal_request_failure(
@@ -118,7 +119,8 @@ void HttpServer::handle_chat_completions(const httplib::Request& req, httplib::R
         const bool timings_per_token = request.timings_per_token;
         auto stream                  = std::make_shared<HttpGenerationStream>(std::move(prepared));
         auto encoder = std::make_shared<OpenAIChatStream>(identity, request.include_usage,
-                                                          timings_per_token, return_progress);
+                                                          timings_per_token, return_progress,
+                                                          request.logprobs);
 
         prepare_sse_response(res);
         res.set_chunked_content_provider(
@@ -199,6 +201,11 @@ void HttpServer::handle_chat_completions(const httplib::Request& req, httplib::R
                     };
                     output.on_reasoning = [&](const std::string& text) {
                         render_and_write(transport, [&] { return encoder->reasoning_delta(text); });
+                    };
+                    output.on_logprobs = [&](std::vector<ninfer::TokenLogprob> records) {
+                        render_and_write(transport, [&] {
+                            return encoder->logprobs_delta(std::move(records));
+                        });
                     };
                     output.is_cancelled = [&] { return transport.poll(); };
 

@@ -1,5 +1,6 @@
 #pragma once
 #include "ninfer/types.h"
+#include "runtime/contract/execution.h"
 #include "runtime/contract/request.h"
 #include <array>
 #include <cstddef>
@@ -62,9 +63,13 @@ public:
     OutputSession(const OutputSession&)            = delete;
     OutputSession& operator=(const OutputSession&) = delete;
 
-    [[nodiscard]] runtime::OutputDecision preview_model(std::span<const TokenId> tokens,
-                                                        std::uint32_t total_budget_remaining,
-                                                        FinishReason limit_reason);
+    // `logprobs` is optional per-token log-probability data aligned with `tokens` (empty when the
+    // request did not opt in). Records for content tokens accumulate on the session and are exposed
+    // through content_logprobs().
+    [[nodiscard]] runtime::OutputDecision
+    preview_model(std::span<const TokenId> tokens, std::uint32_t total_budget_remaining,
+                  FinishReason limit_reason,
+                  std::span<const runtime::RawTokenLogprob> logprobs = {});
     [[nodiscard]] std::uint32_t
     model_token_budget_remaining(std::uint32_t total_budget_remaining) const noexcept;
     [[nodiscard]] std::span<const TokenId> pending_control_tokens() const noexcept;
@@ -78,6 +83,10 @@ public:
     [[nodiscard]] std::uint32_t reasoning_tokens() const noexcept;
     [[nodiscard]] ThinkingBudgetStats thinking_stats() const noexcept;
     [[nodiscard]] std::optional<std::string> matched_stop_string() const;
+
+    // Content-token logprob records committed so far, in generation order. Empty unless the request
+    // opted in. Records carry the tokenizer's decoded bytes for the token.
+    [[nodiscard]] std::span<const TokenLogprob> content_logprobs() const noexcept;
 
 private:
     class Impl;

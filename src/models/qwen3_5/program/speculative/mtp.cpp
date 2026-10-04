@@ -119,6 +119,8 @@ auto mtp_decode_batch_body(MtpBatchContext& state, std::int32_t batch_size, std:
         ops::speculative_prepare_verify_inputs(anchors, current_drafts, frontiers, current_extents,
                                                verify_ids, target_positions,
                                                state.execution.device.stream);
+        const std::int32_t logprob_rows = frame.target_logits.ne[1] * frame.target_logits.ne[2];
+        const std::int32_t logprob_top_k = static_cast<std::int32_t>(kMaximumTokenLogprobs);
         {
             nvtx::ScopedRange target_range(nvtx::Name::DecodeMtpTarget, nvtx::Category::Mtp,
                                            static_cast<std::uint64_t>(width) * batch_size);
@@ -144,6 +146,15 @@ auto mtp_decode_batch_body(MtpBatchContext& state, std::int32_t batch_size, std:
                                      .selected_hidden         = selected_hidden,
                                      .replay_records          = state.execution.replay_records,
                                      .sampling                = frame.sampling,
+                                     .gather_logits =
+                                         frame.target_logits.view(
+                                             {frame.target_logits.ne[0], logprob_rows}),
+                                     .logprob_ids = frame.logprob_ids.view({logprob_top_k, logprob_rows}),
+                                     .logprob_values =
+                                         frame.logprob_values.view({logprob_top_k, logprob_rows}),
+                                     .logprob_lse    = frame.logprob_lse.view({logprob_rows}),
+                                     .logprob_active = frame.logprob_active,
+                                     .logprob_sampling = frame.logprob_sampling,
                                  },
                                  envelopes.target_verify);
         }

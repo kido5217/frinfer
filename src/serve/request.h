@@ -187,6 +187,10 @@ struct GenerationRequest {
     std::optional<RequestedReasoningEffort> reasoning_effort;
     std::optional<bool> preserve_thinking;
     std::string chat_template_kwargs_json;
+    // Opt-in per-token log probabilities for the response builders; `top_logprobs` is the requested
+    // alternative count in [0,20] (the Engine always gathers 20).
+    bool logprobs   = false;
+    int top_logprobs = 0;
     ninfer::PromptContinuationMode continuation = ninfer::PromptContinuationMode::NewAssistantTurn;
     bool allow_engine_automatic_shared_prefixes = true;
     SamplingParams sampling;

@@ -42,6 +42,23 @@ using RewriteCheckpointSpec = qwen3_5::RewriteCheckpointSpec;
 
 using ReusePath = ninfer::PrefixReusePath;
 
+// Builds one RawTokenLogprob from a row-major [kMaximumTokenLogprobs, columns] gather result and
+// the drawn token. The drawn token is guaranteed to be inside the reported top-k, so its own value
+// comes from the matching entry; the top-1 value is a fallback for a malformed row.
+[[nodiscard]] inline runtime::RawTokenLogprob
+assemble_logprob(const std::int32_t* ids, const float* values, std::int32_t columns,
+                 std::int32_t column, TokenId token) {
+    runtime::RawTokenLogprob record;
+    record.id      = token;
+    record.logprob = values[column];
+    for (std::size_t k = 0; k < kMaximumTokenLogprobs; ++k) {
+        record.top_ids[k]    = ids[k * static_cast<std::size_t>(columns) + column];
+        record.top_values[k] = values[k * static_cast<std::size_t>(columns) + column];
+        if (record.top_ids[k] == token) { record.logprob = record.top_values[k]; }
+    }
+    return record;
+}
+
 [[nodiscard]] constexpr bool is_rewrite_checkpoint_restore(ReusePath path) noexcept {
     return path == ReusePath::PrivateTurnClosure || path == ReusePath::PrivateResponseReplay;
 }
@@ -182,6 +199,8 @@ struct RequestBasePlanImpl {
     std::uint32_t root_rebuild_tail_begin = 0;
     qwen3_5::PreparedContextCache context_cache;
     ops::SamplingConfig sampling;
+    // Request opted into per-token log probabilities.
+    bool logprobs = false;
     std::uint32_t text_kv_page_entitlement    = 0;
     std::uint32_t backend_kv_page_entitlement = 0;
     std::shared_ptr<const qwen3_5::VisionControlPlan> vision_control_plan;
@@ -246,6 +265,7 @@ struct AdmissionCandidateImpl : ResourceCandidateState {
     std::vector<CaptureGroup> capture_groups;
     std::vector<CaptureGroup> shared_candidates;
     ops::SamplingConfig sampling;
+    bool logprobs                             = false;
     std::uint32_t text_kv_page_entitlement    = 0;
     std::uint32_t backend_kv_page_entitlement = 0;
     runtime::LaneId destination{};
@@ -403,6 +423,7 @@ struct RequestControl {
     Lifecycle lifecycle = Lifecycle::Empty;
     PendingCandidate pending;
     ops::SamplingConfig sampling_host;
+    bool logprobs = false;
     GenerationTimings timings;
     SpeculativeStats speculative_stats;
     detail::PhysicalResources active_resources;
@@ -628,6 +649,12 @@ public:
     std::optional<PinnedHostBuffer> round_host;
     std::optional<PinnedHostBuffer> score_logprobs_host;
     TokenId* host_tokens = nullptr;
+    // Stable storage for the round's per-(row,column) logprob records. The returned
+    // BatchedGeneratedRound spans point here, so it must outlive PendingBatch consumption.
+    std::array<runtime::RawTokenLogprob,
+               kMaximumConcurrency * kDFlashDecodeMaximumWidth>
+        pending_logprobs_{};
+
     std::optional<PinnedHostBuffer> ordinary_host;
     qwen3_5::OrdinaryDecodeIngress* ordinary_host_ingress = nullptr;
     qwen3_5::OrdinaryDecodeEgress* ordinary_host_egress   = nullptr;
@@ -1153,7 +1180,7 @@ private:
     void release_sequence_state(SequenceState& sequence) noexcept;
     void prepare_graphs();
     void install_sampling(SequenceState& sequence, RequestControl& request,
-                          const ops::SamplingConfig& config);
+                          const ops::SamplingConfig& config, bool logprobs);
     void set_device_i32(Tensor& tensor, std::int32_t value);
     void copy_tail(SequenceState& sequence, const Tensor& source);
     void copy_round_token();

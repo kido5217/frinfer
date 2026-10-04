@@ -81,6 +81,12 @@ RoundStateLayout begin_round_state_layout(LayoutBuilder& builder, const RoundSta
     layout.rope_delta = add_tensor(builder, DType::I32, {1}, "step rope delta");
     if (!spec.causal_scoring) {
         layout.logits = add_tensor(builder, DType::BF16, {spec.output_rows, 1}, "step logits");
+        const auto top_k = static_cast<std::int32_t>(kMaximumTokenLogprobs);
+        layout.logprob_ids = add_tensor(builder, DType::I32, {top_k, 1}, "step logprob top ids");
+        layout.logprob_values =
+            add_tensor(builder, DType::FP32, {top_k, 1}, "step logprob top values");
+        layout.logprob_lse    = add_tensor(builder, DType::FP32, {1}, "step logprob lse");
+        layout.logprob_active = add_tensor(builder, DType::I32, {1}, "step logprob active");
     }
     layout.text_kv_table_row = add_tensor(builder, DType::I32, {1}, "step Text KV table row");
     if (!spec.causal_scoring) {
@@ -137,8 +143,21 @@ OrdinaryDecodeState::OrdinaryDecodeState(DeviceSpan backing,
     sampled_tokens = Tensor(static_cast<unsigned char*>(egress.data) +
                                 offsetof(OrdinaryDecodeEgress, sampled_tokens),
                             DType::I32, {count});
-    logits         = layout.logits.bind(backing);
-    hidden         = layout.hidden.bind(backing);
+    const auto top_k = static_cast<std::int32_t>(kMaximumTokenLogprobs);
+    logprob_ids      = Tensor(static_cast<unsigned char*>(egress.data) +
+                                  offsetof(OrdinaryDecodeEgress, logprob_ids),
+                              DType::I32, {top_k, count});
+    logprob_values   = Tensor(static_cast<unsigned char*>(egress.data) +
+                                  offsetof(OrdinaryDecodeEgress, logprob_values),
+                                DType::FP32, {top_k, count});
+    logprob_lse      = Tensor(static_cast<unsigned char*>(egress.data) +
+                                  offsetof(OrdinaryDecodeEgress, logprob_lse),
+                              DType::FP32, {count});
+    logprob_active   = Tensor(static_cast<unsigned char*>(ingress.data) +
+                                  offsetof(OrdinaryDecodeIngress, logprob_active),
+                              DType::I32, {1});
+    logits           = layout.logits.bind(backing);
+    hidden           = layout.hidden.bind(backing);
 }
 
 void complete_round_state_layout(LayoutBuilder& builder, RoundStateLayout& layout) {
@@ -310,6 +329,9 @@ MtpDecodeState::MtpDecodeState(DeviceSpan backing, const MtpDecodeStateLayout& l
     rope_deltas = ingress_tensor(offsetof(MtpDecodeIngress, rope_deltas), DType::I32, {batch});
     sampling    = reinterpret_cast<const ops::SamplingConfig*>(
         static_cast<const unsigned char*>(ingress.data) + offsetof(MtpDecodeIngress, sampling));
+    logprob_sampling = reinterpret_cast<const ops::SamplingConfig*>(
+        static_cast<const unsigned char*>(ingress.data) +
+        offsetof(MtpDecodeIngress, logprob_sampling));
 
     licensed_tokens =
         egress_tensor(offsetof(MtpDecodeEgress, licensed_tokens), DType::I32, {width, batch});
@@ -320,6 +342,13 @@ MtpDecodeState::MtpDecodeState(DeviceSpan backing, const MtpDecodeStateLayout& l
     next_drafts =
         egress_tensor(offsetof(MtpDecodeEgress, next_drafts), DType::I32, {batch, drafts});
     next_extents     = egress_tensor(offsetof(MtpDecodeEgress, next_extents), DType::I32, {batch});
+    const auto top_k = static_cast<std::int32_t>(kMaximumTokenLogprobs);
+    logprob_ids      = egress_tensor(offsetof(MtpDecodeEgress, logprob_ids), DType::I32,
+                                     {top_k, width, batch});
+    logprob_values   = egress_tensor(offsetof(MtpDecodeEgress, logprob_values), DType::FP32,
+                                     {top_k, width, batch});
+    logprob_lse = egress_tensor(offsetof(MtpDecodeEgress, logprob_lse), DType::FP32, {width, batch});
+    logprob_active = ingress_tensor(offsetof(MtpDecodeIngress, logprob_active), DType::I32, {1});
     verify_ids       = layout.verify_ids.bind(backing);
     target_positions = layout.target_positions.bind(backing);
     target_argmax    = layout.target_argmax.bind(backing);
@@ -388,12 +417,23 @@ DFlashDecodeState::DFlashDecodeState(DeviceSpan backing, const DFlashDecodeState
         ingress_tensor(offsetof(DFlashDecodeIngress, state_destination_slots), DType::I32, {batch});
     sampling = reinterpret_cast<const ops::SamplingConfig*>(
         static_cast<const unsigned char*>(ingress.data) + offsetof(DFlashDecodeIngress, sampling));
+    logprob_sampling = reinterpret_cast<const ops::SamplingConfig*>(
+        static_cast<const unsigned char*>(ingress.data) +
+        offsetof(DFlashDecodeIngress, logprob_sampling));
     licensed_tokens =
         egress_tensor(offsetof(DFlashDecodeEgress, licensed_tokens), DType::I32, {width, batch});
     licensed_counts =
         egress_tensor(offsetof(DFlashDecodeEgress, licensed_counts), DType::I32, {batch});
     accepted_drafts =
         egress_tensor(offsetof(DFlashDecodeEgress, accepted_drafts), DType::I32, {batch});
+    const auto top_k = static_cast<std::int32_t>(kMaximumTokenLogprobs);
+    logprob_ids      = egress_tensor(offsetof(DFlashDecodeEgress, logprob_ids), DType::I32,
+                                     {top_k, width, batch});
+    logprob_values   = egress_tensor(offsetof(DFlashDecodeEgress, logprob_values), DType::FP32,
+                                     {top_k, width, batch});
+    logprob_lse =
+        egress_tensor(offsetof(DFlashDecodeEgress, logprob_lse), DType::FP32, {width, batch});
+    logprob_active = ingress_tensor(offsetof(DFlashDecodeIngress, logprob_active), DType::I32, {1});
     proposal_ids               = layout.proposal_ids.bind(backing);
     proposal_positions         = layout.proposal_positions.bind(backing);
     append_positions           = layout.append_positions.bind(backing);
@@ -418,6 +458,10 @@ RoundState::RoundState(DeviceSpan backing, const RoundStateLayout& layout) {
         pos                  = layout.pos.bind(backing);
         rope_pos             = layout.rope_pos.bind(backing);
         logits               = layout.logits.bind(backing);
+        logprob_ids          = layout.logprob_ids.bind(backing);
+        logprob_values       = layout.logprob_values.bind(backing);
+        logprob_lse          = layout.logprob_lse.bind(backing);
+        logprob_active       = layout.logprob_active.bind(backing);
         backend_kv_table_row = layout.backend_kv_table_row.bind(backing);
     }
     if (layout.mtp) { mtp.emplace(backing, *layout.mtp); }

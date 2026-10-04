@@ -1,5 +1,6 @@
 #include "models/qwen3_5/program/internal.h"
 #include "models/qwen3_5/program/context.h"
+#include "ninfer/ops/logprob_topk.h"
 #include "ninfer/ops/scatter.h"
 #include "ninfer/ops/speculative_round.h"
 
@@ -22,6 +23,14 @@ void target_verify_accept(ExecutionCore& execution, Tensor& continuation_hidden_
                                  frame.valid_columns, frame.kv_table_rows, frame.state_source_slots,
                                  envelope, frame.target_hidden, frame.target_logits,
                                  frame.target_tokens);
+    }
+    // Read-only logprob gather over the post-mask verify logits, before acceptance increments the
+    // token-count array. Device-gated, so an off round pays one flag check.
+    if (frame.gather_logits.data != nullptr && frame.logprob_sampling != nullptr) {
+        ops::logprob_topk(frame.gather_logits, frame.logprob_sampling,
+                          dimension(execution.parameters.model.resources().public_token_count),
+                          frame.logprob_ids, frame.logprob_values, frame.logprob_lse,
+                          frame.logprob_active, execution.work, execution.device.stream);
     }
     if (frame.proposal_q.data != nullptr) {
         ops::speculative_accept_sparse_drafts(

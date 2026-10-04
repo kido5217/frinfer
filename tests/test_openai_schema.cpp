@@ -153,8 +153,28 @@ int test_standard_field_policy() {
 
     rejected("n", 2, "n_not_supported");
     rejected("logit_bias", Json{{"12", 1}}, "logit_bias_not_supported");
-    rejected("logprobs", true, "logprobs_not_supported");
-    rejected("top_logprobs", 2, "logprobs_not_supported");
+    failures += check(
+        api_error([&] {
+            Json invalid      = base_request();
+            invalid["logprobs"]    = "yes";
+            (void)parse(invalid);
+        }).param == "logprobs",
+        "non-boolean logprobs rejected");
+    failures += check(
+        api_error([&] {
+            Json invalid            = base_request();
+            invalid["logprobs"]     = true;
+            invalid["top_logprobs"] = 21;
+            (void)parse(invalid);
+        }).param == "top_logprobs",
+        "top_logprobs above 20 rejected");
+    failures += check(
+        api_error([&] {
+            Json invalid            = base_request();
+            invalid["top_logprobs"] = 2;
+            (void)parse(invalid);
+        }).param == "top_logprobs",
+        "top_logprobs without logprobs rejected");
     rejected("response_format", Json{{"type", "yaml"}}, "response_format_not_supported");
     rejected("modalities", Json::array({"text", "audio"}), "modality_not_supported");
     rejected("web_search_options", Json::object(), "web_search_not_supported");
@@ -162,6 +182,17 @@ int test_standard_field_policy() {
     rejected("verbosity", "high", "verbosity_not_supported");
     rejected("store", true, "store_not_supported");
     rejected("functions", Json::array({Json{{"name", "legacy"}}}), "legacy_tools_not_supported");
+
+    {
+        Json logprobs_body          = base_request();
+        logprobs_body["logprobs"]   = true;
+        logprobs_body["top_logprobs"] = 2;
+        const OpenAIChatRequest parsed = parse(logprobs_body);
+        failures += check(parsed.logprobs.include && parsed.logprobs.top_logprobs == 2 &&
+                              parsed.generation.logprobs &&
+                              options(parsed.generation).execution.logprobs,
+                          "logprobs=true and top_logprobs=2 are accepted and reach the Engine");
+    }
 
     Json neutral                      = base_request();
     neutral["n"]                      = 1;
@@ -1223,6 +1254,55 @@ int test_tool_call_demotion_signal() {
 
 } // namespace
 
+int test_logprobs_response() {
+    int failures = 0;
+    GenerationOutcome outcome = sample_outcome();
+    ninfer::TokenLogprob record;
+    record.id          = 42;
+    record.logprob     = -0.5f;
+    record.bytes       = "hi";
+    record.top_ids.fill(-1);
+    record.top_ids[0]    = 42;
+    record.top_values[0] = -0.5f;
+    record.top_bytes[0]  = "hi";
+    record.top_ids[1]    = 7;
+    record.top_values[1] = -1.5f;
+    record.top_bytes[1]  = "yo";
+    outcome.content_logprobs.push_back(record);
+
+    const Json requested = Json::parse(
+        make_chat_completion_response(identity(), outcome, OpenAIChatLogprobs{true, 2}));
+    const Json& encoded = requested["choices"][0]["logprobs"];
+    failures += check(encoded.is_object() && encoded.contains("content") &&
+                          encoded.contains("refusal") && encoded["refusal"].is_array(),
+                      "aggregate logprobs carries content and refusal keys");
+    const Json& entry = encoded["content"][0];
+    failures += check(entry["token"] == "hi" && entry["logprob"] == -0.5 &&
+                          entry["bytes"] == Json::array({104, 105}) &&
+                          entry["top_logprobs"].size() == 2 &&
+                          entry["top_logprobs"][1]["token"] == "yo",
+                      "aggregate logprobs entry has OpenAI ChatCompletionTokenLogprob shape");
+
+    const Json trimmed = Json::parse(
+        make_chat_completion_response(identity(), outcome, OpenAIChatLogprobs{true, 1}));
+    failures += check(trimmed["choices"][0]["logprobs"]["content"][0]["top_logprobs"].size() == 1,
+                      "aggregate logprobs trims to the requested top_logprobs");
+    failures += check(Json::parse(make_chat_completion_response(identity(), outcome))["choices"][0]
+                              ["logprobs"]
+                              .is_null(),
+                      "aggregate logprobs stays null without the request opt-in");
+
+    OpenAIChatStream stream(identity(), false, false, false, OpenAIChatLogprobs{true, 2});
+    stream.start();
+    stream.content_delta("hi");
+    const Json delta = parse_sse(stream.logprobs_delta({record}));
+    failures += check(delta["choices"][0]["delta"].is_object() &&
+                          delta["choices"][0]["delta"].empty() &&
+                          delta["choices"][0]["logprobs"]["content"][0]["token"] == "hi",
+                      "streaming logprobs chunk carries the entry with an empty delta");
+    return failures;
+}
+
 int main() {
     int failures = 0;
     failures += test_request_envelope_and_sampling();
@@ -1236,6 +1316,7 @@ int main() {
     failures += test_aggregate_response();
     failures += test_stream_response();
     failures += test_stream_observations();
+    failures += test_logprobs_response();
     failures += test_common_objects();
     failures += test_tool_call_demotion_signal();
     if (failures == 0) { std::cout << "OpenAI Chat protocol tests passed\n"; }

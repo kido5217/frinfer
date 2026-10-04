@@ -17,9 +17,17 @@ namespace ninfer::serve {
 
 struct GenerationOutcome;
 
+// Resolved chat-completion logprob options. `top_logprobs` is the requested alternative count in
+// [0,20]; the Engine always gathers 20 and the response layer trims to this value.
+struct OpenAIChatLogprobs {
+    bool include     = false;
+    int top_logprobs = 0;
+};
+
 struct OpenAIChatRequest {
     std::string model;
     GenerationRequest generation;
+    OpenAIChatLogprobs logprobs;
     bool stream                 = false;
     bool include_usage          = false;
     bool output_tokens_explicit = false;
@@ -40,12 +48,14 @@ struct OpenAIChatResponseIdentity {
 
 OpenAIChatResponseIdentity make_openai_chat_response_identity(std::string model);
 std::string make_chat_completion_response(const OpenAIChatResponseIdentity& identity,
-                                          const GenerationOutcome& outcome);
+                                          const GenerationOutcome& outcome,
+                                          OpenAIChatLogprobs logprobs = {});
 
 class OpenAIChatStream {
 public:
     OpenAIChatStream(OpenAIChatResponseIdentity identity, bool include_usage,
-                     bool timings_per_token = false, bool return_progress = false);
+                     bool timings_per_token = false, bool return_progress = false,
+                     OpenAIChatLogprobs logprobs = {});
 
     std::string start();
     void note_start(const ninfer::GenerationStart& start);
@@ -54,6 +64,8 @@ public:
     void note_timing(const ninfer::GenerationTimingObservation& timing);
     std::string reasoning_delta(const std::string& text);
     std::string content_delta(const std::string& text);
+    // Encodes the logprob records that arrived with the current content delta as one chunk.
+    std::string logprobs_delta(std::vector<ninfer::TokenLogprob> records);
     std::vector<std::string> finish(const GenerationOutcome& outcome);
 
 private:
@@ -67,6 +79,7 @@ private:
     std::uint32_t cached_tokens_            = 0;
     std::uint32_t last_progress_tokens_     = 0;
     std::uint64_t last_progress_elapsed_ns_ = 0;
+    OpenAIChatLogprobs logprobs_;
     bool include_usage_                     = false;
     bool timings_per_token_                 = false;
     bool return_progress_                   = false;

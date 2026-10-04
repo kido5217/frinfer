@@ -14,6 +14,8 @@ struct ResolvedExecutionOptions {
     std::uint32_t requested_output_tokens = 0;
     bool allow_prefix_reuse               = true;
     ThinkingControlOptions thinking;
+    // Opt-in full-vocabulary top-k log probabilities per committed token.
+    bool logprobs = false;
 };
 
 struct ResolvedRequestOptions {
