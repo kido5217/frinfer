@@ -626,8 +626,8 @@ without changing declaration order, while `tool_choice:"none"` disables structur
 when the history contains earlier calls.
 
 FrInfer does not execute functions or enforce tool JSON Schemas through constrained decoding
-(constraints apply only through the caller-supplied `grammar`/`response_format` fields, never to
-tool schemas), so
+(constraints apply only through the caller-supplied `grammar`/`response_format` (OpenAI) and
+`output_config.format` (Anthropic) fields, never to tool schemas), so
 `strict:true`, required or named tool choice, hosted tools, remote MCP tools, and custom free-form
 tools are rejected. Deferred loading, output schemas, and caller restrictions that exclude direct
 invocation are also rejected because their semantics cannot be honored.
@@ -799,6 +799,20 @@ encrypted hidden-reasoning restore semantics. `preserve_thinking` remains a FrIn
 closed-turn reasoning history. `output_config.effort` passes its protocol-validated value to the
 selected template.
 
+`output_config.format` carries Anthropic structured outputs as
+`{"type":"json_schema","schema":<JSON Schema>}`. The document is admitted through the same
+shared constraint contract as the OpenAI `response_format` json_schema conversion (see
+[Constrained output](#constrained-output)): the same keyword allowlist and context rules, the same
+64 KiB payload and 64-level nesting limits, and the same `json_schema_invalid`,
+`json_schema_unsupported`, and `constraint_too_large` fail-closed codes, attributed to
+`output_config.format` internally — the Anthropic error body serializes only `type` and `message`,
+as the protocol specifies. As on the chat route, a constrained answer cannot be combined with a
+`tools` field (the tool-call parser owns the turn), and `format` and `effort` may share one
+`output_config` object. A hand-rolled client that also sends a top-level `output_format` is
+rejected with `constrained_decoding_conflict`: this mirrors the official SDK's own client-side
+check, which folds `output_format` into `output_config.format` and transmits only the latter, so a
+conforming client never triggers it, and a lone `output_format` remains ignored.
+
 User-defined, non-strict tools support `name`, `description`, object `input_schema`, and
 `input_examples`. `tool_choice:auto` and `none` are executable. Forced or named choice,
 `strict:true`, active single-call enforcement, deferred tools, tools that exclude direct model
@@ -824,8 +838,8 @@ emits `message_start` after Engine admission commits the prefix selection and be
 transfer/prefill output, so its uncached/cache-read split is already exact; terminal cumulative
 usage matches the aggregate response.
 
-Documents, Search Results, Files, Structured Outputs, server-tool results, container uploads, and
-other execution-dependent blocks are rejected with the missing capability identified. Metadata,
+Documents, Search Results, Files, server-tool results, container uploads, and other
+execution-dependent blocks are rejected with the missing capability identified. Metadata,
 service tier, inference geography, protocol-version/beta headers, cache TTL, and unknown advisory
 fields do not block an otherwise executable request. The request `model` is any non-empty local
 proxy label and is echoed in the response; it does not select the resident artifact.
@@ -1125,7 +1139,8 @@ a following compatible turn can reuse it. Output-limit and context-capacity fini
 Function tools are rendered into the model prompt and generated calls are parsed into protocol
 responses. FrInfer does not execute tools and does not enforce client tool JSON Schemas through
 constrained decoding (constraints apply only through the caller-supplied
-`grammar`/`response_format` fields, never to tool schemas).
+`grammar`/`response_format` (OpenAI) and `output_config.format` (Anthropic) fields, never to tool
+schemas).
 
 Prompt-token usage includes chat-template and expanded media tokens. Generated-token usage comes
 from accepted output token IDs, including a stop token whose decoded text may be withheld.

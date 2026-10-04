@@ -1,5 +1,6 @@
 #include "serve/anthropic_messages.h"
 
+#include "product/constraint/constraint_contract.h"
 #include "serve/generation_service.h"
 #include "serve/tool_call_signal.h"
 #include "serve/translate.h"
@@ -59,6 +60,15 @@ std::string api_param(const std::function<void()>& action) {
         return "wrong_exception";
     }
     return {};
+}
+
+ApiError api_error(const std::function<void()>& action) {
+    try {
+        action();
+    } catch (const ApiException& error) { return error.error(); } catch (...) {
+        return ApiError{.status = 0, .message = "wrong_exception"};
+    }
+    return ApiError{.status = 0, .message = "no exception"};
 }
 
 ResolvedPromptSemantics semantics(const GenerationRequest& request, bool default_thinking = true) {
@@ -133,14 +143,151 @@ int test_envelope_and_field_policy() {
     body["top_k"] = 21;
     failures += check(api_param([&] { (void)parse(body); }) == "top_k",
                       "Engine top_k range was not enforced");
-    body                  = base_request();
-    body["output_config"] = Json{{"format", Json{{"type", "json_schema"}}}};
-    failures += check(api_code([&] { (void)parse(body); }) == "output_config_format_not_supported",
-                      "structured output was silently downgraded");
     body              = base_request();
     body["container"] = "container_1";
     failures += check(api_code([&] { (void)parse(body); }) == "container_not_supported",
                       "container execution was silently ignored");
+    return failures;
+}
+
+int test_structured_output() {
+    int failures = 0;
+
+    // The Anthropic slot converts through the same shared constraint contract as the OpenAI
+    // response_format json_schema path, and reaches the Engine constraint the same way.
+    Json body             = base_request();
+    const Json answer_schema =
+        Json{{"type", "object"},
+             {"additionalProperties", false},
+             {"required", Json::array({"answer"})},
+             {"properties", Json{{"answer", Json{{"type", "number"}}}}}};
+    body["output_config"] = Json{{"format",
+                                  Json{{"type", "json_schema"}, {"schema", answer_schema}}}};
+    const GenerationRequest constrained = parse(body).generation;
+    failures +=
+        check(constrained.grammar.has_value() &&
+                  constrained.constraint_source == ConstraintSource::JsonSchema,
+              "output_config.format json_schema converts to a constraint");
+    const ninfer::RequestOptions constrained_options =
+        to_request_options(constrained, ServeOptions{}, semantics(constrained), false);
+    failures += check(constrained_options.constraint.has_value() &&
+                          constrained_options.constraint->gbnf == *constrained.grammar,
+                      "the converted Anthropic schema reaches the Engine constraint contract");
+    failures += check(semantics(constrained).enable_thinking == false,
+                      "a constrained Anthropic request defaults thinking off");
+
+    // format and effort share one output_config object.
+    Json combined = body;
+    combined["output_config"] =
+        Json{{"effort", "high"}, {"format", body["output_config"]["format"]}};
+    const GenerationRequest both = parse(combined).generation;
+    failures += check(both.grammar.has_value() &&
+                          both.reasoning_effort == RequestedReasoningEffort::High,
+                      "output_config.format composes with output_config.effort");
+
+    // Malformed wrappers fail closed on the Anthropic field path, not the OpenAI one.
+    const std::vector<Json> malformed_formats = {
+        Json{{"type", "text"}},
+        Json{{"type", "json_schema"}},
+        Json{{"schema", Json{{"type", "object"}}}},
+        Json{{"type", "json_schema"}, {"schema", 5}},
+        Json{{"type", 7}, {"schema", Json{{"type", "object"}}}},
+    };
+    for (const Json& format : malformed_formats) {
+        Json request             = base_request();
+        request["output_config"] = Json{{"format", format}};
+        const ApiError error     = api_error([&] { (void)parse(request); });
+        failures +=
+            check(error.status == 400 && error.code == "json_schema_invalid" &&
+                      error.param.starts_with("output_config.format"),
+                  "a malformed output_config.format is rejected: " + format.dump());
+    }
+    {
+        Json request             = base_request();
+        request["output_config"] = Json{{"format", 5}};
+        const ApiError error     = api_error([&] { (void)parse(request); });
+        failures += check(error.code == "json_schema_invalid" &&
+                              error.param == "output_config.format",
+                          "a non-object output_config.format is rejected");
+    }
+
+    // Unenforced keywords, oversized payloads, and over-nested documents carry the shared codes
+    // and are reported on the Anthropic field path.
+    {
+        Json request             = base_request();
+        request["output_config"] = Json{{"format",
+                                         Json{{"type", "json_schema"},
+                                              {"schema", Json{{"type", "string"},
+                                                                   {"pattern", "^[a-z]+$"}}}}}};
+        const ApiError error     = api_error([&] { (void)parse(request); });
+        failures += check(error.code == "json_schema_unsupported" &&
+                              error.param == "output_config.format",
+                          "an unenforced Anthropic schema keyword is rejected");
+    }
+    {
+        Json request             = base_request();
+        request["output_config"] = Json{{"format",
+                                         Json{{"type", "json_schema"},
+                                              {"schema",
+                                               Json{{"type", "string"},
+                                                    {"const", std::string(
+                                                                   ninfer::constraint::
+                                                                       kConstraintPayloadLimit,
+                                                               'x')}}}}}};
+        const ApiError error     = api_error([&] { (void)parse(request); });
+        failures += check(error.code == "constraint_too_large" &&
+                              error.param == "output_config.format",
+                          "an oversized Anthropic schema is rejected");
+    }
+    {
+        Json deep = Json{{"type", "string"}};
+        for (int level = 0; level < ninfer::constraint::kConstraintNestingLimit + 2; ++level) {
+            deep = Json{{"type", "array"}, {"items", deep}};
+        }
+        Json request             = base_request();
+        request["output_config"] =
+            Json{{"format", Json{{"type", "json_schema"}, {"schema", deep}}}};
+        const ApiError error = api_error([&] { (void)parse(request); });
+        failures += check(error.code == "constraint_too_large",
+                          "an over-nested Anthropic schema is rejected");
+    }
+
+    // Tools conflict stays fail-closed (even an empty tools array), exactly as the chat route.
+    for (const Json& tools : {Json::array(),
+                              Json::array({Json{{"name", "weather"},
+                                                {"description", "Get weather"},
+                                                {"input_schema", Json{{"type", "object"}}}}})}) {
+        Json request             = base_request();
+        request["output_config"] = Json{{"format", body["output_config"]["format"]}};
+        request["tools"]         = tools;
+        const ApiError error     = api_error([&] { (void)parse(request); });
+        failures += check(error.status == 400 &&
+                              error.code == "constrained_decoding_not_supported" &&
+                              error.param == "output_config.format",
+                          "Anthropic tools with structured output stays fail-closed");
+    }
+
+    // Exactly one constraint spelling: the retired top-level output_format cannot accompany it.
+    {
+        Json request             = base_request();
+        request["output_config"] = Json{{"format", body["output_config"]["format"]}};
+        request["output_format"] = body["output_config"]["format"];
+        const ApiError error     = api_error([&] { (void)parse(request); });
+        failures += check(error.code == "constrained_decoding_conflict" &&
+                              error.param == "output_config.format",
+                          "output_config.format with the beta output_format is rejected");
+    }
+
+    // count_tokens carries no answer stream and keeps ignoring output-only format.
+    {
+        Json request             = base_request();
+        request["output_config"] = Json{{"format", Json{{"type", "json_schema"},
+                                                         {"schema", Json{{"type", "object"}}}}}};
+        const AnthropicCountTokensRequest counted =
+            parse_anthropic_count_tokens_request(request);
+        failures += check(!counted.generation.grammar.has_value(),
+                          "count_tokens ignores output_config.format");
+    }
     return failures;
 }
 
@@ -627,6 +774,18 @@ int test_aggregate_and_errors() {
         check(empty["content"].empty() && empty["stop_reason"] == "model_context_window_exceeded",
               "empty output was fabricated or context capacity was misclassified");
 
+    // An Engine-rejected constraint surfaces from the shared contract on the OpenAI field path;
+    // the Anthropic adapter reports its own slot.
+    ApiError constraint_error;
+    constraint_error.status  = 400;
+    constraint_error.param   = "response_format";
+    constraint_error.code    = "json_schema_invalid";
+    constraint_error.message = "bad schema";
+    const ApiError remapped   = normalize_anthropic_error(constraint_error);
+    failures += check(remapped.param == "output_config.format" &&
+                          remapped.code == "json_schema_invalid",
+                      "the shared constraint param is not mapped to output_config.format");
+
     ApiError overloaded;
     overloaded.status         = 429;
     overloaded.code           = "server_overloaded";
@@ -785,6 +944,7 @@ int test_stream() {
 int main() {
     int failures = 0;
     failures += test_envelope_and_field_policy();
+    failures += test_structured_output();
     failures += test_message_normalization();
     failures += test_attribution_system_block();
     failures += test_tool_history();
