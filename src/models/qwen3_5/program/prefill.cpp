@@ -1222,8 +1222,8 @@ runtime::PrefillStepResult ProgramImpl::advance_prefill(SequenceState& sequence,
         if (pending_logprob) {
             pending_logprobs_[0] =
                 assemble_logprob(pending_logprobs_[0].top_ids.data(),
-                                 pending_logprobs_[0].top_values.data(), /*columns=*/1,
-                                 /*column=*/0, host_tokens[0]);
+                                 pending_logprobs_[0].top_values.data(), /*column=*/0,
+                                 host_tokens[0]);
         }
         if (sequence.ledger.size() != prompt_tokens) {
             throw std::logic_error("candidate token ledger does not match prompt length");

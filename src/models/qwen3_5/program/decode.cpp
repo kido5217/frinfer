@@ -386,8 +386,7 @@ ProgramImpl::decode_ordinary_batch(std::span<const std::uint32_t> lanes,
             if (any_logprobs) {
                 pending_logprobs_[row] = assemble_logprob(
                     ordinary_host_egress->logprob_ids.data(),
-                    ordinary_host_egress->logprob_values.data(),
-                    static_cast<std::int32_t>(lanes.size()), static_cast<std::int32_t>(row),
+                    ordinary_host_egress->logprob_values.data(), static_cast<std::int32_t>(row),
                     token);
             }
             sequence.text_kv_valid = base_E + 1;
@@ -602,7 +601,6 @@ ProgramImpl::decode_mtp_batch(std::span<const std::uint32_t> lanes,
                         assemble_logprob(
                             mtp_host_egress->logprob_ids.data(),
                             mtp_host_egress->logprob_values.data(),
-                            static_cast<std::int32_t>(width * max_concurrency),
                             index * static_cast<std::int32_t>(max_concurrency) +
                                 static_cast<std::int32_t>(row),
                             token);
@@ -814,7 +812,6 @@ ProgramImpl::decode_dflash_batch(std::span<const std::uint32_t> lanes,
                         assemble_logprob(
                             dflash_host_egress->logprob_ids.data(),
                             dflash_host_egress->logprob_values.data(),
-                            static_cast<std::int32_t>(width * max_concurrency),
                             index * static_cast<std::int32_t>(max_concurrency) +
                                 static_cast<std::int32_t>(row),
                             token);

@@ -63,9 +63,10 @@ public:
     std::string prompt_progress(const ninfer::PromptProgress& progress);
     void note_timing(const ninfer::GenerationTimingObservation& timing);
     std::string reasoning_delta(const std::string& text);
-    std::string content_delta(const std::string& text);
-    // Encodes the logprob records that arrived with the current content delta as one chunk.
-    std::string logprobs_delta(std::vector<ninfer::TokenLogprob> records);
+    // Encodes one content chunk carrying both the delta text and the logprob records that arrived
+    // with it, so a client pairing delta+logprobs sees them in the same event.
+    std::string content_delta(const std::string& text,
+                              std::vector<ninfer::TokenLogprob> records = {});
     std::vector<std::string> finish(const GenerationOutcome& outcome);
 
 private:

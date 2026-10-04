@@ -605,6 +605,10 @@ enum class FinishReason : std::uint8_t {
 // requested top_logprobs).
 inline constexpr std::size_t kMaximumTokenLogprobs = 20;
 
+// OpenAI's sentinel logprob for a token outside the reported top set. The response layer emits it
+// (never a non-finite value or JSON null) when a chosen token has no finite top-k entry.
+inline constexpr float kLogprobSentinel = -9999.0f;
+
 struct TokenLogprob {
     TokenId id        = 0;
     float logprob     = 0.0f;

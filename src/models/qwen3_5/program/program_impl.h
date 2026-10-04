@@ -23,8 +23,9 @@
 #include "models/qwen3_5/program/vision_prefill.h"
 
 #include <algorithm>
-#include <cstdint>
 #include <array>
+#include <cmath>
+#include <cstdint>
 #include <limits>
 #include <memory>
 #include <optional>
@@ -42,19 +43,22 @@ using RewriteCheckpointSpec = qwen3_5::RewriteCheckpointSpec;
 
 using ReusePath = ninfer::PrefixReusePath;
 
-// Builds one RawTokenLogprob from a row-major [kMaximumTokenLogprobs, columns] gather result and
-// the drawn token. The drawn token is guaranteed to be inside the reported top-k, so its own value
-// comes from the matching entry; the top-1 value is a fallback for a malformed row.
+// Builds one RawTokenLogprob from a gather result and the drawn token. The gather tensors are
+// ninfer [kMaximumTokenLogprobs, columns] (ne[0]-contiguous), so element (k, column) is at
+// k + column*kMaximumTokenLogprobs. The drawn token is normally the finite top-1, so its own value
+// comes from the matching entry; -9999.0 is the OpenAI sentinel for "outside the reported top set".
 [[nodiscard]] inline runtime::RawTokenLogprob
-assemble_logprob(const std::int32_t* ids, const float* values, std::int32_t columns,
-                 std::int32_t column, TokenId token) {
+assemble_logprob(const std::int32_t* ids, const float* values, std::int32_t column, TokenId token) {
     runtime::RawTokenLogprob record;
     record.id      = token;
-    record.logprob = values[column];
+    record.logprob = kLogprobSentinel;
     for (std::size_t k = 0; k < kMaximumTokenLogprobs; ++k) {
-        record.top_ids[k]    = ids[k * static_cast<std::size_t>(columns) + column];
-        record.top_values[k] = values[k * static_cast<std::size_t>(columns) + column];
-        if (record.top_ids[k] == token) { record.logprob = record.top_values[k]; }
+        const std::size_t slot = k + static_cast<std::size_t>(column) * kMaximumTokenLogprobs;
+        record.top_ids[k]      = ids[slot];
+        record.top_values[k]   = values[slot];
+        if (record.top_ids[k] == token && std::isfinite(record.top_values[k])) {
+            record.logprob = record.top_values[k];
+        }
     }
     return record;
 }

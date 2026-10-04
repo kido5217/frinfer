@@ -58,7 +58,7 @@ void run_rows(std::int32_t rows) {
 
     WorkspaceArena workspace(ops::logprob_topk_workspace_capacity_bytes(kVocab, rows));
     const double bytes =
-        static_cast<double>(kVocab) * rows * 2.0; // one BF16 vocabulary read per row
+        static_cast<double>(kVocab) * rows * 2.0 * 2.0; // two BF16 vocabulary passes per row
     const Result result = bench_loop(
         [&](cudaStream_t stream) {
             ops::logprob_topk(logits_tensor, config_pointer, kVocab, ids_tensor, values_tensor,

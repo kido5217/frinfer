@@ -308,7 +308,10 @@ public:
         feed_channel(preview_state, OutputChannel::Reasoning, parsed.reasoning_delta, policy,
                      preview_output, committed_tokens, match);
         feed_content_delta(parsed.content_delta, committed_tokens, match);
-        return !parsed.content_delta.empty();
+        // A token whose content bytes are entirely trailing format whitespace (for example the
+        // "\n\n" before a tool-call region) is withheld, not content: it must not contribute a
+        // logprob entry. Only a token with visible content of its own counts.
+        return visible_content_end(parsed.content_delta) > 0;
     }
 
     void feed_content_delta(std::string_view text, std::uint32_t committed_tokens,
@@ -556,6 +559,11 @@ OutputSession::preview_model(std::span<const TokenId> tokens, std::uint32_t tota
             record.top_ids    = raw.top_ids;
             record.top_values = raw.top_values;
             for (std::size_t k = 0; k < kMaximumTokenLogprobs; ++k) {
+                // Masked/short rows leave empty slots as id -1: they have no token to decode.
+                if (raw.top_ids[k] < 0) {
+                    record.top_ids[k] = -1;
+                    continue;
+                }
                 record.top_bytes[k] =
                     std::string(impl_->tokenizer->decoded_token(raw.top_ids[k]).bytes);
             }

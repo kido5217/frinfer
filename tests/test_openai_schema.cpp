@@ -1294,12 +1294,10 @@ int test_logprobs_response() {
 
     OpenAIChatStream stream(identity(), false, false, false, OpenAIChatLogprobs{true, 2});
     stream.start();
-    stream.content_delta("hi");
-    const Json delta = parse_sse(stream.logprobs_delta({record}));
-    failures += check(delta["choices"][0]["delta"].is_object() &&
-                          delta["choices"][0]["delta"].empty() &&
+    const Json delta = parse_sse(stream.content_delta("hi", {record}));
+    failures += check(delta["choices"][0]["delta"]["content"] == "hi" &&
                           delta["choices"][0]["logprobs"]["content"][0]["token"] == "hi",
-                      "streaming logprobs chunk carries the entry with an empty delta");
+                      "streaming content chunk carries the text and its logprob entry together");
     return failures;
 }
 

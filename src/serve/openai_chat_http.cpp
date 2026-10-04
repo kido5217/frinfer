@@ -196,16 +196,14 @@ void HttpServer::handle_chat_completions(const httplib::Request& req, httplib::R
                         }
                         render_and_write(transport, [&] { return encoder->content_delta(text); });
                     };
-                    output.on_content = [&](const std::string& text) {
-                        render_and_write(transport, [&] { return encoder->content_delta(text); });
+                    output.on_content = [&](const std::string& text,
+                                            std::vector<ninfer::TokenLogprob> records) {
+                        render_and_write(transport, [&] {
+                            return encoder->content_delta(text, std::move(records));
+                        });
                     };
                     output.on_reasoning = [&](const std::string& text) {
                         render_and_write(transport, [&] { return encoder->reasoning_delta(text); });
-                    };
-                    output.on_logprobs = [&](std::vector<ninfer::TokenLogprob> records) {
-                        render_and_write(transport, [&] {
-                            return encoder->logprobs_delta(std::move(records));
-                        });
                     };
                     output.is_cancelled = [&] { return transport.poll(); };
 

@@ -64,10 +64,12 @@ struct StreamSink {
     std::function<void(const ninfer::GenerationStart& start)> on_start;
     std::function<void(const ninfer::PromptProgress& progress)> on_progress;
     std::function<void(const ninfer::GenerationTimingObservation& timing)> on_timing;
-    std::function<void(const std::string& delta_text)> on_content;
+    // Content delta with the logprob records that arrived in the same output delta (token order).
+    // Passed together so a route can emit one event carrying both the text and its logprobs; the
+    // records are empty when logprobs are not requested for this delta.
+    std::function<void(const std::string& delta_text, std::vector<ninfer::TokenLogprob> logprobs)>
+        on_content;
     std::function<void(const std::string& delta_text)> on_reasoning;
-    // Content-token logprob records that arrived with the current output delta, in token order.
-    std::function<void(std::vector<ninfer::TokenLogprob>)> on_logprobs;
     // ADR-0002: a demoted tool-call region (`text` holds only the region bytes). The route either
     // signals the class (call loss) or republishes the bytes as ordinary content (benign).
     std::function<void(const std::string& text, const ninfer::ToolCallDemotion& demotion)>

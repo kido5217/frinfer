@@ -52,14 +52,16 @@ Json response_logprobs_json(const std::vector<ninfer::TokenLogprob>& records, in
         Json top = Json::array();
         for (int k = 0;
              k < top_logprobs && k < static_cast<int>(ninfer::kMaximumTokenLogprobs); ++k) {
-            if (record.top_ids[static_cast<std::size_t>(k)] < 0) { break; }
-            const std::string& token = record.top_bytes[static_cast<std::size_t>(k)];
-            Json entry               = {{"token", token},
-                                      {"logprob", record.top_values[static_cast<std::size_t>(k)]}};
+            // Masked/empty alternatives are omitted; `logprob` is never a non-finite number.
+            const std::size_t slot = static_cast<std::size_t>(k);
+            if (record.top_ids[slot] < 0 || !std::isfinite(record.top_values[slot])) { break; }
+            const std::string& token = record.top_bytes[slot];
+            Json entry = {{"token", token}, {"logprob", record.top_values[slot]}};
             if (include_bytes) { entry["bytes"] = token_bytes_json(token); }
             top.push_back(std::move(entry));
         }
-        Json entry = {{"token", record.bytes}, {"logprob", record.logprob}};
+        const float logprob = std::isfinite(record.logprob) ? record.logprob : ninfer::kLogprobSentinel;
+        Json entry = {{"token", record.bytes}, {"logprob", logprob}};
         if (include_bytes) { entry["bytes"] = token_bytes_json(record.bytes); }
         entry["top_logprobs"] = std::move(top);
         output.push_back(std::move(entry));
@@ -221,8 +223,8 @@ BuiltOpenAIResponse build_response(const std::string& id, std::int64_t created_a
 }
 
 std::string sse(const Json& event) {
-    return "event: " + event.at("type").get<std::string>() + "\n" + "data: " + event.dump() +
-           "\n\n";
+    return "event: " + event.at("type").get<std::string>() + "\n" + "data: " +
+           dump_openai_json(event) + "\n\n";
 }
 
 Json in_progress_response(const std::string& id, std::int64_t created_at,
@@ -333,8 +335,10 @@ public:
         if (!message_started || message_done) { return {}; }
         message_done    = true;
         content_text    = final_text;
+        // Streaming events use the ResponseLogProb shape (no bytes); the aggregate response body
+        // built by build_response keeps the LogProb[] shape with bytes.
         const Json aggregate = response_logprobs_json(
-            content_logprobs, request.prompt.generation.top_logprobs, /*include_bytes=*/true);
+            content_logprobs, request.prompt.generation.top_logprobs, /*include_bytes=*/false);
         const Json part = {{"type", "output_text"},
                            {"annotations", Json::array()},
                            {"text", content_text},
@@ -415,43 +419,34 @@ std::vector<std::string> OpenAIResponsesEventStream::reasoning_delta(const std::
     return events;
 }
 
-std::vector<std::string> OpenAIResponsesEventStream::content_delta(const std::string& text) {
+std::vector<std::string>
+OpenAIResponsesEventStream::content_delta(const std::string& text,
+                                          std::vector<ninfer::TokenLogprob> records) {
     if (!impl_->started || impl_->finish_built) {
         throw std::logic_error("invalid content delta event state");
     }
-    if (text.empty()) { return {}; }
+    if (text.empty() && records.empty()) { return {}; }
     std::vector<std::string> events = impl_->close_reasoning(impl_->reasoning_text);
     std::vector<std::string> added  = impl_->ensure_message();
     events.insert(events.end(), std::make_move_iterator(added.begin()),
                   std::make_move_iterator(added.end()));
     impl_->content_text += text;
+    // The logprob records arrive with the same content delta as their text; emit them in the same
+    // event so a client pairing delta+logprobs is correct.
+    Json logprobs = Json::array();
+    if (!records.empty()) {
+        logprobs = response_logprobs_json(records, impl_->request.prompt.generation.top_logprobs,
+                                          /*include_bytes=*/false);
+        impl_->content_logprobs.insert(impl_->content_logprobs.end(),
+                                       std::make_move_iterator(records.begin()),
+                                       std::make_move_iterator(records.end()));
+    }
     events.push_back(
         sse(impl_->event("response.output_text.delta", Json{{"item_id", impl_->ids.message},
                                                             {"output_index", impl_->message_index},
                                                             {"content_index", 0},
                                                             {"delta", text},
-                                                            {"logprobs", Json::array()}})));
-    return events;
-}
-
-std::vector<std::string> OpenAIResponsesEventStream::content_logprobs(
-    std::vector<ninfer::TokenLogprob> records) {
-    if (!impl_->started || impl_->finish_built) {
-        throw std::logic_error("invalid content logprob event state");
-    }
-    if (records.empty()) { return {}; }
-    std::vector<std::string> events                = impl_->ensure_message();
-    const Json logprobs = response_logprobs_json(
-        records, impl_->request.prompt.generation.top_logprobs, /*include_bytes=*/false);
-    impl_->content_logprobs.insert(impl_->content_logprobs.end(),
-                                   std::make_move_iterator(records.begin()),
-                                   std::make_move_iterator(records.end()));
-    events.push_back(sse(impl_->event("response.output_text.delta",
-                                      Json{{"item_id", impl_->ids.message},
-                                           {"output_index", impl_->message_index},
-                                           {"content_index", 0},
-                                           {"delta", ""},
-                                           {"logprobs", logprobs}})));
+                                                            {"logprobs", std::move(logprobs)}})));
     return events;
 }
 

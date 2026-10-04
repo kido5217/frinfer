@@ -19,8 +19,9 @@ void logprob_topk_launch(const Tensor& logits, const SamplingConfig* sampling,
                          std::int32_t token_domain, Tensor& top_ids, Tensor& top_values,
                          Tensor& lse, const Tensor& active, DeviceSpan workspace,
                          cudaStream_t stream) {
-    const std::int32_t rows   = logits.ne[1];
-    const std::int32_t split  = rows == 1 ? kLogprobTopkSplit : kLogprobTopkSplit / 2;
+    const std::int32_t rows       = logits.ne[1];
+    const std::int32_t row_stride = logits.ne[0];
+    const std::int32_t split      = rows == 1 ? kLogprobTopkSplit : kLogprobTopkSplit / 2;
     const std::size_t partials = static_cast<std::size_t>(rows) * kLogprobTopkSplit;
 
     auto* base               = static_cast<unsigned char*>(workspace.data);
@@ -34,8 +35,8 @@ void logprob_topk_launch(const Tensor& logits, const SamplingConfig* sampling,
     const auto* active_flag = static_cast<const std::int32_t*>(active.data);
     const dim3 partial_grid(static_cast<unsigned int>(split), static_cast<unsigned int>(rows));
     logprob_topk_partials_kernel<<<partial_grid, kLogprobTopkBlock, 0, stream>>>(
-        static_cast<const __nv_bfloat16*>(logits.data), sampling, token_domain, rows, split,
-        active_flag, scratch.pmax, scratch.psum, scratch.ptop_values, scratch.ptop_ids);
+        static_cast<const __nv_bfloat16*>(logits.data), sampling, token_domain, rows, row_stride,
+        split, active_flag, scratch.pmax, scratch.psum, scratch.ptop_values, scratch.ptop_ids);
     CUDA_CHECK(cudaGetLastError());
 
     logprob_topk_combine_kernel<<<static_cast<unsigned int>(rows), kLogprobTopkBlock, 0, stream>>>(

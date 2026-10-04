@@ -353,14 +353,24 @@ scale by the request temperature; greedy rows use `T=1`. This is the distributio
 to the token independently of the truncation knobs, not the post-truncation distribution.
 
 Each reported token is a `ChatCompletionTokenLogprob` `{token, logprob, bytes, top_logprobs}`.
-`top_logprobs` carries the most likely alternatives at that position (fewer than requested when the
-distribution is short); `bytes` is the UTF-8 byte array of `token`. Only content tokens appear; the
+`logprob` is always a finite number: masked (grammar-forbidden) tokens are impossible and never
+appear as alternatives or move the normalization, and a chosen token with no entry in the reported
+top set is reported as the spec sentinel `-9999.0`. `top_logprobs` carries the most likely
+alternatives at that position, fewer than requested when fewer finite alternatives exist; `bytes` is
+the UTF-8 byte array of `token` (the `token` string itself is the decoded bytes and may contain the
+UTF-8 replacement character for a byte-level partial token). Only content tokens appear: a withheld
+format-whitespace run before a tool-call region is not a content token and contributes no entry. The
 top-20 is always gathered and the response trims to the requested `top_logprobs`. Streaming emits
-one `logprobs` chunk per committed content delta. Refusal token arrays are empty because refusal
-output is not supported. The Responses route mirrors this with the aggregate `LogProb[]` (which
-carries `bytes`) on the output text Item and `ResponseLogProb[]` (no `bytes`) on
-`response.output_text.delta`. When neither route opts in, no distribution is gathered and the
+one content event carrying both the delta text and its logprob records, so a client pairing the two
+never sees them split across events. Refusal token arrays are empty because refusal output is not
+supported. The Responses route mirrors this with the aggregate `LogProb[]` (which carries `bytes`)
+on the output text Item and `ResponseLogProb[]` (no `bytes`) on `response.output_text.delta` and
+`response.output_text.done`. When neither route opts in, no distribution is gathered and the
 default path pays only a device flag check.
+
+The speculative (MTP/DFlash) path gathers the same distribution for every accepted column; its
+gather cost is a larger fraction of a step than the ordinary decode path, so speculative logprobs
+are intended for evaluation rather than high-throughput serving.
 
 ### llama.cpp-compatible request observations
 

@@ -1,8 +1,9 @@
 #pragma once
 
 // Implements: include/ninfer/ops/logprob_topk.h
-// Match: contiguous BF16 [physical_rows,rows], a device SamplingConfig[rows] array, and
-// contiguous I32/FP32 outputs. Only vocabulary rows v in [0,token_domain) participate.
+// Match: contiguous BF16 [physical_rows,rows] (ne[0]-contiguous, so element (v,row) is at
+// row*ne[0]+v), a device SamplingConfig[rows] array, and contiguous I32/FP32 outputs. Only
+// vocabulary rows v in [0,token_domain) participate.
 // Algorithm assumptions: a split-CTA partial pass (one CTA per vocabulary chunk of each row)
 // feeding one combine CTA per row; the bounded top-K uses an insertion-sorted per-thread list and
 // a shared tree merge, so no full sort or global staging is needed.
@@ -99,7 +100,7 @@ __device__ __forceinline__ void logprob_block_merge_topk(LogprobCandidate* cand,
 // top-K list over the chunk. `*active==0` makes the whole Op a no-op.
 __global__ void logprob_topk_partials_kernel(
     const __nv_bfloat16* __restrict__ logits, const SamplingConfig* __restrict__ sampling,
-    std::int32_t token_domain, std::int32_t rows, std::int32_t split,
+    std::int32_t token_domain, std::int32_t rows, std::int32_t row_stride, std::int32_t split,
     const std::int32_t* __restrict__ active, float* __restrict__ pmax, float* __restrict__ psum,
     float* __restrict__ ptop_values, std::int32_t* __restrict__ ptop_ids) {
     if (*active == 0) { return; }
@@ -118,11 +119,11 @@ __global__ void logprob_topk_partials_kernel(
     const SamplingConfig cfg = sampling[row];
     const float temperature  = cfg.temperature > 0.0f ? cfg.temperature : 1.0f;
     const float inv_temp     = 1.0f / temperature;
-    const std::int64_t row_stride = rows;
 
-    float local_max = -CUDART_INF_F;
+    const std::int64_t row_base = static_cast<std::int64_t>(row) * row_stride;
+    float local_max             = -CUDART_INF_F;
     for (int v = begin + tid; v < end; v += kLogprobTopkBlock) {
-        const float raw = __bfloat162float(logits[static_cast<std::int64_t>(v) * row_stride + row]);
+        const float raw = __bfloat162float(logits[row_base + v]);
         local_max       = fmaxf(local_max, sampling_adjusted_logit(raw, v, cfg) * inv_temp);
     }
     const float chunk_max = logprob_block_max(local_max, sRed, tid);
@@ -136,8 +137,11 @@ __global__ void logprob_topk_partials_kernel(
     float local_sum = 0.0f;
     if (chunk_max > -CUDART_INF_F) {
         for (int v = begin + tid; v < end; v += kLogprobTopkBlock) {
-            const float raw = __bfloat162float(logits[static_cast<std::int64_t>(v) * row_stride + row]);
+            const float raw    = __bfloat162float(logits[row_base + v]);
             const float scaled = sampling_adjusted_logit(raw, v, cfg) * inv_temp;
+            // A masked (-inf) or otherwise non-finite logit is not a candidate; skipping it keeps
+            // impossible tokens out of the reported top-K and out of the logsumexp.
+            if (!isfinite(scaled)) { continue; }
             local_sum += expf(scaled - chunk_max);
             if (logprob_better(scaled, v, local_top[kLogprobTopK - 1].value,
                                local_top[kLogprobTopK - 1].id)) {
@@ -210,6 +214,7 @@ __global__ void logprob_topk_combine_kernel(
     for (int i = tid; i < candidate_count; i += kLogprobTopkBlock) {
         const float value = ptop_values[candidate_base + i];
         const std::int32_t id = ptop_ids[candidate_base + i];
+        if (!isfinite(value)) { continue; }
         if (logprob_better(value, id, local_top[kLogprobTopK - 1].value,
                            local_top[kLogprobTopK - 1].id)) {
             int position = kLogprobTopK - 1;
@@ -230,8 +235,14 @@ __global__ void logprob_topk_combine_kernel(
     if (tid == 0) {
 #pragma unroll
         for (int k = 0; k < kLogprobTopK; ++k) {
-            top_values[k * rows + row] = sCand[k].value - logsumexp;
-            top_ids[k * rows + row]    = sCand[k].id;
+            // Empty slots (fewer finite candidates than K) are marked id -1 / value -inf so the
+            // response layer can emit only the real alternatives.
+            // ninfer layout: [K, rows] is ne[0]-contiguous, so element (k, row) is at k + row*K.
+            const bool empty = sCand[k].id == INT_MAX || !isfinite(sCand[k].value);
+            const std::int64_t slot =
+                static_cast<std::int64_t>(k) + static_cast<std::int64_t>(row) * kLogprobTopK;
+            top_ids[slot]    = empty ? -1 : sCand[k].id;
+            top_values[slot] = empty ? -CUDART_INF_F : sCand[k].value - logsumexp;
         }
         lse[row] = logsumexp;
     }

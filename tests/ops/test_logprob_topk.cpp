@@ -29,6 +29,7 @@ struct CaseSpec {
     float presence    = 0.0f;
     float frequency   = 0.0f;
     bool masked       = false; // contiguous 10% suffix set to -inf
+    bool holes        = false; // scattered -inf inside the full token domain
     bool counts       = false;
     bool ties         = false;
 };
@@ -48,8 +49,14 @@ std::vector<float> make_logits(std::int32_t physical_rows, std::int32_t rows, co
         for (std::int32_t v = 0; v < physical_rows; ++v) {
             float value = dist(rng);
             if (spec.masked && v >= valid_start) { value = -std::numeric_limits<float>::infinity(); }
+            // Scattered masked holes inside the full domain: the top-K must skip every one.
+            if (spec.holes && v >= valid_start && v < 2 * valid_start && (v % 3) == 0) {
+                value = -std::numeric_limits<float>::infinity();
+            }
             if (spec.ties) { value = static_cast<float>((v + r) % 5); }
-            logits[static_cast<std::size_t>(v) * rows + r] = bf16_to_f32(f32_to_bf16(value));
+            // ninfer layout: ne[0]-contiguous, so element (v, r) is at r*physical_rows + v.
+            logits[static_cast<std::size_t>(r) * physical_rows + v] =
+                bf16_to_f32(f32_to_bf16(value));
         }
     }
     return logits;
@@ -84,7 +91,7 @@ OracleOutput logprob_oracle(const std::vector<float>& logits,
     for (std::int32_t r = 0; r < rows; ++r) {
         std::vector<double> scaled(token_domain);
         for (std::int32_t v = 0; v < token_domain; ++v) {
-            const double raw = logits[static_cast<std::size_t>(v) * rows + r];
+            const double raw = logits[static_cast<std::size_t>(r) * physical_rows + v];
             double adjusted = raw;
             if (counts_present) {
                 const double count = counts[static_cast<std::size_t>(r) * physical_rows + v];
@@ -93,21 +100,33 @@ OracleOutput logprob_oracle(const std::vector<float>& logits,
             }
             scaled[v] = adjusted / temperature;
         }
-        const double maximum = *std::max_element(scaled.begin(), scaled.end());
+        // Masked (-inf) tokens are not candidates, and do not contribute to the logsumexp.
+        std::vector<std::int32_t> order;
+        for (std::int32_t v = 0; v < token_domain; ++v) {
+            if (std::isfinite(scaled[v])) { order.push_back(v); }
+        }
+        const bool any = !order.empty();
+        const double maximum = any ? scaled[order[0]] : 0.0;
         double sum = 0.0;
-        for (std::int32_t v = 0; v < token_domain; ++v) { sum += std::exp(scaled[v] - maximum); }
+        for (const std::int32_t v : order) { sum += std::exp(scaled[v] - maximum); }
         const double lse = maximum + std::log(sum);
         out.lse[r]      = lse;
 
-        std::vector<std::int32_t> order(token_domain);
-        std::iota(order.begin(), order.end(), 0);
         std::stable_sort(order.begin(), order.end(), [&](std::int32_t a, std::int32_t b) {
             return scaled[a] > scaled[b];
         });
         for (int k = 0; k < K; ++k) {
-            const std::int32_t id = order[static_cast<std::size_t>(k)];
-            out.top_ids[static_cast<std::size_t>(k) * rows + r]    = id;
-            out.top_values[static_cast<std::size_t>(k) * rows + r] = scaled[id] - lse;
+            // ninfer layout: [K, rows] is ne[0]-contiguous, so element (k, r) is at k + r*K.
+            const std::size_t slot =
+                static_cast<std::size_t>(k) + static_cast<std::size_t>(r) * static_cast<std::size_t>(K);
+            if (static_cast<std::size_t>(k) < order.size()) {
+                const std::int32_t id = order[static_cast<std::size_t>(k)];
+                out.top_ids[slot]      = id;
+                out.top_values[slot]   = scaled[id] - lse;
+            } else {
+                out.top_ids[slot]    = -1;
+                out.top_values[slot] = -std::numeric_limits<double>::infinity();
+            }
         }
     }
     return out;
@@ -333,6 +352,7 @@ int main() {
     failures += run_case("logprob_topk penalties rows=8", 151936, 8,
                          CaseSpec{.presence = 0.5f, .frequency = 0.3f, .counts = true});
     failures += run_case("logprob_topk masked rows=8", 151936, 8, CaseSpec{.masked = true});
+    failures += run_case("logprob_topk masked holes rows=8", 151936, 8, CaseSpec{.holes = true});
     failures += run_case("logprob_topk masked penalties rows=4", 151936, 4,
                          CaseSpec{.presence = 0.5f, .frequency = 0.3f, .masked = true,
                                   .counts = true});

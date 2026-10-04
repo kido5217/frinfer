@@ -32,11 +32,17 @@ inline constexpr std::int32_t kLogprobTopK = 20;
  *   breaks ties), top_values[k,r] = scaled - lse_r (the log-probability under the full,
  *   pre-truncation distribution), and lse[r] = lse_r, for k in [0,kLogprobTopK).
  *
+ *   A masked token (scaled == -inf, e.g. a grammar/logit mask) is not a candidate: it is excluded
+ *   from both the top-K list and the logsumexp. When a row has fewer than kLogprobTopK finite
+ *   candidates, the remaining slots are empty, written as top_ids == -1 and top_values == -inf.
+ *
  * Logical shapes:
  *   logits is BF16 [physical_rows,rows] with kLogprobTopK<=token_domain<=physical_rows and rows>0.
  *   sampling is a non-null device pointer to `rows` contiguous SamplingConfig records. top_ids is I32
  *   [kLogprobTopK,rows], top_values is FP32 [kLogprobTopK,rows], lse is FP32 [rows]. active is a
  *   device I32 [1]: when *active==0 the Op performs no device work and outputs are unspecified.
+ *   Tensors are ninfer-layout (ne[0]-contiguous), so element (v,r) of logits is at r*ne[0]+v and
+ *   element (k,r) of top_ids/top_values is at k + r*kLogprobTopK.
  *
  * Supported domain:
  *   logits is contiguous BF16, sampling is a non-null device pointer to `rows` contiguous

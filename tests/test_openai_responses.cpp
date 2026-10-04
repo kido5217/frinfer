@@ -945,15 +945,16 @@ int test_logprobs_response() {
 
     OpenAIResponsesEventStream encoder("resp_lp_stream", 1, request, {});
     encoder.start();
-    (void)encoder.content_delta("hi");
     bool found = false;
-    for (const std::string& wire : encoder.content_logprobs({sample_logprob_record()})) {
+    for (const std::string& wire : encoder.content_delta("hi", {sample_logprob_record()})) {
         const Json payload = parse_event(wire);
         if (payload.at("type") == "response.output_text.delta") {
-            found = payload.contains("logprobs") && !payload.at("logprobs").empty();
+            found = payload.at("delta") == "hi" && payload.contains("logprobs") &&
+                    !payload.at("logprobs").empty();
         }
     }
-    failures += check(found, "Responses streaming content event carries ResponseLogProb[]");
+    failures += check(found,
+                      "Responses streaming content event carries its text and ResponseLogProb[]");
     return failures;
 }
 
