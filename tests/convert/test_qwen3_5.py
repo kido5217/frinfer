@@ -175,6 +175,29 @@ def test_expert_bank_uses_expert_major_gate_up_and_down_ranges(tmp_path):
             assert torch.equal(selected.reshape(8, 16), gate_up[2, :8])
 
 
+def test_per_expert_source_maps_each_expert_projection(tmp_path):
+    gate = torch.arange(3 * 16 * 16).float().reshape(3, 16, 16)
+    down = torch.arange(3 * 16 * 8).float().reshape(3, 16, 8)
+    tensors = {}
+    for expert in range(3):
+        tensors[
+            f"model.language_model.layers.0.mlp.experts.{expert}.gate_proj.weight"
+        ] = gate[expert, :8]
+        tensors[
+            f"model.language_model.layers.0.mlp.experts.{expert}.up_proj.weight"
+        ] = gate[expert, 8:]
+        tensors[
+            f"model.language_model.layers.0.mlp.experts.{expert}.down_proj.weight"
+        ] = down[expert]
+    with _checkpoint(tmp_path / "moe-per-expert", _config(moe=True), tensors) as source:
+        model = build_model(source)
+        for expert in range(3):
+            prefix = f"text/layers/0/moe/experts/{expert}/"
+            assert torch.equal(_values(model, prefix + "gate"), gate[expert, :8])
+            assert torch.equal(_values(model, prefix + "up"), gate[expert, 8:])
+            assert torch.equal(_values(model, prefix + "down"), down[expert])
+
+
 def test_optional_components_are_selected_before_sources_are_required(tmp_path):
     config = _config()
     config["vision_config"] = {"in_channels": 99}

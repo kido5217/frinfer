@@ -8,6 +8,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <vector>
 
 namespace ninfer::ops {
 
@@ -17,6 +18,12 @@ struct SparseMoeWeights {
     Weight routed_down;
     Weight shared_gate_up;
     Weight shared_down;
+    // nvfp4 routed profile only: one complete encoded parent per expert projection because the
+    // block-scaled format carries one FP32 divisor per parent and the source divisors differ per
+    // expert. Gate/up are expert-major (expert e owns entries 2e and 2e+1); down is expert-major.
+    // Empty for the packed Q4/Q5/Q6/Q8 profiles, which keep their single-parent banks above.
+    std::vector<Weight> routed_gate_up_experts;
+    std::vector<Weight> routed_down_experts;
 };
 
 enum class SparseMoeEpilogue : std::uint8_t {
@@ -66,7 +73,10 @@ struct SparseMoeHints {
  * gate/up [256*1024,2048], routed down [256*2048,512], shared gate/up [1024,2048], and shared down
  * [2048,512]. Admitted codec profiles are Q4+Q5, Q4+Q6, and Q8+Q8 for the two routed banks; both
  * shared banks are Q8. Expert e directly selects its stored row spans; no selected-weight gather
- * or repack occurs.
+ * or repack occurs. The nvfp4 routed profile is admitted as per-expert parents
+ * (routed_gate_up_experts/routed_down_experts, one complete [512,2048] or [2048,512] parent per
+ * projection) because the source block scales carry a per-expert FP32 divisor; its execution
+ * kernel is registered separately, so the packed fields stay unused on that path.
  *
  * Every positive T is supported.
  *

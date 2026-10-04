@@ -17,6 +17,9 @@ std::int32_t prefill_min_tokens(QType routed_gate_up, QType routed_down) noexcep
     if (routed_gate_up == QType::Q8_G32_FP16 && routed_down == QType::Q8_G32_FP16) {
         return kSparseMoePrefillQ8Q8Min;
     }
+    if (routed_gate_up == QType::NVFP4 && routed_down == QType::NVFP4) {
+        return kSparseMoePrefillQ8Q8Min;
+    }
     return 0;
 }
 

@@ -7,6 +7,7 @@
 #include "ops/sparse_moe/small_t/sparse_moe_small_t.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <limits>
 #include <stdexcept>
@@ -137,23 +138,60 @@ void require_quantized(const Weight& weight, std::int32_t n, std::int32_t k, con
     ranges.push_back(address_range(weight.scales, scale_bytes, std::string(name) + " scales"));
 }
 
+void require_nvfp4_expert(const Weight& weight, std::int32_t n, std::int32_t k, const char* name,
+                          std::vector<AddressRange>& ranges) {
+    require_matrix_metadata(weight, n, k, name);
+    if (weight.qtype != QType::NVFP4 || weight.layout != QuantLayout::BlockScaleK16M128x4 ||
+        weight.scale_dtype != DType::FP8_E4M3FN || weight.group_size != 16 || weight.group != 16 ||
+        weight.qdata == nullptr || weight.scales == nullptr ||
+        !std::isfinite(weight.weight_scale_divisor) || weight.weight_scale_divisor <= 0 ||
+        !aligned_to(weight.qdata, 16) || !aligned_to(weight.scales, 16)) {
+        throw std::invalid_argument(std::string("sparse_moe: invalid nvfp4 ") + name);
+    }
+    const std::uint64_t code_bytes  = std::uint64_t(n) * std::uint64_t(k) / 2;
+    const std::uint64_t scale_bytes = std::uint64_t(n) * (std::uint64_t(k) / 16);
+    const std::uint64_t offset      = (code_bytes + 255) / 256 * 256;
+    if (weight.payload_bytes < offset + scale_bytes + 4) {
+        throw std::invalid_argument(std::string("sparse_moe: truncated nvfp4 ") + name);
+    }
+    ranges.push_back(address_range(weight.qdata, code_bytes, std::string(name) + " codes"));
+    ranges.push_back(
+        address_range(weight.scales, scale_bytes, std::string(name) + " scales"));
+}
+
 void validate_weights(const SparseMoeWeights& weights, std::vector<AddressRange>& ranges) {
     require_router(weights.router_shared_gate, ranges);
-    if (weights.routed_gate_up.qtype != QType::Q4_G64_FP16 &&
-        weights.routed_gate_up.qtype != QType::Q8_G32_FP16) {
-        throw std::invalid_argument("sparse_moe: routed_gate_up must be Q4 or Q8");
-    }
-    if (weights.routed_down.qtype != QType::Q5_G64_FP16 &&
-        weights.routed_down.qtype != QType::Q6_G64_FP16 &&
-        weights.routed_down.qtype != QType::Q8_G32_FP16) {
-        throw std::invalid_argument("sparse_moe: routed_down must be Q5, Q6, or Q8");
+    if (weights.routed_gate_up.qtype == QType::NVFP4) {
+        if (weights.routed_down.qtype != QType::NVFP4 ||
+            weights.routed_gate_up_experts.size() != static_cast<std::size_t>(kExperts) * 2 ||
+            weights.routed_down_experts.size() != static_cast<std::size_t>(kExperts)) {
+            throw std::invalid_argument("sparse_moe: invalid nvfp4 routed bank");
+        }
+        for (const auto& expert : weights.routed_gate_up_experts) {
+            require_nvfp4_expert(expert, kExpertRows / 2, kHidden, "routed_gate_up", ranges);
+        }
+        for (const auto& expert : weights.routed_down_experts) {
+            require_nvfp4_expert(expert, kHidden, kIntermediate, "routed_down", ranges);
+        }
+    } else {
+        if (weights.routed_gate_up.qtype != QType::Q4_G64_FP16 &&
+            weights.routed_gate_up.qtype != QType::Q8_G32_FP16) {
+            throw std::invalid_argument("sparse_moe: routed_gate_up must be Q4, Q8, or nvfp4");
+        }
+        if (weights.routed_down.qtype != QType::Q5_G64_FP16 &&
+            weights.routed_down.qtype != QType::Q6_G64_FP16 &&
+            weights.routed_down.qtype != QType::Q8_G32_FP16) {
+            throw std::invalid_argument("sparse_moe: routed_down must be Q5, Q6, Q8, or nvfp4");
+        }
+        require_quantized(weights.routed_gate_up, kRoutedGateRows, kHidden, "routed_gate_up",
+                          ranges);
+        require_quantized(weights.routed_down, kRoutedDownRows, kIntermediate, "routed_down",
+                          ranges);
     }
     if (weights.shared_gate_up.qtype != QType::Q8_G32_FP16 ||
         weights.shared_down.qtype != QType::Q8_G32_FP16) {
         throw std::invalid_argument("sparse_moe: shared weights must be Q8");
     }
-    require_quantized(weights.routed_gate_up, kRoutedGateRows, kHidden, "routed_gate_up", ranges);
-    require_quantized(weights.routed_down, kRoutedDownRows, kIntermediate, "routed_down", ranges);
     require_quantized(weights.shared_gate_up, kSharedGateRows, kHidden, "shared_gate_up", ranges);
     require_quantized(weights.shared_down, kHidden, kIntermediate, "shared_down", ranges);
 }
@@ -168,7 +206,8 @@ std::size_t sparse_moe_workspace_capacity_bytes(QType routed_gate_up, QType rout
     (void)detail::resolve_sparse_moe_decode_plan(routed_gate_up, routed_down);
 
     const bool q8_profile =
-        routed_gate_up == QType::Q8_G32_FP16 && routed_down == QType::Q8_G32_FP16;
+        (routed_gate_up == QType::Q8_G32_FP16 && routed_down == QType::Q8_G32_FP16) ||
+        (routed_gate_up == QType::NVFP4 && routed_down == QType::NVFP4);
     const std::int32_t prefill_first =
         q8_profile ? detail::kSparseMoePrefillQ8Q8Min
                    : (routed_down == QType::Q5_G64_FP16 ? detail::kSparseMoePrefillQ4Q5Min
