@@ -1,0 +1,7 @@
+case=mask-penalty batch_rows=8 width=1 rows=8 V=151936
+  top20 exact: True
+  top_values max-abs err: 9.713e-07
+  top_values max-rel err: 2.516e-07
+  lse max-abs err:        5.538e-07
+  chosen-token check:     True
+ORACLE dir=results/data/mask-penalty_r8 case=mask-penalty batch_rows=8 width=1 rows=8 top20_exact=1 maxabs=9.712770e-07 maxrel=2.515801e-07 lse_maxabs=5.538073e-07 chosen_ok=1

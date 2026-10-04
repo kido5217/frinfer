@@ -1,0 +1,1 @@
+GEN case=masked batch_rows=1 width=1 eff_rows=1 dir=results/data/masked_r1 ok

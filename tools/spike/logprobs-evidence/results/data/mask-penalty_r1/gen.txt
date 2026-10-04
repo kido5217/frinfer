@@ -1,0 +1,1 @@
+GEN case=mask-penalty batch_rows=1 width=1 eff_rows=1 dir=results/data/mask-penalty_r1 ok

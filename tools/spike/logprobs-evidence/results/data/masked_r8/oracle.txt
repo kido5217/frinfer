@@ -1,0 +1,7 @@
+case=masked batch_rows=8 width=1 rows=8 V=151936
+  top20 exact: True
+  top_values max-abs err: 3.742e-07
+  top_values max-rel err: 1.549e-07
+  lse max-abs err:        3.742e-07
+  chosen-token check:     True
+ORACLE dir=results/data/masked_r8 case=masked batch_rows=8 width=1 rows=8 top20_exact=1 maxabs=3.741654e-07 maxrel=1.548631e-07 lse_maxabs=3.741654e-07 chosen_ok=1

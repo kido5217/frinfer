@@ -1,0 +1,1 @@
+GEN case=plain-t07 batch_rows=8 width=1 eff_rows=8 dir=results/data/plain-t07_r8 ok

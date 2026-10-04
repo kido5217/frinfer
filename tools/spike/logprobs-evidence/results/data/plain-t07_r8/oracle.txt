@@ -1,0 +1,7 @@
+case=plain-t07 batch_rows=8 width=1 rows=8 V=151936
+  top20 exact: True
+  top_values max-abs err: 1.617e-06
+  top_values max-rel err: 1.311e-06
+  lse max-abs err:        8.129e-07
+  chosen-token check:     True
+ORACLE dir=results/data/plain-t07_r8 case=plain-t07 batch_rows=8 width=1 rows=8 top20_exact=1 maxabs=1.616537e-06 maxrel=1.310991e-06 lse_maxabs=8.129225e-07 chosen_ok=1

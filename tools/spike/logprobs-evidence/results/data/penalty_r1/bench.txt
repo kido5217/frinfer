@@ -1,0 +1,1 @@
+BENCH case=penalty batch_rows=1 width=1 eff_rows=1 mean_us=45.833

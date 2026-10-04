@@ -1,0 +1,1 @@
+GEN case=penalty batch_rows=1 width=1 eff_rows=1 dir=results/data/penalty_r1 ok

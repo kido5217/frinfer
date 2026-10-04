@@ -1,0 +1,7 @@
+case=spec-k4 batch_rows=8 width=5 rows=40 V=151936
+  top20 exact: True
+  top_values max-abs err: 6.993e-07
+  top_values max-rel err: 1.711e-07
+  lse max-abs err:        6.993e-07
+  chosen-token check:     True
+ORACLE dir=results/data/spec-k4_r8w5 case=spec-k4 batch_rows=8 width=5 rows=40 top20_exact=1 maxabs=6.992602e-07 maxrel=1.711440e-07 lse_maxabs=6.992602e-07 chosen_ok=1

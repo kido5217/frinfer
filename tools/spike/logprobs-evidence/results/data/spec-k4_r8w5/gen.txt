@@ -1,0 +1,1 @@
+GEN case=spec-k4 batch_rows=8 width=5 eff_rows=40 dir=results/data/spec-k4_r8w5 ok

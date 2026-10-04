@@ -1,0 +1,1 @@
+BENCH case=spec-k4 batch_rows=8 width=5 eff_rows=40 mean_us=228.489

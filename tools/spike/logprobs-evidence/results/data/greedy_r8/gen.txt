@@ -1,0 +1,1 @@
+GEN case=greedy batch_rows=8 width=1 eff_rows=8 dir=results/data/greedy_r8 ok

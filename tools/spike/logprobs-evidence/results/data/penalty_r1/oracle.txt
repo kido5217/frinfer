@@ -1,0 +1,7 @@
+case=penalty batch_rows=1 width=1 rows=1 V=151936
+  top20 exact: True
+  top_values max-abs err: 6.096e-07
+  top_values max-rel err: 1.215e-07
+  lse max-abs err:        2.521e-07
+  chosen-token check:     True
+ORACLE dir=results/data/penalty_r1 case=penalty batch_rows=1 width=1 rows=1 top20_exact=1 maxabs=6.096032e-07 maxrel=1.214528e-07 lse_maxabs=2.521335e-07 chosen_ok=1
