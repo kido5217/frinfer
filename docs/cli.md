@@ -81,6 +81,37 @@ output capacity for the inserted suffix and the answer:
   --lm-head-draft
 ```
 
+## Constrained decoding
+
+`--grammar`/`--grammar-file` and `--json-schema`/`--json-schema-file` constrain the answer to a
+formal language. Exactly one of the four flags may be given, and a constrained request cannot be
+combined with the DFlash/DFlash2 speculative backends (the ordinary and MTP backends carry a
+constraint).
+
+- `--grammar GBNF` passes llama.cpp-compatible GBNF text (root symbol `root`) directly;
+  `--grammar-file FILE` reads the same text from a file. The Engine compiles and validates the
+  grammar at submission. Text it cannot compile, a grammar whose initial mask admits nothing, or
+  an empty grammar fails closed with `grammar_invalid` and a non-zero exit.
+- `--json-schema JSON` passes a JSON Schema document as text; `--json-schema-file FILE` reads it
+  from a file. The document is admitted and converted to GBNF through the same context-accurate
+  allowlist the serve route uses, and rejected with the same fail-closed codes:
+  `json_schema_invalid` for a malformed document, `json_schema_unsupported` for a keyword FrInfer
+  cannot enforce, and `constraint_too_large` beyond the 64 KiB payload limit.
+
+```bash
+./build/apps/frinfer models/qwen3_6_27b.ninfer \
+  --prompt "Return a JSON object with one numeric field named answer." \
+  --json-schema '{"type":"object","additionalProperties":false,"required":["answer"],"properties":{"answer":{"type":"number"}}}' \
+  --max-new 64 \
+  --greedy
+```
+
+A constrained request resolves thinking off unless `--reasoning-effort` explicitly enables it
+(`--grammar ... --reasoning-effort medium`). With thinking on and a reasoning-starting prompt, the
+Engine wraps the grammar so the constraint carries the reasoning stream and hands off to the
+answer grammar at the wire-format close. Grammar completion ends generation; a `--max-new`
+truncation can cut a constrained answer mid-document.
+
 ## Startup memory profile
 
 GPU residency is frozen when the Engine starts:
@@ -218,6 +249,8 @@ The table lists executable defaults. The examples above select FP8 KV and MTP3.
 | `--vision` | enable image/video input and load Vision GPU allocations | off |
 | `--no-cuda-graph` | disable CUDA Graph decode | graphs on |
 | `--chat-template FILE` | use a local Jinja template | artifact template |
+| `--grammar GBNF` / `--grammar-file FILE` | GBNF answer grammar, compiled by the Engine | unset |
+| `--json-schema JSON` / `--json-schema-file FILE` | JSON Schema answer grammar, converted through the serve contract | unset |
 | `--no-thinking` | disable thinking | template default |
 | `--thinking-budget N` | positive model-origin thinking-token cap; omitted means unlimited | unset |
 | `--reasoning-effort none\|minimal\|low\|medium\|high\|xhigh\|max` | pass an effort value to the selected template | template default |

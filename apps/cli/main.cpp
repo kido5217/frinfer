@@ -268,6 +268,12 @@ int main(int argc, char** argv) {
         request.stop.token_ids                    = cli.stop_token_ids;
         request.stop.strings                      = cli.stop_strings;
         request.output.raw                        = cli.raw_output;
+        if (cli.constraint.source != ninfer::cli::ConstraintSource::None) {
+            request.constraint = ninfer::GrammarConstraint{
+                .gbnf             = cli.constraint.gbnf,
+                .thinking_enabled = cli.constraint.thinking_enabled,
+            };
+        }
 
         ninfer::EngineOptions engine_options;
         engine_options.artifact_path      = cli.artifact_path;
@@ -317,6 +323,15 @@ int main(int argc, char** argv) {
         }
         print_generation_summary(result, sampling, engine.memory_summary());
         return 0;
+    } catch (const ninfer::RequestError& error) {
+        if (error.kind() == ninfer::RequestErrorKind::InvalidConstraint) {
+            // Report the same fail-closed code the serve route uses for the originating flag.
+            logger->error("{}: {}", ninfer::cli::constraint_error_code(cli.constraint.source),
+                          ninfer::product::format_pretty_text(error.what()));
+        } else {
+            logger->error("{}", ninfer::product::format_pretty_text(error.what()));
+        }
+        return 1;
     } catch (const std::exception& error) {
         logger->error("{}", ninfer::product::format_pretty_text(error.what()));
         return 1;

@@ -1,4 +1,4 @@
-#include "serve/constraint_contract.h"
+#include "product/constraint/constraint_contract.h"
 #include "serve/generation_service.h"
 #include "serve/openai_chat.h"
 #include "serve/openai_common.h"
@@ -228,7 +228,7 @@ int test_constrained_decoding_extensions() {
                       "a non-string grammar is rejected");
 
     Json huge_grammar       = base_request();
-    huge_grammar["grammar"] = std::string(kConstraintPayloadLimit + 1, 'x');
+    huge_grammar["grammar"] = std::string(ninfer::constraint::kConstraintPayloadLimit + 1, 'x');
     const ApiError huge     = api_error([&] { (void)parse(huge_grammar); });
     failures += check(huge.param == "grammar" && huge.code == "constraint_too_large",
                       "an oversized grammar is rejected");
@@ -429,13 +429,13 @@ int test_constrained_decoding_extensions() {
         {"type", "json_schema"},
         {"json_schema",
          Json{{"schema",
-               Json{{"type", "string"}, {"const", std::string(kConstraintPayloadLimit, 'x')}}}}}};
+               Json{{"type", "string"}, {"const", std::string(ninfer::constraint::kConstraintPayloadLimit, 'x')}}}}}};
     const ApiError big_schema = api_error([&] { (void)parse(big_schema_body); });
     failures +=
         check(big_schema.code == "constraint_too_large", "an oversized JSON Schema is rejected");
 
     Json deep = Json{{"type", "string"}};
-    for (int level = 0; level < kConstraintNestingLimit + 2; ++level) {
+    for (int level = 0; level < ninfer::constraint::kConstraintNestingLimit + 2; ++level) {
         deep = Json{{"type", "array"}, {"items", deep}};
     }
     Json deep_body               = base_request();

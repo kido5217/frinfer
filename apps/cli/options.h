@@ -11,6 +11,26 @@
 
 namespace ninfer::cli {
 
+// Which CLI flag produced a constrained-decoding request, so an Engine compile/validation
+// rejection maps to the same fail-closed code the serve route uses (`grammar_invalid` vs
+// `json_schema_invalid`).
+enum class ConstraintSource : std::uint8_t {
+    None,
+    Grammar,
+    JsonSchema,
+};
+
+struct ConstraintOptions {
+    ConstraintSource source = ConstraintSource::None;
+    // Resolved GBNF: the `--grammar`/`--grammar-file` text, or the GBNF the serve's JSON-Schema
+    // contract produced from `--json-schema`/`--json-schema-file`.
+    std::string gbnf;
+    // The request's resolved thinking flag under the serve's constrained-request default (issue
+    // #86). The Engine wraps the grammar for the reasoning stream only when this is set and the
+    // rendered prompt starts in reasoning.
+    bool thinking_enabled = false;
+};
+
 struct Options {
     bool help_requested = false;
 
@@ -36,6 +56,8 @@ struct Options {
     std::optional<std::uint32_t> thinking_budget;
     std::optional<ReasoningEffort> reasoning_effort;
 
+    ConstraintOptions constraint;
+
     std::vector<TokenId> stop_token_ids;
     std::vector<StopString> stop_strings;
 
@@ -47,5 +69,10 @@ struct Options {
 
 [[nodiscard]] Options parse_options(int argc, char** argv);
 [[nodiscard]] std::string usage_text(const char* argv0);
+
+// The fail-closed code for a constraint rejection at Engine submission, selected by the flag that
+// requested it (grammar_invalid for --grammar/--grammar-file, json_schema_invalid for
+// --json-schema/--json-schema-file).
+[[nodiscard]] const char* constraint_error_code(ConstraintSource source) noexcept;
 
 } // namespace ninfer::cli

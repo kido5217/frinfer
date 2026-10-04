@@ -83,7 +83,7 @@ project includes and the two CUDA archive policies.
 | `ops/` | `ninfer_ops`, `ninfer_nvfp4_non_rdc` |
 | `models/` | `ninfer_model_loading`, `ninfer_model_runtime` |
 | `runtime/` | `ninfer_runtime_support`, `ninfer_engine` and its `ninfer::engine` alias |
-| `product/` | media acquisition, prompt input and logging libraries |
+| `product/` | media acquisition, prompt input, constraint contract and logging libraries |
 | `serve/` | `ninfer_serve` |
 
 Component declaration order is not the execution dependency graph: CMake resolves named target

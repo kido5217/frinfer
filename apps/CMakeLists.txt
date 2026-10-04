@@ -5,7 +5,10 @@ ninfer_internal_includes(frinfer)
 target_link_libraries(frinfer PRIVATE
   ninfer_engine
   ninfer_product_logging
-  ninfer_product_prompt_input)
+  ninfer_product_prompt_input
+  # The protocol-neutral constraint contract (JSON-Schema allowlist + conversion and the
+  # fail-closed codes, src/product/constraint) is shared with the serve gateway.
+  ninfer_constraint)
 
 add_executable(frinfer-serve serve/main.cpp)
 ninfer_internal_includes(frinfer-serve)

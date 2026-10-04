@@ -1,9 +1,12 @@
 #include "options.h"
 
+#include <filesystem>
+#include <fstream>
 #include <functional>
 #include <iostream>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace {
@@ -20,6 +23,21 @@ bool rejects(const std::function<void()>& operation) {
         operation();
     } catch (const std::invalid_argument&) { return true; }
     return false;
+}
+
+std::string rejection_message(const std::function<void()>& operation) {
+    try {
+        operation();
+    } catch (const std::invalid_argument& error) { return error.what(); }
+    return {};
+}
+
+std::filesystem::path write_temp(std::string_view name, std::string_view content) {
+    const std::filesystem::path path = std::filesystem::temp_directory_path() / std::string(name);
+    std::ofstream output(path, std::ios::binary | std::ios::trunc);
+    output << content;
+    output.close();
+    return path;
 }
 
 int check(bool condition, const char* message) {
@@ -104,5 +122,109 @@ int main() {
                   (void)parse({"ninfer-cli", "model.ninfer", "--prompt", "hello", "--top-k", "21"});
               }),
               "CLI accepted top_k beyond the executable candidate domain");
+    // --- Constrained decoding ---
+    const std::string grammar = "root ::= \"ok\"";
+    const ninfer::cli::Options grammar_options =
+        parse({"ninfer-cli", "model.ninfer", "--prompt", "hello", "--grammar", grammar});
+    failures += check(grammar_options.constraint.source == ninfer::cli::ConstraintSource::Grammar &&
+                          grammar_options.constraint.gbnf == grammar &&
+                          !grammar_options.constraint.thinking_enabled,
+                      "--grammar did not select an answer-only GBNF constraint");
+    for (const char* flag :
+         {"--grammar", "--grammar-file", "--json-schema", "--json-schema-file"}) {
+        failures += check(help.find(flag) != std::string::npos,
+                          "CLI help omits a constrained-decoding flag");
+    }
+    const std::string conflict = rejection_message([&] {
+        (void)parse({"ninfer-cli", "model.ninfer", "--prompt", "hello", "--grammar", grammar,
+                     "--json-schema", "{}"});
+    });
+    failures += check(conflict.find("constrained_decoding_conflict") != std::string::npos,
+                      "a grammar/schema conflict omitted constrained_decoding_conflict");
+    const std::string too_large = rejection_message([&] {
+        (void)parse({"ninfer-cli", "model.ninfer", "--prompt", "hello", "--grammar",
+                     std::string(70U * 1024U, ' ')});
+    });
+    failures += check(too_large.find("constraint_too_large") != std::string::npos,
+                      "an oversized grammar omitted constraint_too_large");
+    failures += check(rejects([&] {
+                          (void)parse({"ninfer-cli", "model.ninfer", "--prompt", "hello",
+                                       "--json-schema", "{}", "--json-schema-file", "x.json"});
+                      }),
+                      "CLI accepted both --json-schema and --json-schema-file");
+    const std::string dflash_message = rejection_message([&] {
+        (void)parse({"ninfer-cli", "model.ninfer", "--prompt", "hello", "--grammar", grammar,
+                     "--spec", "dflash", "--draft-tokens", "7"});
+    });
+    failures +=
+        check(dflash_message.find("constrained_decoding_not_supported") != std::string::npos,
+              "a constrained DFlash request omitted the serve's fail-closed code");
+
+    const ninfer::cli::Options thinking_options =
+        parse({"ninfer-cli", "model.ninfer", "--prompt", "hello", "--grammar", grammar,
+               "--reasoning-effort", "medium"});
+    failures += check(thinking_options.constraint.thinking_enabled &&
+                          thinking_options.enable_thinking.value_or(false),
+                      "a constrained request with reasoning effort did not resolve thinking on");
+    failures += check(
+        std::string(ninfer::cli::constraint_error_code(ninfer::cli::ConstraintSource::Grammar)) ==
+                "grammar_invalid" &&
+            std::string(ninfer::cli::constraint_error_code(
+                ninfer::cli::ConstraintSource::JsonSchema)) == "json_schema_invalid",
+        "constraint_error_code did not map the Engine rejection per originating flag");
+    failures += check(rejects([&] {
+                          (void)parse({"ninfer-cli", "model.ninfer", "--prompt", "hello",
+                                       "--grammar", grammar, "--thinking-budget", "37"});
+                      }),
+                      "a constraint resolving thinking off accepted an inert --thinking-budget");
+    const ninfer::cli::Options thinking_budget =
+        parse({"ninfer-cli", "model.ninfer", "--prompt", "hello", "--grammar", grammar,
+               "--reasoning-effort", "medium", "--thinking-budget", "37"});
+    failures +=
+        check(thinking_budget.thinking_budget == 37 && thinking_budget.constraint.thinking_enabled,
+              "a thinking-on constrained request rejected its --thinking-budget");
+
+    constexpr std::string_view kSchema =
+        R"({"type":"object","additionalProperties":false,"required":["answer"],"properties":{"answer":{"type":"number"}}})";
+    const ninfer::cli::Options schema_options = parse(
+        {"ninfer-cli", "model.ninfer", "--prompt", "hello", "--json-schema", std::string(kSchema)});
+    failures +=
+        check(schema_options.constraint.source == ninfer::cli::ConstraintSource::JsonSchema &&
+                  !schema_options.constraint.gbnf.empty(),
+              "--json-schema did not convert to a GBNF constraint");
+    const std::string bad_json = rejection_message([&] {
+        (void)parse(
+            {"ninfer-cli", "model.ninfer", "--prompt", "hello", "--json-schema", "not json"});
+    });
+    failures += check(bad_json.find("json_schema_invalid") != std::string::npos,
+                      "a malformed JSON Schema omitted json_schema_invalid");
+    const std::string unsupported = rejection_message([&] {
+        (void)parse({"ninfer-cli", "model.ninfer", "--prompt", "hello", "--json-schema",
+                     R"({"type":"string","pattern":"x"})"});
+    });
+    failures += check(unsupported.find("json_schema_unsupported") != std::string::npos,
+                      "an unsupported JSON Schema keyword omitted json_schema_unsupported");
+    const std::string empty_grammar = rejection_message(
+        [&] { (void)parse({"ninfer-cli", "model.ninfer", "--prompt", "hello", "--grammar", ""}); });
+    failures += check(empty_grammar.find("grammar_invalid") != std::string::npos,
+                      "an empty --grammar omitted grammar_invalid");
+
+    const std::filesystem::path grammar_path = write_temp("ninfer_cli_constraint.gbnf", grammar);
+    const std::filesystem::path schema_path  = write_temp("ninfer_cli_constraint.json", kSchema);
+    const ninfer::cli::Options grammar_file =
+        parse({"ninfer-cli", "model.ninfer", "--prompt", "hello", "--grammar-file",
+               grammar_path.string()});
+    failures += check(grammar_file.constraint.source == ninfer::cli::ConstraintSource::Grammar &&
+                          grammar_file.constraint.gbnf == grammar,
+                      "--grammar-file did not read the GBNF text");
+    const ninfer::cli::Options schema_file =
+        parse({"ninfer-cli", "model.ninfer", "--prompt", "hello", "--json-schema-file",
+               schema_path.string()});
+    failures += check(schema_file.constraint.source == ninfer::cli::ConstraintSource::JsonSchema &&
+                          !schema_file.constraint.gbnf.empty(),
+                      "--json-schema-file did not convert the schema");
+    std::error_code ignored;
+    std::filesystem::remove(grammar_path, ignored);
+    std::filesystem::remove(schema_path, ignored);
     return failures == 0 ? 0 : 1;
 }
