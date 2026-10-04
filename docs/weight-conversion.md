@@ -85,8 +85,10 @@ backend. Component availability and startup selection are independent.
 
 For a Qwen3.6-35B-A3B NVFP4 artifact, `qwen3_6_35b_a3b_nvfp4` imports the routed experts from a
 compressed-tensors NVFP4 checkpoint whose every expert projection is `nvfp4-pack-quantized` (the
-all-NVFP4 `-Fast` packing). The source's own tokenizer resource carries an older split pattern the
-Engine rejects, so pass the official checkpoint's tokenizer resources:
+all-NVFP4 `-Fast` packing). Each expert's gate, up and down become their own `nvfp4` parent: gate
+and up are separate source tensors and the source carries an FP32 divisor per expert, with gate and
+up sharing that divisor within an expert. The source's own tokenizer resource carries an older
+split pattern the Engine rejects, so pass the official checkpoint's tokenizer resources:
 
 ```bash
 python3 -m tools.convert \

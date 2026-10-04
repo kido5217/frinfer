@@ -269,12 +269,21 @@ prepare_sparse_moe_weights(const WeightInput& router, const WeightInput& shared_
         out.routed_down.qtype    = QType::NVFP4;
         out.routed_gate_up_experts.reserve(expert_gate_up.size());
         out.routed_down_experts.reserve(expert_down.size());
-        for (const auto& input : expert_gate_up) {
-            const auto weight = native_weight(input.weight, expert_divisor(input));
-            require(weight.qtype == QType::NVFP4 && std::isfinite(weight.weight_scale_divisor) &&
-                        weight.weight_scale_divisor > 0,
-                    "SparseMoe nvfp4 gate/up parent is invalid");
-            out.routed_gate_up_experts.push_back(weight);
+        for (std::size_t index = 0; index < expert_gate_up.size(); index += 2) {
+            const float gate_divisor = expert_divisor(expert_gate_up[index]);
+            const float up_divisor   = expert_divisor(expert_gate_up[index + 1]);
+            require(gate_divisor == up_divisor,
+                    "SparseMoe nvfp4 gate/up activation divisors differ");
+            const auto gate = native_weight(expert_gate_up[index].weight, gate_divisor);
+            const auto up   = native_weight(expert_gate_up[index + 1].weight, up_divisor);
+            for (const auto* weight : {&gate, &up}) {
+                require(weight->qtype == QType::NVFP4 &&
+                            std::isfinite(weight->weight_scale_divisor) &&
+                            weight->weight_scale_divisor > 0,
+                        "SparseMoe nvfp4 gate/up parent is invalid");
+            }
+            out.routed_gate_up_experts.push_back(gate);
+            out.routed_gate_up_experts.push_back(up);
         }
         for (const auto& input : expert_down) {
             const auto weight = native_weight(input.weight, expert_divisor(input));
