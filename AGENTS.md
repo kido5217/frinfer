@@ -188,11 +188,17 @@ Read the authority relevant to the current decision; this is not a mandatory rea
 
 The development environment is the nix flake at the repository root: `nix develop` provides the
 CUDA 13.1 toolchain (`cudaPackages_13_1`: nvcc, cudart, nvtx, ncu, nsys), cmake/ninja/pkg-config,
-FFMPEG and libcurl, and Python 3.13 with the tooling's dependencies (including torch). All
+`just`, FFMPEG and libcurl, and Python 3.13 with the tooling's dependencies (including torch). All
 builds and Python tooling run inside it.
 
 Use `cmake --build <build-dir> -j` by default. Adjust parallelism when actual resource pressure
 causes failures or interferes with the task, and briefly explain why.
+
+The root `justfile` wraps the documented build, test and benchmark commands: `just build`
+configures with the `dev` preset and builds, `just test` runs `ctest --preset dev` (extra arguments
+forward to ctest), `just test-one <target>` builds and re-runs a single test, and
+`just bench <target> [args]` builds and runs one benchmark executable. These are conveniences; the
+underlying commands documented in `tests/README.md` and `bench/README.md` remain authoritative.
 
 Use the devShell's `python3.13` interpreter explicitly; the default shell's `python3` may be a
 different version.

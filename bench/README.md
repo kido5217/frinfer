@@ -41,6 +41,9 @@ The `dev` configure preset also enables all benchmarks, alongside products and t
 [Build system](../docs/maintainer/build-system.md) for presets and dependencies. Tests use a
 Python interpreter; a benchmark-only configuration does not require one.
 
+The devShell provides `just bench <target>` to build and run one benchmark executable (for example
+`just bench ninfer_rmsnorm_bench --profile`), and `just build` for the full `dev` preset build.
+
 ## Product benchmark
 
 The benchmark slices exact token counts from `bench/fixtures/bench_corpus.ids`, calls

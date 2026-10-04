@@ -37,6 +37,7 @@
           pkgs.cmake
           pkgs.ninja
           pkgs.pkg-config
+          pkgs.just
           cuda.cuda_nvcc
           cuda.cuda_cudart
           cuda.cuda_profiler_api
