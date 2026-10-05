@@ -388,7 +388,14 @@ The report is useful for reproducing a recipe; the Engine reads the artifact its
 ```bash
 python3 -m tools.artifact.inspect models/my_qwen.ninfer --objects --bindings
 python3 -m tools.artifact.inspect models/my_qwen.ninfer --json
+python3 -m tools.artifact.inspect models/my_qwen.ninfer --hash > models/my_qwen.manifest
+python3 -m tools.artifact.inspect models/my_qwen.ninfer --check models/my_qwen.manifest
 ```
+
+`--hash` streams the logical payload once and writes a per-object plus whole-payload sha256
+manifest; `--check` re-streams the artifact and reports any mismatch against a recorded manifest,
+localized to the object. This gives downloaded and locally upgraded artifacts an integrity story
+beyond the random `artifact_id`.
 
 Inspection reads directory facts without running inference. Conversion rejects missing logical
 coverage, invalid source geometry, unsupported encodings and invalid method output. Actual Op

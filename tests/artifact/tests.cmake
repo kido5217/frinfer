@@ -20,6 +20,9 @@ add_test(NAME ninfer_artifact_writer_interop_test
   COMMAND ${Python3_EXECUTABLE} -B "${CMAKE_CURRENT_LIST_DIR}/writer_interop.py"
     $<TARGET_FILE:ninfer_artifact_materialization_test>)
 
+add_test(NAME ninfer_artifact_inspect_hash_test
+  COMMAND ${Python3_EXECUTABLE} -B "${CMAKE_CURRENT_LIST_DIR}/test_inspect_hash.py")
+
 set_tests_properties(
   ninfer_artifact_writer_interop_test
   PROPERTIES SKIP_RETURN_CODE 77)

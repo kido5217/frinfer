@@ -14,7 +14,7 @@ Python tools are independent of CMake; there is no `NINFER_BUILD_TOOLS` option.
 | Task | Location |
 |---|---|
 | Convert weights with an official or custom recipe | [`convert/`](convert/); [user guide](../docs/weight-conversion.md) |
-| Inspect artifact metadata and objects | [`artifact/inspect.py`](artifact/inspect.py) |
+| Inspect artifact metadata, objects, and payload integrity | [`artifact/inspect.py`](artifact/inspect.py) |
 | One-time upgrade of official v2 artifacts | [`upgrade_ninfer_v2_to_v3.py`](upgrade_ninfer_v2_to_v3.py), with positional `INPUT OUTPUT` paths |
 | Run benchmark matrices | [`bench/`](bench/README.md) |
 | Measure external Serve TTFT | [`bench/ttft/`](bench/ttft/README.md) |
@@ -69,6 +69,15 @@ Inspect a result:
 
 ```bash
 python3 -m tools.artifact.inspect out/qwen3_6_27b.ninfer --objects
+```
+
+Verify a downloaded or locally written artifact against a recorded content manifest. `--hash`
+streams the logical payload once and prints per-object plus whole-payload sha256 lines; `--check`
+re-streams the artifact and localizes any mismatch to its object:
+
+```bash
+python3 -m tools.artifact.inspect out/qwen3_6_27b.ninfer --hash > out/qwen3_6_27b.manifest
+python3 -m tools.artifact.inspect out/qwen3_6_27b.ninfer --check out/qwen3_6_27b.manifest
 ```
 
 Recipes, mixed sources, custom methods, resources and sharding are described in the
