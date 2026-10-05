@@ -2682,6 +2682,38 @@ int test_media_preparation_cancellation() {
     return check(false, "cancelled media preparation completed successfully");
 }
 
+int test_rendered_text_exposure() {
+    const Frontend text_frontend = make_frontend(resources(), false);
+    ninfer::PromptInput input;
+    ninfer::ChatMessage message;
+    message.role = ninfer::ChatRole::User;
+    message.parts.push_back(
+        ninfer::MessagePart{.kind = ninfer::MessagePartKind::Text, .text = "hello", .media = {}});
+    input.messages.push_back(std::move(message));
+
+    const ninfer::models::qwen3_5::PreparedPrompt prepared =
+        text_frontend.prepare(std::move(input));
+    const std::string_view rendered = prepared.rendered_text();
+    const std::string& retained     = FrontendFactory::inspect(prepared).rendered_text;
+    int failures                    = check(!rendered.empty() && rendered == retained,
+                                            "rendered_text did not expose the retained render");
+    const std::string independent = render_chat_text({chat_message(ninfer::ChatRole::User, "hello")});
+    failures += check(rendered == independent,
+                      "rendered prompt disagrees with an independent render of the same messages");
+
+    const ninfer::models::qwen3_5::PreparedPrompt tokens =
+        text_frontend.prepare_tokens(std::vector<ninfer::TokenId>(3, 0));
+    failures += check(tokens.rendered_text().empty(),
+                      "token-id-only prompt reported a rendered text");
+
+    const Frontend media_frontend = make_frontend(resources(), true);
+    const ninfer::models::qwen3_5::PreparedPrompt media =
+        media_frontend.prepare(image_text_input(gradient_ppm(), "look", "rendered-text.ppm"));
+    failures += check(media.rendered_text().find("<|image_pad|>") != std::string_view::npos,
+                      "media prompt did not expose its expanded vision placeholder");
+    return failures;
+}
+
 } // namespace
 
 int main() {
@@ -2733,6 +2765,7 @@ int main() {
     failures += test_many_images_prepare_in_one_parallel_batch();
     failures += test_media_preparation_cancellation();
     failures += test_invalid_media_classification();
+    failures += test_rendered_text_exposure();
     failures += test_disabled_vision();
     return failures == 0 ? 0 : 1;
 }

@@ -53,6 +53,7 @@ struct Options {
 
     bool raw_output      = false;
     bool print_token_ids = false;
+    bool show_prompt     = false;
     std::optional<bool> enable_thinking;
     std::optional<std::uint32_t> thinking_budget;
     std::optional<ReasoningEffort> reasoning_effort;

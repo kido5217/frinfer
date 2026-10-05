@@ -304,6 +304,12 @@ int main(int argc, char** argv) {
 
         ninfer::PreparedPrompt prompt = engine.prepare(std::move(input));
 
+        if (cli.show_prompt) {
+            const std::string_view rendered = prompt.rendered_text();
+            std::cerr << rendered;
+            if (rendered.empty() || rendered.back() != '\n') { std::cerr << '\n'; }
+        }
+
         StreamingSink sink;
         ninfer::GenerationHandle generation = engine.submit(std::move(prompt), std::move(request),
                                                             ninfer::OutputConsumerMode::Streaming);

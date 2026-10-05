@@ -248,6 +248,7 @@ The table lists executable defaults. The examples above select FP8 KV and MTP3.
 | `--lm-head-draft` | optimized proposal head | off |
 | `--vision` | enable image/video input and load Vision GPU allocations | off |
 | `--no-cuda-graph` | disable CUDA Graph decode | graphs on |
+| `--show-prompt` | dump the exact rendered prompt to stderr before generation | off |
 | `--chat-template FILE` | use a local Jinja template | artifact template |
 | `--grammar GBNF` / `--grammar-file FILE` | GBNF answer grammar, compiled by the Engine | unset |
 | `--json-schema JSON` / `--json-schema-file FILE` | JSON Schema answer grammar, converted through the serve contract | unset |
@@ -280,7 +281,9 @@ precise-coding profile use explicit sampling overrides.
 
 Repeat `--stop-token-id`, `--stop`, or `--reasoning-stop` to add stop conditions. Use
 `--raw-output` to expose the frontend's raw output stream and `--print-token-ids` to include
-generated token IDs in diagnostics.
+generated token IDs in diagnostics. `--show-prompt` writes the exact rendered prompt (the
+template output with media placeholders already expanded) to stderr before generation, so stdout
+stays the answer channel; it is the direct tool for debugging chat-template rendering.
 
 Run `./build/apps/frinfer --help` for the exact option contract, and
 `./build/apps/frinfer --version` for the version, git sha, and build config.

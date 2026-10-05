@@ -10,6 +10,7 @@
 #include <optional>
 #include <memory>
 #include <span>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -151,6 +152,9 @@ struct PreparedPromptData {
     PreparedContextCache context_cache;
     std::shared_ptr<const frontend::ToolCallOutputContract> tool_call_output;
     bool starts_in_reasoning = false;
+    // The exact rendered prompt text handed to the tokenizer, with media placeholders already
+    // expanded in place. Exposed for the CLI's --show-prompt; empty for token-id-only prompts.
+    std::string rendered_text;
     PrepareStats prepare;
 
     [[nodiscard]] std::span<const std::int32_t> position_axis(int axis) const;

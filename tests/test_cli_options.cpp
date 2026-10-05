@@ -55,6 +55,12 @@ int main() {
                       "--version did not request the CLI build identity");
     failures += check(ninfer::cli::usage_text("ninfer-cli").find("--version") != std::string::npos,
                       "CLI help omits --version");
+    const ninfer::cli::Options show_prompt =
+        parse({"ninfer-cli", "model.ninfer", "--prompt", "hello", "--show-prompt"});
+    failures += check(show_prompt.show_prompt, "--show-prompt did not request the rendered dump");
+    failures +=
+        check(ninfer::cli::usage_text("ninfer-cli").find("--show-prompt") != std::string::npos,
+              "CLI help omits --show-prompt");
     const ninfer::cli::Options configured =
         parse({"ninfer-cli", "model.ninfer", "--prompt", "hello", "--thinking-budget", "37"});
     failures += check(configured.thinking_budget == 37,

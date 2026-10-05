@@ -22,6 +22,9 @@ public:
 
     [[nodiscard]] const PromptSummary& summary() const noexcept;
     [[nodiscard]] const PromptPreparationStats& preparation_stats() const noexcept;
+    // The rendered prompt text the Frontend tokenized, for the CLI's --show-prompt. Empty for a
+    // token-id-only prompt or a moved-from value.
+    [[nodiscard]] std::string_view rendered_text() const noexcept;
     [[nodiscard]] explicit operator bool() const noexcept;
 
 private:
