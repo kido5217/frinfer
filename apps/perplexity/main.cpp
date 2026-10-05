@@ -2,6 +2,7 @@
 #include "evaluation.h"
 
 #include "ninfer/engine.h"
+#include "product/build_info/build_info.h"
 #include "product/logging/logging.h"
 #include "product/logging/pretty_format.h"
 #include "product/logging/startup_log.h"
@@ -39,7 +40,8 @@ using ninfer::perplexity::ScoreAggregate;
 using ninfer::perplexity::WindowPlan;
 
 struct Options {
-    bool help_requested = false;
+    bool help_requested    = false;
+    bool version_requested = false;
     std::filesystem::path artifact;
     std::optional<std::filesystem::path> corpus;
     std::optional<std::filesystem::path> text;
@@ -57,7 +59,7 @@ std::string usage_text() {
            "(--corpus <manifest.json> [--quick] | --text <utf8-file>)\n"
            "       [--context N] [--stride N] [--device N]\n"
            "       [--kv-dtype bf16|int8|fp8|nvfp4|k8v4] [--output <directory>]\n"
-           "       [--log-level trace|debug|info|warning|error|critical|off]\n";
+           "       [--log-level trace|debug|info|warning|error|critical|off] [--version]\n";
 }
 
 [[noreturn]] void usage_error(std::string_view message) {
@@ -77,6 +79,9 @@ Integer parse_integer(std::string_view text, const char* label) {
 Options parse_options(int argc, char** argv) {
     if (argc == 2 && std::string_view(argv[1]) == "--help") {
         return Options{.help_requested = true};
+    }
+    if (argc == 2 && std::string_view(argv[1]) == "--version") {
+        return Options{.version_requested = true};
     }
     if (argc < 2 || std::string_view(argv[1]).starts_with("--")) {
         usage_error("artifact path is required");
@@ -120,6 +125,9 @@ Options parse_options(int argc, char** argv) {
             out.output = std::filesystem::path(value("--output"));
         } else if (option == "--log-level") {
             out.log_level = ninfer::product::parse_log_level(value("--log-level"));
+        } else if (option == "--version") {
+            out.version_requested = true;
+            return out;
         } else {
             usage_error("unknown option: " + std::string(option));
         }
@@ -445,6 +453,10 @@ int main(int argc, char** argv) {
     }
     if (options.help_requested) {
         std::cout << usage_text();
+        return 0;
+    }
+    if (options.version_requested) {
+        std::cout << ninfer::product::version_text("frinfer-perplexity") << '\n';
         return 0;
     }
 

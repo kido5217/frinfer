@@ -311,6 +311,7 @@ std::string usage_text(std::string_view program) {
         << "  --profile-measured          bracket one measured repetition with CUDA profiler API\n"
         << "  -o, --output <table|json|csv>  output format (default: table)\n"
         << "  --output-file <path>        write report to a file\n"
+        << "  --version                   show build identity\n"
         << "  -h, --help                  show this help\n\n"
         << "With no -p/-n/-pg, the matrix is pp" << kDefaultNPrompt << " and tg" << kDefaultNGen
         << ".\n";
@@ -330,6 +331,10 @@ BenchOptions parse_args(int argc, char** argv) {
         };
         if (arg == "-h" || arg == "--help") {
             options.help_requested = true;
+            return options;
+        }
+        if (arg == "--version") {
+            options.version_requested = true;
             return options;
         }
         if (arg == "--weights") {

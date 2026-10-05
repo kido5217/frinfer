@@ -63,3 +63,17 @@ ninfer_add_test(ninfer_http_error_handler_test
 ninfer_add_test(ninfer_http_transport_test
   SOURCES "${CMAKE_CURRENT_LIST_DIR}/../test_http_transport.cpp"
   LIBRARIES ninfer_serve)
+
+# The four product binaries answer `--version` with their build identity without an artifact.
+if(NINFER_BUILD_APPS)
+  foreach(app frinfer frinfer-serve frinfer-perplexity)
+    add_test(NAME ${app}_version_test COMMAND $<TARGET_FILE:${app}> --version)
+    set_tests_properties(${app}_version_test PROPERTIES
+      PASS_REGULAR_EXPRESSION "^${app} [^ ]+ \\(")
+  endforeach()
+endif()
+if(NINFER_BUILD_BENCHMARKS)
+  add_test(NAME ninfer_bench_version_test COMMAND $<TARGET_FILE:ninfer_bench> --version)
+  set_tests_properties(ninfer_bench_version_test PROPERTIES
+    PASS_REGULAR_EXPRESSION "^ninfer_bench [^ ]+ \\(")
+endif()

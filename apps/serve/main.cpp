@@ -1,3 +1,4 @@
+#include "product/build_info/build_info.h"
 #include "product/logging/logging.h"
 #include "product/logging/startup_log.h"
 #include "serve/generation_service.h"
@@ -41,6 +42,10 @@ int main(int argc, char** argv) {
     }
     if (options.help_requested) {
         std::cout << ninfer::serve::serve_usage_text(argv[0]);
+        return 0;
+    }
+    if (options.version_requested) {
+        std::cout << ninfer::product::version_text("frinfer-serve") << '\n';
         return 0;
     }
 

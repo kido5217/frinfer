@@ -12,7 +12,7 @@ if(NOT CMAKE_CUDA_ARCHITECTURES STREQUAL "120a")
     "'${CMAKE_CUDA_ARCHITECTURES}'")
 endif()
 
-project(ninfer LANGUAGES C CXX CUDA)
+project(ninfer VERSION 6.0.0 LANGUAGES C CXX CUDA)
 
 # --- Global settings ---------------------------------------------------------
 option(NINFER_BUILD_APPS "Build the FrInfer CLI, server and perplexity evaluator" ON)
@@ -41,6 +41,7 @@ endif()
 
 include(cmake/Dependencies.cmake)
 include(cmake/NinferTargets.cmake)
+include(cmake/BuildInfo.cmake)
 
 # --- Subdirectories ----------------------------------------------------------
 add_subdirectory(src)

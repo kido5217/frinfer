@@ -86,6 +86,7 @@ std::string serve_usage_text(const char* argv0) {
            "[--temperature F] [--top-p F] [--top-k N] [--min-p F] [--presence-penalty F] "
            "[--frequency-penalty F] [--seed N] [--greedy]\n"
            "       [--log-level trace|debug|info|warning|error|critical|off]\n"
+           "       [--version]\n"
            "       serves OpenAI Responses/Chat Completions and Anthropic Messages endpoints\n"
            "       --default-max-tokens defaults to " +
            std::to_string(kDefaultMaxTokens) +
@@ -134,6 +135,10 @@ ServeOptions parse_serve_options(int argc, char** argv) {
     bool context_capacity_explicit   = false;
     if (argc >= 2 && (std::string(argv[1]) == "--help" || std::string(argv[1]) == "-h")) {
         options.help_requested = true;
+        return options;
+    }
+    if (argc >= 2 && std::string(argv[1]) == "--version") {
+        options.version_requested = true;
         return options;
     }
     if (argc < 2) { throw std::invalid_argument("artifact path is required"); }
@@ -320,6 +325,9 @@ ServeOptions parse_serve_options(int argc, char** argv) {
             options.greedy = true;
         } else if (arg == "--log-level") {
             options.log_level = product::parse_log_level(require_value("--log-level"));
+        } else if (arg == "--version") {
+            options.version_requested = true;
+            return options;
         } else {
             throw std::invalid_argument("unknown argument: " + arg);
         }

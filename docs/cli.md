@@ -282,7 +282,8 @@ Repeat `--stop-token-id`, `--stop`, or `--reasoning-stop` to add stop conditions
 `--raw-output` to expose the frontend's raw output stream and `--print-token-ids` to include
 generated token IDs in diagnostics.
 
-Run `./build/apps/frinfer --help` for the exact option contract.
+Run `./build/apps/frinfer --help` for the exact option contract, and
+`./build/apps/frinfer --version` for the version, git sha, and build config.
 
 ## CUDA synchronization
 

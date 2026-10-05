@@ -144,6 +144,7 @@ std::string usage_text(const char* argv0) {
            "       [--reasoning-effort none|minimal|low|medium|high|xhigh|max] [--vision]\n"
            "       [--no-cuda-graph]\n"
            "       [--log-level trace|debug|info|warning|error|critical|off]\n"
+           "       [--version]\n"
            "\n"
            "Streams answer content to stdout and reasoning plus diagnostics to stderr.\n"
            "Structured message content accepts text, image/image_url, and video/video_url parts;\n"
@@ -168,6 +169,10 @@ Options parse_options(int argc, char** argv) {
     Options options;
     if (argc >= 2 && (std::string_view(argv[1]) == "--help" || std::string_view(argv[1]) == "-h")) {
         options.help_requested = true;
+        return options;
+    }
+    if (argc >= 2 && std::string_view(argv[1]) == "--version") {
+        options.version_requested = true;
         return options;
     }
     if (argc < 2) { throw std::invalid_argument(".ninfer model path is required"); }
@@ -276,6 +281,9 @@ Options parse_options(int argc, char** argv) {
             options.greedy = true;
         } else if (arg == "--log-level") {
             options.log_level = product::parse_log_level(value(arg));
+        } else if (arg == "--version") {
+            options.version_requested = true;
+            return options;
         } else {
             throw std::invalid_argument("unknown argument: " + std::string(arg));
         }

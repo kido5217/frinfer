@@ -69,7 +69,8 @@ struct BenchOptions {
     bool profile_measured = false;
     OutputFormat output   = OutputFormat::Table;
     std::string output_file;
-    bool help_requested = false;
+    bool help_requested    = false;
+    bool version_requested = false;
 };
 
 struct RepTiming {
