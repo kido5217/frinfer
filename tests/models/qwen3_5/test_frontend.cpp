@@ -2697,8 +2697,9 @@ int test_rendered_text_exposure() {
     const std::string& retained     = FrontendFactory::inspect(prepared).rendered_text;
     int failures                    = check(!rendered.empty() && rendered == retained,
                                             "rendered_text did not expose the retained render");
-    const std::string independent = render_chat_text({chat_message(ninfer::ChatRole::User, "hello")});
-    failures += check(rendered == independent,
+    const std::string expected =
+        render_chat_text({chat_message(ninfer::ChatRole::User, "hello")});
+    failures += check(rendered == expected,
                       "rendered prompt disagrees with an independent render of the same messages");
 
     const ninfer::models::qwen3_5::PreparedPrompt tokens =
@@ -2709,7 +2710,18 @@ int test_rendered_text_exposure() {
     const Frontend media_frontend = make_frontend(resources(), true);
     const ninfer::models::qwen3_5::PreparedPrompt media =
         media_frontend.prepare(image_text_input(gradient_ppm(), "look", "rendered-text.ppm"));
-    failures += check(media.rendered_text().find("<|image_pad|>") != std::string_view::npos,
+    const std::string_view media_text = media.rendered_text();
+    // The fixture tokenizes <|image_pad|> as id 248056. An un-expanded render carries a single
+    // placeholder; the expanded prompt carries one pad token text per encoded pad token.
+    const std::vector<ninfer::TokenId>& media_tokens = FrontendFactory::inspect(media).token_ids;
+    const std::size_t pad_tokens                     = static_cast<std::size_t>(
+        std::count(media_tokens.begin(), media_tokens.end(), ninfer::TokenId{248056}));
+    std::size_t pad_text = 0;
+    for (std::size_t at = media_text.find("<|image_pad|>"); at != std::string_view::npos;
+         at             = media_text.find("<|image_pad|>", at + 1)) {
+        ++pad_text;
+    }
+    failures += check(pad_tokens > 1 && pad_text == pad_tokens,
                       "media prompt did not expose its expanded vision placeholder");
     return failures;
 }
