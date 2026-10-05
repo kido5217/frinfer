@@ -46,6 +46,7 @@ public:
 
     [[nodiscard]] PromptSummary summary() const;
     [[nodiscard]] PromptPreparationStats preparation_stats() const noexcept;
+    [[nodiscard]] std::string_view rendered_text() const noexcept;
     [[nodiscard]] explicit operator bool() const noexcept;
 
 private:

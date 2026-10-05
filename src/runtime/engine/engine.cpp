@@ -85,6 +85,10 @@ const PromptPreparationStats& PreparedPrompt::preparation_stats() const noexcept
     return impl_ != nullptr ? impl_->prepare : empty;
 }
 
+std::string_view PreparedPrompt::rendered_text() const noexcept {
+    return impl_ != nullptr ? impl_->value.rendered_text() : std::string_view{};
+}
+
 PreparedPrompt::operator bool() const noexcept { return impl_ != nullptr; }
 
 class GenerationHandle::Impl {

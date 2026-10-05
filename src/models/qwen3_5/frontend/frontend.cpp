@@ -677,6 +677,10 @@ PromptSummary PreparedPrompt::summary() const {
                          .has_media           = data_->has_media()};
 }
 
+std::string_view PreparedPrompt::rendered_text() const noexcept {
+    return data_ != nullptr ? std::string_view(data_->rendered_text) : std::string_view{};
+}
+
 PromptPreparationStats PreparedPrompt::preparation_stats() const noexcept {
     if (data_ == nullptr) { return {}; }
     const PrepareStats& stats = data_->prepare;
@@ -782,6 +786,7 @@ PreparedPrompt Frontend::prepare(PromptInput input, const PreparationControl& co
         } catch (const fi::ProcessorError& error) { throw_processor_error(error); }
         result.token_ids.assign(processed.input_ids.begin(), processed.input_ids.end());
         result.starts_in_reasoning = processed.starts_in_reasoning;
+        result.rendered_text       = std::move(processed.rendered_text);
         result.token_types         = std::move(processed.token_types);
         result.positions           = std::move(processed.positions);
         result.rope_delta          = processed.rope_delta;
@@ -824,6 +829,7 @@ PreparedPrompt Frontend::prepare(PromptInput input, const PreparationControl& co
             throw_context_length_exceeded(impl_->max_context);
         }
         result.token_ids                   = std::move(encoded.input_ids);
+        result.rendered_text               = rendered.text;
         result.identity.rewrite_checkpoint = encoded.rewrite_checkpoint;
         result.identity.rewrite_execution_frontiers =
             std::move(encoded.rewrite_execution_frontiers);
