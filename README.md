@@ -25,7 +25,7 @@ the `frinfer` product binaries. The rest of this README describes the combined p
 ### Changes from upstream
 
 Maintained: add or update a row whenever a fork feature changes or its status changes.
-Last updated 2026-10-05 (`port/artifact-integrity-hash`, `80cae889`).
+Last updated 2026-10-05 (`port/cli-show-prompt`, `ef1d8a29`).
 
 | What | Why | How | Status | Source |
 |---|---|---|---|---|
@@ -43,6 +43,7 @@ Last updated 2026-10-05 (`port/artifact-integrity-hash`, `80cae889`).
 | Agent/governance documentation | The fork is developed with LLM agents in the loop | `AGENTS.md` (product boundaries, verification, reporting), issue tracker + triage-label conventions, branch→commit→push→PR→merge→rebase landing pipeline; the LLM is permitted to open and merge PRs | ongoing | FrInfer |
 | Build identity — `--version` on all four product binaries | Scripts and humans probe tools with `--version`; its absence was the survey's basic ecosystem-parity gap | Configure-time version (`git describe --tags`) + short git sha + build config via `configure_file`, exposed as the `ninfer_build_info` interface target; `--version` on `frinfer`, `frinfer-serve`, `frinfer-perplexity`, and `ninfer_bench` | shipped | llama.cpp (the `--version` pattern, adopted) |
 | Artifact integrity manifest (`inspect.py --hash` / `--check`) | Downloaded and v2→v3-upgraded artifacts (upgrades write a new output path) need a verifiable integrity story beyond the random `artifact_id` minted at conversion | Stdlib-only sha256 streaming over the reader's object ranges — one manifest line per object plus a whole-payload digest; `--check` re-streams and localizes any mismatch to its object | shipped | FrInfer |
+| Rendered-prompt dump — CLI `--show-prompt` | Chat-template debugging is the project's recurring pain (G1 demotions, chat-drift, froggeric pinning); no rendered-prompt dump existed even at `--log-level debug` | `PreparedPrompt::rendered_text()` retains the exact rendered prompt (media placeholders already expanded) and `--show-prompt` prints it to stderr before generation, leaving stdout the answer channel | shipped | llama.cpp (C5, adopted) |
 
 ### Bug reporting
 
