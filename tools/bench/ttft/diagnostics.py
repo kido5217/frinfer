@@ -49,6 +49,10 @@ def request_timing_analysis(request: dict[str, Any]) -> dict[str, Any]:
         "cached_tokens": result.get("prefix_cache_hit_tokens"),
         "terminal_computed_prefill_tokens": result.get("computed_prefill_tokens"),
         "first_computed_prefill_tokens": None,
+        "preferred_reused_tokens": None,
+        "source_wait_ms": None,
+        "revoked_checkpoints": None,
+        "admission_fallback_reason": None,
         "engine_elapsed_ms": None,
         **{f"{stage}_{suffix}": None for stage in TTFT_STAGES for suffix in ("ms", "pct")},
         **{f"host_{phase}_ms": None for phase in ENGINE_HOST_PHASES},
@@ -71,6 +75,13 @@ def request_timing_analysis(request: dict[str, Any]) -> dict[str, Any]:
 
     def milliseconds(value: float | None) -> float | None:
         return value * 1000 if value is not None else None
+
+    admission = diagnostics.get("admission")
+    if isinstance(admission, dict):
+        row["preferred_reused_tokens"] = admission.get("preferred_reused_tokens")
+        row["source_wait_ms"] = milliseconds(read_seconds(admission, "source_wait_seconds"))
+        row["revoked_checkpoints"] = admission.get("revoked_checkpoints")
+        row["admission_fallback_reason"] = admission.get("fallback_reason")
 
     if request.get("stream") is not True:
         row["analysis_reason"] = "aggregate_response_is_terminal"
@@ -154,7 +165,7 @@ def _global_runtime_observations(events: Sequence[dict[str, Any]]) -> dict[str, 
     servers = {event.get("server_instance_id") for event in events}
     if len(servers) != 1 or not all(isinstance(server, str) and server for server in servers):
         return {"status": "unavailable", "reason": "ambiguous_server_instance"}
-    if any(event.get("schema_version") != 23 for event in intervals):
+    if any(event.get("schema_version") not in (23, 24, 25) for event in intervals):
         return {"status": "unavailable", "reason": "unsupported_runtime_schema"}
 
     def values_at(path: Sequence[str]) -> list[int | float] | None:
@@ -230,6 +241,88 @@ def unavailable_diagnostics(reason: str, **identity: Any) -> dict[str, Any]:
         "status": "unavailable", "reason": reason,
         "mechanisms": {name: "unavailable" for name in MECHANISM_COUNTERS},
         **identity,
+    }
+
+
+def _scheduling_observations(
+    requests: Sequence[dict[str, Any]], events: Sequence[dict[str, Any]],
+) -> dict[str, Any]:
+    """Compare Engine-captured counters at Replay boundaries, independent of log delivery order."""
+    fields = tuple(f"{scope}_{work}_tokens" for scope in ("global", "request")
+                   for work in ("prefill", "decode", "replayed"))
+    intervals = []
+    incomplete_requests = []
+    unavailable = False
+    supported = any(event.get("schema_version") in (24, 25) for event in events)
+    for request in requests:
+        diagnostic = request.get("diagnostics", {})
+        engine_id = diagnostic.get("engine_request_id")
+        if diagnostic.get("status") != "available":
+            unavailable = True
+            incomplete_requests.append({"request_role": request.get("role"),
+                                        "reason": "terminal_diagnostics_unavailable"})
+            continue
+        selected = [event for event in events
+                    if event.get("event") == "request_scheduling"
+                    and event.get("server_instance_id") == diagnostic.get("server_instance_id")
+                    and event.get("engine_request_id") == engine_id
+                    and event.get("request", {}).get("request_id") == diagnostic.get("service_request_id")]
+        request["diagnostics"]["scheduling_transitions"] = sorted(
+            selected, key=lambda event: event.get("steady_ns", -1))
+        episodes: dict[int, list[dict[str, Any]]] = defaultdict(list)
+        for event in selected:
+            index = event.get("preemption_index")
+            if type(index) is int and index > 0:
+                episodes[index].append(event)
+        restored_count = diagnostic.get("scheduling", {}).get("replay_restores", 0)
+        complete_intervals = 0
+        for index, transitions in sorted(episodes.items()):
+            starts = [e for e in transitions if e.get("transition") == "restored" and e.get("route") == "replay"]
+            ends = [e for e in transitions if e.get("transition") == "replay_complete"]
+            if not starts and not ends:
+                continue
+            row = {"request_role": request.get("role"), "engine_request_id": engine_id,
+                   "preemption_index": index, "status": "unavailable"}
+            intervals.append(row)
+            if len(starts) != 1 or len(ends) != 1:
+                row["reason"] = "replay_interval_incomplete"
+                unavailable = True
+                continue
+            start, end = starts[0], ends[0]
+            begin_ns, end_ns = start.get("steady_ns"), end.get("steady_ns")
+            before, after = start.get("progress", {}), end.get("progress", {})
+            if (type(begin_ns) is not int or type(end_ns) is not int or end_ns < begin_ns
+                    or any(type(before.get(field)) is not int or type(after.get(field)) is not int
+                           or after[field] < before[field] for field in fields)):
+                row["reason"] = "invalid_replay_interval"
+                unavailable = True
+                continue
+            deltas = {field: after[field] - before[field] for field in fields}
+            other = {work: deltas[f"global_{work}_tokens"] - deltas[f"request_{work}_tokens"]
+                     for work in ("prefill", "decode", "replayed")}
+            if any(value < 0 for value in other.values()):
+                row["reason"] = "inconsistent_progress_counters"
+                unavailable = True
+                continue
+            complete_intervals += 1
+            row.update(status="available", duration_ns=end_ns - begin_ns, progress=deltas,
+                       other_prefill_tokens=other["prefill"], other_decode_tokens=other["decode"],
+                       other_replayed_tokens=other["replayed"],
+                       other_new_progress=(deltas["request_replayed_tokens"] > 0
+                                           and other["prefill"] + other["decode"] > 0))
+        if complete_intervals != restored_count:
+            unavailable = True
+            incomplete_requests.append({"request_role": request.get("role"),
+                                        "reason": "replay_interval_count_mismatch",
+                                        "terminal_replay_restores": restored_count,
+                                        "complete_intervals": complete_intervals})
+    observed = any(row.get("other_new_progress") is True for row in intervals)
+    return {
+        "status": "available" if supported and not unavailable else "unavailable",
+        "incomplete_requests": incomplete_requests,
+        "replay_intervals": intervals,
+        "mechanisms": {"replay_with_other_progress": "observed" if observed else
+                       "unavailable" if not supported or unavailable else "not_observed"},
     }
 
 
@@ -309,7 +402,7 @@ def attach_generation_diagnostics(run: dict[str, Any], path: Path | None) -> str
             "matched_by": [field for field, value in wire.items() if value in identities[field]],
         }
         starts = [item for item in events if item.get("event") == "request_start"
-                  and item.get("schema_version") == 23]
+                  and item.get("schema_version") in (23, 24, 25)]
         preparation = starts[0].get("preparation_seconds") if len(starts) == 1 else None
         identity.update(
             preparation_seconds=preparation,
@@ -325,7 +418,7 @@ def attach_generation_diagnostics(run: dict[str, Any], path: Path | None) -> str
         scheduling = generation.get("scheduling") if isinstance(generation, dict) else None
         engine_id = generation.get("engine_request_id") if isinstance(generation, dict) else None
         if (
-            event.get("schema_version") != 23
+            event.get("schema_version") not in (23, 24, 25)
             or type(engine_id) is not int or engine_id <= 0
             or not isinstance(scheduling, dict)
             or any(type(scheduling.get(field)) is not int or scheduling[field] < 0
@@ -337,6 +430,7 @@ def attach_generation_diagnostics(run: dict[str, Any], path: Path | None) -> str
         request["diagnostics"] = {
             "status": "available", **identity, "engine_request_id": engine_id,
             "scheduling": counts,
+            "admission": generation.get("admission"),
             "mechanisms": {
                 name: "observed" if counts[counter] > 0 else "not_observed"
                 for name, counter in MECHANISM_COUNTERS.items()
@@ -346,4 +440,5 @@ def attach_generation_diagnostics(run: dict[str, Any], path: Path | None) -> str
             "terminal_engine_timing": event.get("engine_timing"),
             "first_output_timing": event.get("first_output_timing"),
         }
+    run["scheduling_observations"] = _scheduling_observations(requests, runtime_events)
     return None

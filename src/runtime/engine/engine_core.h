@@ -196,10 +196,10 @@ public:
                 throw RequestError(RequestErrorKind::ThinkingBudgetCapacityInsufficient,
                                    error.what());
             }
-            request = std::make_shared<Request>(request_id, publication_order, std::move(prompt),
-                                                std::move(output), prompt_summary, prepare_seconds,
-                                                std::move(options), consumer_mode, observation,
-                                                pending_deadline, submitted);
+            request = std::make_shared<Request>(
+                request_id, publication_order, std::move(prompt), std::move(output), prompt_summary,
+                prepare_seconds, std::move(options), consumer_mode, std::move(observation),
+                pending_deadline, submitted);
         } catch (...) {
             release_reserved_capacity();
             throw;
@@ -388,6 +388,13 @@ private:
         } guard{this, request};
 
         std::exception_ptr caller_error;
+        bool scheduling_failed   = false;
+        const auto fail_consumer = [&] {
+            if (caller_error == nullptr) { caller_error = std::current_exception(); }
+            request->cancelled.store(true, std::memory_order_release);
+            request_admission_check();
+            queue_cv_.notify_one();
+        };
         std::optional<GenerationStart> start;
         std::optional<PromptProgress> progress;
         std::vector<typename Request::StreamEvent> events;
@@ -414,18 +421,33 @@ private:
                 try {
                     if (start) { sink->start(std::move(*start)); }
                     if (progress) { sink->progress(std::move(*progress)); }
-                    for (auto& event : events) {
+                } catch (...) { fail_consumer(); }
+            }
+            for (auto& event : events) {
+                if (const auto* scheduling =
+                        std::get_if<std::unique_ptr<GenerationSchedulingObservation>>(&event)) {
+                    if (scheduling_failed) { continue; }
+                    try {
+                        request->observation.scheduling(**scheduling);
+                    } catch (...) {
+                        scheduling_failed = true;
+                        fail_consumer();
+                    }
+                } else if (const auto* first_token =
+                               std::get_if<GenerationFirstTokenObservation>(&event)) {
+                    if (caller_error == nullptr) {
+                        try {
+                            request->observation.first_token(*first_token);
+                        } catch (...) { fail_consumer(); }
+                    }
+                } else if (caller_error == nullptr && sink != nullptr) {
+                    try {
                         if (auto* timing = std::get_if<GenerationTimingObservation>(&event)) {
                             sink->timing(std::move(*timing));
                         } else {
                             sink->publish(std::move(std::get<OutputDelta>(event)));
                         }
-                    }
-                } catch (...) {
-                    caller_error = std::current_exception();
-                    request->cancelled.store(true, std::memory_order_release);
-                    request_admission_check();
-                    queue_cv_.notify_one();
+                    } catch (...) { fail_consumer(); }
                 }
             }
 
@@ -436,12 +458,7 @@ private:
                         request_admission_check();
                         queue_cv_.notify_one();
                     }
-                } catch (...) {
-                    caller_error = std::current_exception();
-                    request->cancelled.store(true, std::memory_order_release);
-                    request_admission_check();
-                    queue_cv_.notify_one();
-                }
+                } catch (...) { fail_consumer(); }
             }
             if (!done) { continue; }
 
@@ -475,7 +492,6 @@ private:
         bool restoring = false;
         std::vector<typename ResourceManagement::SourceChoice> sources;
         std::size_t current = 0;
-        bool prepared       = false;
         typename ResourceManagement::ReclaimCursor reclaim;
     };
 
@@ -489,11 +505,31 @@ private:
     record_committed_output(const std::shared_ptr<Request>& request,
                             std::uint32_t accepted_tokens) {
         if (accepted_tokens == 0) { return std::nullopt; }
+        cumulative_stats_.generated_tokens += accepted_tokens;
         const bool observe_wall =
             request->observation.phase_timings || request->observation.live_timings;
         const bool need_now         = !request->first_token || observe_wall;
         const Clock::time_point now = need_now ? Clock::now() : Clock::time_point{};
-        if (!request->first_token) { request->first_token = now; }
+        if (!request->first_token) {
+            request->first_token = now;
+            if (request->observation.first_token) {
+                GenerationFirstTokenObservation observation{
+                    .prepare_seconds = request->prepare_seconds,
+                    .elapsed_since_submit_seconds =
+                        std::chrono::duration<double>(now - request->submitted).count(),
+                    .queue_wait_seconds = request->admitted_at
+                                              ? std::chrono::duration<double>(
+                                                    *request->admitted_at - request->submitted)
+                                                    .count()
+                                              : 0.0,
+                };
+                {
+                    std::lock_guard lock(request->mutex);
+                    request->events.emplace_back(observation);
+                }
+                request->cv.notify_one();
+            }
+        }
         if (!observe_wall) { return std::nullopt; }
         if (!request->admitted_at || !request->first_token) {
             throw std::logic_error("committed output has no observed admission boundary");
@@ -627,6 +663,11 @@ private:
         if (admission_decision_ && admission_decision_->request == request) {
             admission_decision_.reset();
         }
+        if (!request->admitted_at) {
+            request->admission.revoked_checkpoints = resources_.source_revocations(request->id);
+            finish_source_wait(request, Clock::now());
+        }
+        resources_.release_source(*instance_.program, request->id);
         if (request->continuation_owner) {
             resources_.abandon(*instance_.program, request->continuation_owner);
             request->continuation_owner = 0;
@@ -636,6 +677,9 @@ private:
     }
 
     void complete_error(const std::shared_ptr<Request>& request, std::exception_ptr error) {
+        if (request->preemption_count) {
+            observe_scheduling(request, GenerationSchedulingTransition::Terminal);
+        }
         release_planning_state(request);
         request->prompt      = {};
         request->model_state = EngineRequestState::ModelFinished;
@@ -655,8 +699,11 @@ private:
 
     void complete_success(const std::shared_ptr<Request>& request, FinishReason reason) {
         HostPhaseMeasurement completion = begin_host_phase();
-        double prompt_wall_seconds      = 0.0;
-        double generation_wall_seconds  = 0.0;
+        if (request->preemption_count) {
+            observe_scheduling(request, GenerationSchedulingTransition::Terminal);
+        }
+        double prompt_wall_seconds     = 0.0;
+        double generation_wall_seconds = 0.0;
         if (request->observation.phase_timings && request->first_token) {
             if (!request->admitted_at || !request->last_token) {
                 throw std::logic_error("observed request completed without stable timing bounds");
@@ -676,6 +723,7 @@ private:
         }
         GenerationResult result;
         result.engine_request_id            = request->id;
+        result.admission                    = request->admission;
         result.computed_prefill_tokens      = request->computed_prompt_tokens;
         result.scheduling.preemptions       = request->preemption_count;
         result.scheduling.replay_restores   = request->replay_restores;
@@ -1020,7 +1068,20 @@ private:
             [](const CommitDecision& decision) { return decision.terminal; });
 
         for (std::size_t row = 0; row < row_count; ++row) {
-            const auto& request = slots_[lane_indices[row]];
+            const auto& request  = slots_[lane_indices[row]];
+            auto& observed       = request->speculative_stats;
+            const auto& counters = committed.rows[row].speculative_counters;
+            cumulative_stats_.speculative_rounds += counters.rounds - observed.rounds;
+            cumulative_stats_.speculative_draft_tokens +=
+                counters.drafted_tokens - observed.drafted_tokens;
+            cumulative_stats_.speculative_accepted_tokens +=
+                counters.accepted_tokens - observed.accepted_tokens;
+            cumulative_stats_.speculative_fallback_steps +=
+                counters.fallback_steps - observed.fallback_steps;
+            observed.rounds          = counters.rounds;
+            observed.drafted_tokens  = counters.drafted_tokens;
+            observed.accepted_tokens = counters.accepted_tokens;
+            observed.fallback_steps  = counters.fallback_steps;
             if (cancelled[row]) {
                 request->generation_timings = committed.rows[row].timings;
                 request->speculative_stats  = std::move(committed.rows[row].speculative);
@@ -1033,6 +1094,8 @@ private:
             for (std::size_t row = 0; row < row_count; ++row) {
                 if (!cancelled[row]) {
                     cumulative_stats_.committed_decode_tokens += decisions[row].accepted_tokens;
+                    slots_[lane_indices[row]]->committed_decode_tokens +=
+                        decisions[row].accepted_tokens;
                 }
             }
         }
@@ -1280,7 +1343,6 @@ private:
             owner ? CancellationFlagView{&owner->cancelled} : CancellationFlagView{};
         auto progress = instance_.program->poll_context(cancellation);
         if (!progress.complete) { return progress.advanced; }
-        const bool admission_reclaim = std::exchange(context_is_admission_reclaim_, false);
         record_context_work(progress, owner);
         if (owner && progress.request_timings) {
             owner->generation_timings = *progress.request_timings;
@@ -1308,6 +1370,7 @@ private:
             request->continuation_owner =
                 resources_.adopt(*instance_.program, control.source, *request->base_plan,
                                  request->publication_order, carried, progress.retired_checkpoints);
+            resources_.release_source(*instance_.program, request->id);
             request->lane     = control.destination;
             request->sequence = progress.sequence;
             if (!request->sequence) {
@@ -1327,6 +1390,7 @@ private:
                     request->paused_ns += elapsed_ns(*request->paused_at, Clock::now());
                 }
                 request->paused_at.reset();
+                observe_scheduling(request, GenerationSchedulingTransition::Restored);
             } else {
                 request->initial_binding_ns = elapsed_ns(*request->admitted_at, Clock::now());
                 if (control.summary.reused_prompt_tokens) {
@@ -1335,6 +1399,7 @@ private:
                     ++cumulative_stats_.root_selections;
                 }
                 cumulative_stats_.reused_prompt_tokens += control.summary.reused_prompt_tokens;
+                cumulative_stats_.prompt_tokens += control.summary.prompt_tokens;
                 cumulative_stats_.last_selected_frontier_tokens =
                     control.summary.reused_prompt_tokens;
                 // Generation start was published when the first binding obtained its resources.
@@ -1359,8 +1424,12 @@ private:
                     boundary = begin_host_phase();
                     return true;
                 }
-                request->suspended   = std::move(progress.paused);
-                request->model_state = EngineRequestState::Paused;
+                request->suspended      = std::move(progress.paused);
+                request->model_state    = EngineRequestState::Paused;
+                request->recovery_route = request->suspended->has_snapshot()
+                                              ? GenerationRecoveryRoute::Snapshot
+                                              : GenerationRecoveryRoute::Replay;
+                observe_scheduling(request, GenerationSchedulingTransition::Paused);
                 paused_.push_back(request);
                 std::sort(paused_.begin(), paused_.end(),
                           [](const auto& a, const auto& b) { return a->id < b->id; });
@@ -1371,6 +1440,7 @@ private:
                 slots_[lane].reset();
                 request->lane.reset();
                 request->sequence.reset();
+                request_admission_check();
                 boundary = begin_host_phase();
             } else {
                 if (progress.published) {
@@ -1387,7 +1457,7 @@ private:
             context_owner_.reset();
         }
         if (progress.kind == decltype(progress.kind)::Demote) { scheduler_.capacity_released(); }
-        if (!admission_reclaim) { request_admission_check(); }
+        request_admission_check();
         return true;
     }
 
@@ -1400,23 +1470,20 @@ private:
             return false;
         }
         if (instance_.program->reclaim_capture_reservation(shortage)) {
-            if (!cursor) { request_admission_check(); }
+            request_admission_check();
             return true;
         }
-        const bool already_transferring = instance_.program->has_context_transaction();
         const auto progress =
             cursor ? resources_.reclaim(*instance_.program, shortage, excluded, *cursor)
                    : resources_.reclaim(*instance_.program, shortage, excluded);
         if (progress != ReclaimProgress::Blocked) {
-            if (progress == ReclaimProgress::Transferring && !already_transferring) {
-                context_is_admission_reclaim_ = cursor != nullptr;
-            }
             if (progress == ReclaimProgress::Changed) {
                 scheduler_.capacity_released();
-                if (!cursor) { request_admission_check(); }
+                request_admission_check();
             }
             return true;
         }
+        if (cursor && cursor->rights.purpose != ReclaimPurpose::Execution) { return false; }
         for (auto it = paused_.rbegin(); it != paused_.rend(); ++it) {
             auto& request = **it;
             if (!request.suspended || !request.suspended->has_snapshot()) { continue; }
@@ -1428,10 +1495,12 @@ private:
                  (shortage.backend_kv_pages && resources.backend_kv_pages) ||
                  (shortage.host_bytes && resources.host_bytes)) &&
                 instance_.program->revoke_snapshot(*request.suspended)) {
+                request.recovery_route = GenerationRecoveryRoute::Replay;
+                observe_scheduling(*it, GenerationSchedulingTransition::SnapshotRevoked);
                 if (admission_decision_ && admission_decision_->request.get() == &request) {
                     admission_decision_.reset();
                 }
-                if (!cursor) { request_admission_check(); }
+                request_admission_check();
                 return true;
             }
         }
@@ -1476,6 +1545,8 @@ private:
                         !instance_.program->revoke_snapshot(*(*owner)->suspended)) {
                         throw std::logic_error("pause Host victim changed after preflight");
                     }
+                    (*owner)->recovery_route = GenerationRecoveryRoute::Replay;
+                    observe_scheduling(*owner, GenerationSchedulingTransition::SnapshotRevoked);
                 }
                 save_snapshot = true;
             }
@@ -1492,23 +1563,41 @@ private:
         request->paused_at   = pause_started;
         ++request->preemption_count;
         ++cumulative_stats_.preemptions;
+        request->recovery_route = GenerationRecoveryRoute::None;
+        observe_scheduling(request, GenerationSchedulingTransition::PauseStarted, pause_started);
         context_owner_ = request;
         capture_decisions_[lane].reset();
         scheduler_.preempted();
         return true;
     }
 
+    void finish_source_wait(const std::shared_ptr<Request>& request,
+                            Clock::time_point now) noexcept {
+        if (!request->source_wait_started) { return; }
+        request->admission.source_wait_seconds +=
+            static_cast<double>(elapsed_ns(*request->source_wait_started, now)) * 1.0e-9;
+        request->source_wait_started.reset();
+    }
+
+    void retain_admission_source(const std::shared_ptr<Request>& request,
+                                 const typename ResourceManagement::SourceChoice& choice,
+                                 bool restoring) {
+        resources_.retain_source(*instance_.program, request->id, choice);
+        if (!restoring && choice.source.reused_tokens && !request->source_wait_started) {
+            request->source_wait_started = Clock::now();
+        } else if (!restoring && !choice.source.reused_tokens) {
+            finish_source_wait(request, Clock::now());
+        }
+    }
+
     bool try_admit_one(bool restoring) {
         if (instance_.program->has_context_transaction()) { return false; }
         const auto lane = free_lane();
-        if (!lane) {
-            if (restoring && !paused_.empty()) {
-                const auto ticket = paused_.front()->id;
-                if (!has_older_resident(ticket)) {
-                    if (const auto victim =
-                            scheduler_.youngest_victim(slots_, max_concurrency_, ticket)) {
-                        return pause_resident(*victim);
-                    }
+        if (!lane && restoring) {
+            if (!paused_.empty() && !has_older_resident(paused_.front()->id)) {
+                if (const auto victim =
+                        scheduler_.youngest_victim(slots_, max_concurrency_, paused_.front()->id)) {
+                    return pause_resident(*victim);
                 }
             }
             return false;
@@ -1528,56 +1617,117 @@ private:
             candidates = scheduler_.fresh_candidates(pending_, max_concurrency_);
         }
         for (const auto& request : candidates) {
+            const ReclaimRights rights{restoring ? ReclaimPurpose::Execution
+                                                 : ReclaimPurpose::FreshAdmission,
+                                       request->id};
             if (!admission_decision_) {
-                if (!restoring) { scheduler_.admission_candidate_checked(request->id); }
+                if (!restoring) {
+                    scheduler_.admission_candidate_checked(request->id);
+                    if (request->admission_generation == admission_generation_) { continue; }
+                    request->admission_generation = admission_generation_;
+                }
                 ensure_base_plan(request);
-                auto sources =
-                    resources_.candidates(*instance_.program, *request->base_plan,
-                                          restoring ? request->suspended->frontier() : UINT32_MAX,
-                                          restoring && request->continuation_owner
-                                              ? std::optional(request->continuation_owner)
-                                              : std::nullopt);
+                const auto retained = resources_.retained_source(request->id);
+                const auto revoked  = resources_.source_revocations(request->id);
+                if (!restoring && revoked > request->admission.revoked_checkpoints) {
+                    request->admission.revoked_checkpoints = revoked;
+                    if (!retained) {
+                        request->admission.fallback_reason = AdmissionFallbackReason::SourceRevoked;
+                    }
+                }
+                std::vector<typename ResourceManagement::SourceChoice> sources;
                 if (restoring && request->suspended->has_snapshot()) {
-                    sources.resize(1);
-                    sources.front().resume_owner = request->continuation_owner
+                    auto& choice                 = sources.emplace_back();
+                    choice.resume_owner          = request->continuation_owner
                                                        ? std::optional(request->continuation_owner)
                                                        : std::nullopt;
-                    sources.front().source.private_points =
-                        resources_.points(request->continuation_owner);
+                    choice.source.private_points = resources_.points(request->continuation_owner);
+                    choice.source.take_private =
+                        resources_.can_transfer_private(request->continuation_owner, request->id);
+                } else {
+                    sources = resources_.candidates(*instance_.program, *request->base_plan,
+                                                    restoring ? request->suspended->frontier()
+                                                              : UINT32_MAX,
+                                                    restoring && request->continuation_owner
+                                                        ? std::optional(request->continuation_owner)
+                                                        : std::nullopt,
+                                                    request->id, request->publication_order);
                 }
-                admission_decision_.emplace(
-                    AdmissionDecision{request, restoring, std::move(sources), 0, false,
-                                      resources_.begin_reclaim(*instance_.program)});
+                if (!restoring && !sources.empty()) {
+                    const auto preferred = sources.front().source.reused_tokens;
+                    if (!request->admission_observed) {
+                        request->admission.preferred_reused_tokens = preferred;
+                        request->admission_observed                = true;
+                    } else if (retained && preferred < retained->source.reused_tokens) {
+                        request->admission.fallback_reason = AdmissionFallbackReason::CostChanged;
+                    }
+                }
+                admission_decision_.emplace(AdmissionDecision{
+                    request, restoring, std::move(sources), 0,
+                    resources_.begin_reclaim(*instance_.program, std::nullopt, rights)});
             }
             auto& decision = *admission_decision_;
             ContextResourceUsage shortage;
+            bool deferred = false;
             while (decision.current < decision.sources.size()) {
                 auto& choice            = decision.sources[decision.current];
                 const bool own_snapshot = restoring && request->suspended->has_snapshot();
-                if (!decision.prepared && !own_snapshot &&
-                    !resources_.prepare_source(*instance_.program, *request->base_plan, choice)) {
+                if (!own_snapshot &&
+                    !resources_.prepare_source(*instance_.program, *request->base_plan, choice,
+                                               request->id)) {
+                    if (!restoring) {
+                        request->admission.fallback_reason =
+                            resources_.source_revocations(request->id) &&
+                                    !resources_.retained_source(request->id)
+                                ? AdmissionFallbackReason::SourceRevoked
+                                : AdmissionFallbackReason::SourceInvalid;
+                    }
                     ++decision.current;
                     continue;
                 }
-                decision.prepared          = true;
-                const auto& source         = choice.source;
-                const auto binding_started = Clock::now();
-                const auto reservation     = instance_.program->start_binding(
-                    *request->base_plan, LaneId{*lane}, source,
-                    restoring ? &*request->suspended : nullptr,
-                    request->resume_phase == EngineRequestState::Prefill ? UnitKind::Prefill
-                        : request->resume_phase == EngineRequestState::ControlReady ? UnitKind::Control
-                                                                                    : UnitKind::Decode,
-                    request->resume_phase == EngineRequestState::Prefill ? 0U
-                        : request->resume_phase == EngineRequestState::ControlReady
-                            ? static_cast<std::uint32_t>(
-                              request->output.pending_control_tokens().size())
-                            : 1U);
+                if (!lane) {
+                    retain_admission_source(request, choice, restoring);
+                    deferred = true;
+                    break;
+                }
+                // A new selection replaces its old waiting reference before capacity is
+                // checked. The replacement is retained before any old point is released.
+                if (resources_.has_source_record(request->id)) {
+                    retain_admission_source(request, choice, restoring);
+                }
+                auto binding_started = Clock::now();
+                const auto bind      = [&](const auto& source) {
+                    return instance_.program->start_binding(
+                        *request->base_plan, LaneId{*lane}, source,
+                        restoring ? &*request->suspended : nullptr,
+                        request->resume_phase == EngineRequestState::Prefill ? UnitKind::Prefill
+                             : request->resume_phase == EngineRequestState::ControlReady
+                                 ? UnitKind::Control
+                                 : UnitKind::Decode,
+                        request->resume_phase == EngineRequestState::Prefill ? 0U
+                             : request->resume_phase == EngineRequestState::ControlReady
+                                 ? static_cast<std::uint32_t>(
+                                  request->output.pending_control_tokens().size())
+                                 : 1U);
+                };
+                auto reservation = bind(choice.source);
+                if (!reservation && !reservation.source_valid) {
+                    if (!restoring) {
+                        request->admission.fallback_reason =
+                            resources_.source_revocations(request->id) &&
+                                    !resources_.retained_source(request->id)
+                                ? AdmissionFallbackReason::SourceRevoked
+                                : AdmissionFallbackReason::SourceInvalid;
+                    }
+                    ++decision.current;
+                    continue;
+                }
                 if (!reservation) {
-                    shortage                    = reservation.shortage;
-                    const auto protected_source = restoring && request->suspended->has_snapshot()
+                    shortage = reservation.shortage;
+                    if (!own_snapshot) { retain_admission_source(request, choice, restoring); }
+                    const auto protected_source = own_snapshot
                                                       ? request->suspended->snapshot_handle()
-                                                      : source.checkpoint;
+                                                      : choice.source.checkpoint;
                     const auto excluded         = protected_source
                                                       ? std::span<const Checkpoint>(&*protected_source, 1)
                                                       : std::span<const Checkpoint>{};
@@ -1585,14 +1735,49 @@ private:
                                 &decision.reclaim,
                                 restoring ? std::optional(request->id) : std::nullopt)) {
                         if (instance_.program->has_context_transaction()) { return true; }
-                        // Synchronous deletion already changed capacity. Retry this source
-                        // now; only an actual transfer needs another scheduling cycle.
                         continue;
                     }
-                    ++decision.current;
-                    decision.prepared = false;
-                    continue;
+                    // Another waiting reference may be the only obstacle to a Move.
+                    // Grant its revocation only when the resulting complete bind succeeds.
+                    if (!own_snapshot) {
+                        auto transferable = choice;
+                        if (resources_.prepare_source(*instance_.program, *request->base_plan,
+                                                      transferable, request->id, rights) &&
+                            (transferable.source.consume_source != choice.source.consume_source ||
+                             transferable.source.retired_points != choice.source.retired_points)) {
+                            const auto transfer_started = Clock::now();
+                            auto attempt                = bind(transferable.source);
+                            if (attempt.source_valid) {
+                                reservation.capacity_possible |= attempt.capacity_possible;
+                            }
+                            if (attempt) {
+                                binding_started = transfer_started;
+                                reservation     = std::move(attempt);
+                                choice          = std::move(transferable);
+                            }
+                        }
+                    }
+                    if (!reservation) {
+                        // Resident progress can release/unlock capacity. A root chunk's
+                        // smaller initial allocation is not a reason to discard this source.
+                        if (reservation.capacity_possible &&
+                            (!resident_empty() || (!restoring && !paused_.empty()))) {
+                            deferred = true;
+                            break;
+                        }
+                        if (!restoring) {
+                            request->admission.fallback_reason =
+                                reservation.capacity_possible
+                                    ? AdmissionFallbackReason::IsolatedCapacity
+                                    : AdmissionFallbackReason::CapacityLimit;
+                        }
+                        ++decision.current;
+                        continue;
+                    }
                 }
+                resources_.binding_started(request->id, reservation.retired_points,
+                                           reservation.consumed_source);
+                const auto& source = choice.source;
                 const BeginSummary begin{
                     .prompt_tokens        = request->base_plan->summary().prompt_tokens,
                     .reused_prompt_tokens = source.reused_tokens,
@@ -1600,8 +1785,8 @@ private:
                         source.reused_tokens ? PrefixReusePath::Checkpoint : PrefixReusePath::Root};
                 if (restoring) {
                     std::erase(paused_, request);
-                    // The capacity event can admit several paused requests. Serve this first
-                    // reserved unit before continuing the same ordered restoration pass.
+                    observe_scheduling(request, GenerationSchedulingTransition::RestoreStarted,
+                                       binding_started);
                 } else {
                     std::lock_guard lock(queue_mutex_);
                     scheduler_.admitted(pending_, *request, max_concurrency_);
@@ -1612,6 +1797,9 @@ private:
                     MaterializingRequest{request, LaneId{*lane}, begin, restoring, choice});
                 admission_decision_.reset();
                 if (!restoring) {
+                    finish_source_wait(request, binding_started);
+                    request->admission.revoked_checkpoints =
+                        resources_.source_revocations(request->id);
                     request->admitted_at = binding_started;
                     request->host_timing.queue_wait_ns =
                         elapsed_ns(request->submitted, *request->admitted_at);
@@ -1621,8 +1809,13 @@ private:
                 return true;
             }
             admission_decision_.reset();
-            // Work outside this decision may have published new history or released a lane
-            // while its DMA was in flight. Evaluate that event in a fresh bounded pass.
+            if (deferred) {
+                if (restoring) {
+                    scheduler_.restoration_blocked();
+                    return false;
+                }
+                continue;
+            }
             if (admission_check_pending_.load(std::memory_order_acquire)) { return true; }
             if (resident_empty()) {
                 throw std::logic_error("isolated request cannot reserve its first legal unit after "
@@ -1640,11 +1833,40 @@ private:
         return false;
     }
 
+    void observe_scheduling(const std::shared_ptr<Request>& request,
+                            GenerationSchedulingTransition transition, Clock::time_point now = {}) {
+        if (!request->observation.scheduling) { return; }
+        if (now == Clock::time_point{}) { now = Clock::now(); }
+        const GenerationSchedulingObservation observation{
+            .transition              = transition,
+            .route                   = request->recovery_route,
+            .engine_request_id       = request->id,
+            .steady_ns               = elapsed_ns(Clock::time_point{}, now),
+            .elapsed_ns              = elapsed_ns(request->submitted, now),
+            .preemption_index        = request->preemption_count,
+            .global_prefill_tokens   = cumulative_stats_.computed_prefill_tokens,
+            .global_decode_tokens    = cumulative_stats_.committed_decode_tokens,
+            .global_replayed_tokens  = cumulative_stats_.replayed_tokens,
+            .request_prefill_tokens  = request->computed_prompt_tokens,
+            .request_decode_tokens   = request->committed_decode_tokens,
+            .request_replayed_tokens = request->replayed_tokens,
+        };
+        {
+            std::lock_guard lock(request->mutex);
+            request->events.emplace_back(
+                std::make_unique<GenerationSchedulingObservation>(observation));
+        }
+        request->cv.notify_one();
+    }
+
     void update_recovery(const std::shared_ptr<Request>& request, bool released = false) {
         if (!request->recovery_pending) { return; }
         request->recovery_pending = !released && request->sequence &&
                                     instance_.program->recovery_pending(*request->sequence);
         if (!request->recovery_pending) {
+            if (!released) {
+                observe_scheduling(request, GenerationSchedulingTransition::RecoveryComplete);
+            }
             scheduler_.capacity_released();
             request_admission_check();
         }
@@ -1848,13 +2070,14 @@ private:
         ++cumulative_stats_.host_work.control_units;
         for (const std::uint32_t lane : membership.lane_span()) {
             ++slots_[lane]->host_timing.control_units;
+            slots_[lane]->committed_decode_tokens += membership.row_stride;
         }
+        cumulative_stats_.committed_decode_tokens += membership.size * membership.row_stride;
 
         for (std::size_t row = 0; row < membership.size; ++row) {
             const std::uint32_t lane = membership.lanes[row];
             const auto& request      = slots_[lane];
             request->budget->commit(membership.row_stride);
-            cumulative_stats_.committed_decode_tokens += membership.row_stride;
             auto timing = record_committed_output(request, membership.row_stride);
             append_output(request, request->output.commit_preview(), std::move(timing), &phase);
             update_recovery(request);
@@ -1879,7 +2102,6 @@ private:
         instance_.program->fail_all_cleanup();
         materializing_.reset();
         admission_decision_.reset();
-        context_is_admission_reclaim_ = false;
         for (auto& decision : capture_decisions_) { decision.reset(); }
         context_owner_.reset();
         for (auto& request : paused_) {
@@ -1962,6 +2184,7 @@ private:
                 // An in-flight restoration/reclaim keeps its own candidate until settled.
                 if (!admission_decision_ || !admission_decision_->restoring) {
                     if (!admission_decision_ && consume_admission_check()) {
+                        ++admission_generation_;
                         scheduler_.begin_admission_scan();
                     }
                     if (admission_decision_ || scheduler_.admission_scan_pending()) {
@@ -2057,6 +2280,8 @@ private:
                             ++cumulative_stats_.replay_restores;
                             ++request->replay_restores;
                             request->model_state = request->resume_phase;
+                            observe_scheduling(request,
+                                               GenerationSchedulingTransition::ReplayComplete);
                         }
                     } else {
                         run_prefill_step(*lane, snapshot_cancellations());
@@ -2098,7 +2323,7 @@ private:
     std::array<std::shared_ptr<Request>, kMaximumConcurrency> slots_{};
     std::optional<MaterializingRequest> materializing_;
     std::optional<AdmissionDecision> admission_decision_;
-    bool context_is_admission_reclaim_ = false;
+    std::uint64_t admission_generation_ = 1;
     std::array<std::optional<CaptureDecision>, kMaximumConcurrency> capture_decisions_;
     std::shared_ptr<Request> context_owner_;
     std::vector<std::shared_ptr<Request>> paused_;
