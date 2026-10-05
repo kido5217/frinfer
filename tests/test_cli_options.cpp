@@ -49,7 +49,12 @@ int check(bool condition, const char* message) {
 } // namespace
 
 int main() {
-    int failures = 0;
+    int failures                          = 0;
+    const ninfer::cli::Options version    = parse({"ninfer-cli", "--version"});
+    failures += check(version.version_requested && !version.help_requested,
+                      "--version did not request the CLI build identity");
+    failures += check(ninfer::cli::usage_text("ninfer-cli").find("--version") != std::string::npos,
+                      "CLI help omits --version");
     const ninfer::cli::Options configured =
         parse({"ninfer-cli", "model.ninfer", "--prompt", "hello", "--thinking-budget", "37"});
     failures += check(configured.thinking_budget == 37,

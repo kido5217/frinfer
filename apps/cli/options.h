@@ -32,7 +32,8 @@ struct ConstraintOptions {
 };
 
 struct Options {
-    bool help_requested = false;
+    bool help_requested    = false;
+    bool version_requested = false;
 
     std::filesystem::path artifact_path;
     std::filesystem::path chat_template_path;

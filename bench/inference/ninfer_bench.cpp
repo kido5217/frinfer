@@ -1,6 +1,7 @@
 #include "ninfer_bench_support.h"
 
 #include "ninfer/engine.h"
+#include "product/build_info/build_info.h"
 
 #include <cuda_runtime.h>
 
@@ -142,6 +143,10 @@ int main(int argc, char** argv) {
     }
     if (options.help_requested) {
         std::cout << ninfer::bench::usage_text(argc > 0 ? argv[0] : "ninfer_bench");
+        return 0;
+    }
+    if (options.version_requested) {
+        std::cout << ninfer::product::version_text("ninfer_bench") << '\n';
         return 0;
     }
 

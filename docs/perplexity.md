@@ -29,7 +29,8 @@ KV representations are `bf16`, `int8`, `fp8`, `nvfp4`, and `k8v4`.
   --kv-dtype int8
 ```
 
-Run `./build/apps/frinfer-perplexity --help` for the complete command surface. The evaluator loads
+Run `./build/apps/frinfer-perplexity --help` for the complete command surface, and
+`./build/apps/frinfer-perplexity --version` for the build identity. The evaluator loads
 the model once, reads and tokenizes every selected stream before scoring, and writes readable
 startup, corpus, scoring, and per-stream summaries to stderr. Interactive weight loading and
 scoring use one transient progress line; redirected scoring emits persistent progress every ten

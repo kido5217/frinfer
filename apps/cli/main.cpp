@@ -1,4 +1,5 @@
 #include "options.h"
+#include "product/build_info/build_info.h"
 #include "product/logging/logging.h"
 #include "product/logging/pretty_format.h"
 #include "product/logging/startup_log.h"
@@ -242,6 +243,10 @@ int main(int argc, char** argv) {
     }
     if (cli.help_requested) {
         std::cout << ninfer::cli::usage_text(argv[0]);
+        return 0;
+    }
+    if (cli.version_requested) {
+        std::cout << ninfer::product::version_text("frinfer") << '\n';
         return 0;
     }
 

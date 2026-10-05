@@ -28,6 +28,12 @@ ServeOptions parse(std::vector<std::string> arguments) {
 int main() {
     int failures = 0;
 
+    const ServeOptions version = parse({"frinfer-serve", "--version"});
+    failures += check(version.version_requested && !version.help_requested,
+                      "serve --version did not request the build identity");
+    failures += check(serve_usage_text("frinfer-serve").find("--version") != std::string::npos,
+                      "serve help omits --version");
+
     const ServeOptions defaults = parse({"frinfer-serve", "model.ninfer"});
     failures += check(defaults.allow_prefix_reuse, "prefix reuse is not enabled by default");
     failures +=

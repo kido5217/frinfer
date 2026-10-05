@@ -137,6 +137,10 @@ int test_cli_contract() {
                "default pp/tg matrix");
     failures += expect(qb::usage_text("ninfer_bench").find("artifact.ninfer") != std::string::npos,
                        "help names native artifact");
+    const auto version = parse_for_test({"ninfer_bench", "--version"});
+    failures += expect(version.version_requested && !version.help_requested, "--version request");
+    failures += expect(qb::usage_text("ninfer_bench").find("--version") != std::string::npos,
+                       "help lists --version");
     failures +=
         expect(qb::usage_text("ninfer_bench").find("--grammar") != std::string::npos,
                "help names the grammar flag");
