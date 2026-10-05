@@ -115,6 +115,20 @@ def _parse_manifest(text: str) -> tuple[dict[str, str], dict[str, str], str | No
             continue
         if line.startswith("#"):
             body = line[1:].strip()
+            marker = "ninfer artifact integrity manifest v"
+            if body.startswith(marker):
+                raw = body[len(marker) :].strip()
+                try:
+                    version = int(raw)
+                except ValueError:
+                    issues.append(f"line {number}: unreadable manifest version: {line!r}")
+                else:
+                    if version != MANIFEST_VERSION:
+                        issues.append(
+                            f"line {number}: unsupported manifest version {version} "
+                            f"(expected {MANIFEST_VERSION})"
+                        )
+                continue
             for key in ("artifact_id", "payload_bytes"):
                 if body.startswith(key + " "):
                     metadata[key] = body[len(key) + 1 :].strip()
@@ -153,6 +167,8 @@ def check_manifest(artifact: Artifact, manifest_path: Path) -> tuple[bool, dict]
             "path": str(artifact.path),
             "manifest": str(manifest_path),
             "artifact_id": artifact_id,
+            "objects": None,
+            "payload_sha256": None,
             "ok": False,
             "issues": issues,
         }
