@@ -8,7 +8,7 @@ Temporary working note: remove this file when the map closes.
 All 20 tickets closed: the 15 port items landed (one PR per ticket through the pipeline) plus the three
 evidence gates resolved. The NVFP4 MoE item was split twice: converter + codec + binding (#206) →
 routed prefill gate/up (#211) → routed prefill down + merge (#212), with the `T < 20` routed path
-(#213) independent, and the e2e A/B + perplexity check (#208) blocked by #212 and #213. The original
+(#213) landed in the same chain; the e2e A/B + perplexity check (#208) is now unblocked. The original
 ticket (#182) is closed as superseded.
 
 ## Landed
@@ -25,6 +25,7 @@ ticket (#182) is closed as superseded.
 | Implement: NVFP4 35B-A3B converter + expert codec + binding | landed | #209 → `cc2c0d1c` |
 | Implement: NVFP4 routed gate/up W4A4 prefill stage | landed | #218 → `612c25a8` |
 | Implement: NVFP4 grouped W4A4 down + prefill routed merge | landed | #219 → `9d91068b` |
+| Implement: NVFP4 routed expert path for `T<20` (decode + small-T) | landed | #221 → `28c821de` |
 | Implement: jinja for-loop scope fix (llama-jinja fork) | landed | #214 → `26e4688d` |
 | Implement: `--version` on all four binaries | landed | #215 → `36f4f558` |
 | Implement: artifact integrity hashing | landed | #216 → `1ecd85aa` |
@@ -33,9 +34,8 @@ ticket (#182) is closed as superseded.
 
 ## Open frontier
 
-NVFP4 stream: **#213** — the routed expert path for `T < 20` (decode + small-T) — is the next ticket
-in the chain and the last blocker before **#208** (35B-A3B NVFP4 e2e A/B + perplexity), which is now
-blocked by #213 alone.
+NVFP4 stream: **#208** (35B-A3B NVFP4 e2e A/B + perplexity) is now unblocked — its last blocker,
+**#213** (routed `T<20` decode + small-T), landed in #221.
 
 Wave 3–4 tickets, all open, unblocked and unclaimed: GGUF converter source (#185), model-acquisition
 flags (#186), `reasoning_end` control endpoint (#187), Prometheus `/metrics` (#188), CLI
@@ -47,16 +47,14 @@ decision): the NVFP4 stream (#213) precedes the wave-4 items.
 - `models/qwen3_6_27b.ninfer` — 17.5 GB, sha256-verified; ordinary/MTP serve and real tests.
 - `models/qwen3_8_27b_nvfp4.ninfer` — 23.7 GB; carries the `dflash2` component the 27B lacks.
 - `out/qwen3_6_35b_a3b_nvfp4.ninfer` — 20,647,342,340 bytes; the produced NVFP4 artifact (30,720 routed
-  nvfp4 parents). Loads; the routed prefill path executes end to end at `T >= 20`; `T < 20` is #213.
+  nvfp4 parents). Loads; the routed path executes end to end at every `T` (`T>=20` prefill, `T<20`
+  decode/small-T).
 - Local source: `unsloth/Qwen3.6-35B-A3B-NVFP4-Fast` (compressed-tensors `nvfp4-pack-quantized`) in the
   HF cache; the non-`Fast` variant has FP8 experts in layers 32–39, so `Fast` is required.
 
 ## Next
 
-1. #213 — the NVFP4 routed path for `T < 20` (decode + small-T). The gate measured at the fused
-   `N=1024` gate/up shape; the landed representation binds two `N=512` GEMMs, so re-measure at `N=512`
-   before reusing the gate's number.
-2. #208 — e2e A/B against the published `groupwise-int` baseline + perplexity (unblocked once #213 lands).
+1. #208 — e2e A/B against the published `groupwise-int` baseline + perplexity (now unblocked).
 
 ## Backlog
 

@@ -25,7 +25,7 @@ the `frinfer` product binaries. The rest of this README describes the combined p
 ### Changes from upstream
 
 Maintained: add or update a row whenever a fork feature changes or its status changes.
-Last updated 2026-10-06 (`feat/nvfp4-routed-down`, `7e734e79`).
+Last updated 2026-10-06 (`feat/nvfp4-routed-decode`, `28c821de`).
 
 | What | Why | How | Status | Source |
 |---|---|---|---|---|
