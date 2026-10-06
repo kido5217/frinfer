@@ -36,10 +36,11 @@ ticket (#182) is closed as superseded.
 ## Open frontier
 
 The NVFP4 stream is complete: **#208** (35B-A3B NVFP4 e2e A/B + perplexity) was resolved on-ticket —
-e2e prefill **+8.5–18.8 %**, corpus makespan −9.5 %, decode parity vs the published rows,
+e2e prefill **+8.5–18.8 %**, corpus makespan −9.4 %, decode parity vs the published rows,
 perplexity **+0.94 %** overall. Adverse finding (reported, not a gate failure as written): decode runs
-**3–7 % below the same-build groupwise artifact** because the current build's groupwise decode has
-drifted ~5–8 % above the Sep-07 published rows; cause unattributed (no `T<20` op-level bench).
+**3–7 % below the same-build groupwise artifact** (5–7 % at three of four contexts; the 3 % end at
+260,096 is within run-to-run spread) because the current build's groupwise decode has drifted ~5–8 %
+above the Sep-07 published rows; cause unattributed (no `T<20` op-level bench).
 
 The remaining frontier is the Wave 3–4 tickets, all open, unblocked and unclaimed: GGUF converter source (#185), model-acquisition
 flags (#186), `reasoning_end` control endpoint (#187), Prometheus `/metrics` (#188), CLI
