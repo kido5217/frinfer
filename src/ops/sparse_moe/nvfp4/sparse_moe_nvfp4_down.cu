@@ -234,6 +234,17 @@ void sparse_moe_nvfp4_down_kernel(const std::uint8_t* __restrict__ x_codes,
 
 } // namespace
 
+Nvfp4DownBases make_nvfp4_down_bases(const SparseMoeWeights& weights) {
+    Nvfp4DownBases bases{};
+    for (int expert = 0; expert < kNvfp4RoutedExperts; ++expert) {
+        const Weight& down  = weights.routed_down_experts[expert];
+        bases.codes[expert]   = down.qdata;
+        bases.scales[expert]  = down.scales;
+        bases.divisor[expert] = down.weight_scale_divisor;
+    }
+    return bases;
+}
+
 void sparse_moe_nvfp4_down_launch(const Tensor& routed_activation,
                                   const SparseMoeWeights& weights, const int* expert_offsets,
                                   const int* route_job_experts, const int* route_job_columns,
@@ -253,13 +264,7 @@ void sparse_moe_nvfp4_down_launch(const Tensor& routed_activation,
                                                            assignments, kNvfp4DownActivationDivisor);
     CUDA_CHECK(cudaGetLastError());
 
-    Nvfp4DownBases bases{};
-    for (int expert = 0; expert < kNvfp4RoutedExperts; ++expert) {
-        const Weight& down = weights.routed_down_experts[expert];
-        bases.codes[expert]   = down.qdata;
-        bases.scales[expert]  = down.scales;
-        bases.divisor[expert] = down.weight_scale_divisor;
-    }
+    const Nvfp4DownBases bases = make_nvfp4_down_bases(weights);
 
     sparse_moe_nvfp4_down_kernel<Nvfp4DownSchedule>
         <<<kNvfp4DownMaxBlocks, Nvfp4DownSchedule::kThreads, 0, stream>>>(

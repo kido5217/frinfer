@@ -22,6 +22,10 @@ struct Nvfp4DownBases {
     float divisor[kNvfp4RoutedExperts];
 };
 
+// Builds the per-expert weight bases table from the bound nvfp4 routed down parents. Shared by the
+// T>=20 prefill route and the T<20 SIMT route; the table is passed to the kernel by value.
+[[nodiscard]] Nvfp4DownBases make_nvfp4_down_bases(const SparseMoeWeights& weights);
+
 // Runs the nvfp4 routed down prefill stage: quantises the BF16 routed activation
 // [assignments, 512] into a compact FP4 plane (one private activation divisor, as in the gate/up
 // stage), then executes the grouped W4A4 down GEMM over the packed route, writing the BF16 grouped
