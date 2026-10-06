@@ -83,11 +83,13 @@ struct SparseMoeHints {
  * routes to for the grouped 64-column/64-row gate/up GEMM, the SwiGLU result is quantised per
  * packed column for the grouped down GEMM, and the routed output is merged with the shared expert.
  * Each quantisation uses one private activation divisor (activation quantisation is a private
- * execution choice, not the source's per-expert activation_input_divisor).
+ * execution choice, not the source's per-expert activation_input_divisor). At T < 20 the nvfp4
+ * routed profile runs an A16 SIMT path: the BF16 activation is dotted against each per-expert
+ * parent with the E2M1 codes and K16 E4M3 scales decoded on the fly into FP32 FMA accumulators.
  *
- * Every positive T is supported by the packed Q4/Q5/Q6/Q8 profiles. The nvfp4 routed profile is
- * admitted at T >= 20; its routed gate/up, routed down, and merge execute on the Blackwell W4A4
- * tensor-core path.
+ * Every positive T is supported by the packed Q4/Q5/Q6/Q8 profiles and by the nvfp4 routed
+ * profile: T >= 20 takes the Blackwell W4A4 prefill route, T < 20 the A16 SIMT decode/small-T
+ * route. Both own routed gate/up, routed down, and the merge with the shared expert.
  *
  * x, destination, all weight planes, and live workspace must be pairwise non-overlapping.
  * Execution is enqueued on stream without host synchronization. Workspace is caller-owned,

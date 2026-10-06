@@ -278,6 +278,21 @@ void sparse_moe_nvfp4_gate_up_kernel(const std::uint8_t* __restrict__ x_codes,
 
 } // namespace
 
+Nvfp4GateUpBases make_nvfp4_gate_up_bases(const SparseMoeWeights& weights) {
+    Nvfp4GateUpBases bases{};
+    for (int expert = 0; expert < kNvfp4RoutedExperts; ++expert) {
+        const Weight& gate = weights.routed_gate_up_experts[2 * expert];
+        const Weight& up   = weights.routed_gate_up_experts[2 * expert + 1];
+        bases.gate_codes[expert]   = gate.qdata;
+        bases.gate_scales[expert]  = gate.scales;
+        bases.up_codes[expert]     = up.qdata;
+        bases.up_scales[expert]    = up.scales;
+        bases.gate_divisor[expert] = gate.weight_scale_divisor;
+        bases.up_divisor[expert]   = up.weight_scale_divisor;
+    }
+    return bases;
+}
+
 void sparse_moe_nvfp4_gate_up_launch(const Tensor& x, const SparseMoeWeights& weights,
                                      const int* packed_token, const int* expert_offsets,
                                      const int* route_job_experts,
@@ -298,17 +313,7 @@ void sparse_moe_nvfp4_gate_up_launch(const Tensor& x, const SparseMoeWeights& we
                                                            kNvfp4ActivationDivisor);
     CUDA_CHECK(cudaGetLastError());
 
-    Nvfp4GateUpBases bases{};
-    for (int expert = 0; expert < kNvfp4RoutedExperts; ++expert) {
-        const Weight& gate = weights.routed_gate_up_experts[2 * expert];
-        const Weight& up   = weights.routed_gate_up_experts[2 * expert + 1];
-        bases.gate_codes[expert]    = gate.qdata;
-        bases.gate_scales[expert]   = gate.scales;
-        bases.up_codes[expert]      = up.qdata;
-        bases.up_scales[expert]     = up.scales;
-        bases.gate_divisor[expert]  = gate.weight_scale_divisor;
-        bases.up_divisor[expert]    = up.weight_scale_divisor;
-    }
+    const Nvfp4GateUpBases bases = make_nvfp4_gate_up_bases(weights);
 
     // The persistent kernel strides its work list by gridDim.x, so a fixed cap is correct for any
     // job count and the job count is only ever read on the device; never dereference the device

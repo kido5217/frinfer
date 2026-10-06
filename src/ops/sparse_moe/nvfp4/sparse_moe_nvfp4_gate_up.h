@@ -26,6 +26,10 @@ struct Nvfp4GateUpBases {
     float up_divisor[kNvfp4RoutedExperts];
 };
 
+// Builds the per-expert weight bases table from the bound nvfp4 routed parents. Shared by the
+// T>=20 prefill route and the T<20 SIMT route; the table is passed to the kernel by value.
+[[nodiscard]] Nvfp4GateUpBases make_nvfp4_gate_up_bases(const SparseMoeWeights& weights);
+
 // Runs the nvfp4 routed gate/up prefill stage: quantises the routed activation x into a compact
 // FP4 plane shared by every expert a token routes to, then executes the grouped W4A4 gate/up GEMM
 // over the packed route, writing the BF16 SwiGLU activation [512, assignments].

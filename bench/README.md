@@ -803,8 +803,9 @@ path at the registered 35B-A3B expert geometry — gate/up `N=1024 K=2048` and d
 activation quantisation into the compact FP4 plane plus the grouped W4A4 `mma_nvfp4_e4m3` GEMM over
 a synthetic packed route, with one complete nvfp4 parent per expert projection. The timed scope is
 each routed stage — including activation quantisation and the per-launch host table build — not the
-complete SparseMoe Op (the T<20 path is #213; the e2e A/B is #208), so the reported TFLOP/s is a
-lower bound on the GEMM alone. Compare against the published Q4/Q5 sparse-MoE body baseline (125
+complete SparseMoe Op (the nvfp4 `T<20` decode/small-T route is not covered by this benchmark;
+that route's correctness is checked by its own FP64-oracle test, and the e2e A/B is #208), so the
+reported TFLOP/s is a lower bound on the GEMM alone. Compare against the published Q4/Q5 sparse-MoE body baseline (125
 logical TFLOP/s at prefill scale).
 
 ```bash
