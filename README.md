@@ -25,7 +25,7 @@ the `frinfer` product binaries. The rest of this README describes the combined p
 ### Changes from upstream
 
 Maintained: add or update a row whenever a fork feature changes or its status changes.
-Last updated 2026-10-05 (`port/cli-show-prompt`, `ef1d8a29`).
+Last updated 2026-10-06 (`feat/nvfp4-routed-gate-up`, `2055d332`).
 
 | What | Why | How | Status | Source |
 |---|---|---|---|---|
