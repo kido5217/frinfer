@@ -11,6 +11,7 @@
 #include "ops/linear/q6/q6_rowsplit_storage.cuh"
 #include "ops/sparse_moe/decode/sparse_moe_decode.h"
 #include "ops/sparse_moe/nvfp4/sparse_moe_nvfp4_gate_up.h"
+#include "ops/sparse_moe/nvfp4/sparse_moe_nvfp4_down.h"
 #include "ops/sparse_moe/sparse_moe_route.cuh"
 #include "ops/sparse_moe/small_t/sparse_moe_small_t.h"
 
@@ -1371,6 +1372,13 @@ void sparse_moe_prefill_launch(const Tensor& x, const SparseMoeWeights& weights,
                 <<<routed_down_grid, kExpertThreads, 0, stream>>>(
                     routed_activation, offsets, routed_down_codes, routed_down_scales, grouped_io,
                     nullptr, nullptr, nullptr, tokens, nullptr);
+            break;
+        case QType::NVFP4:
+            sparse_moe_nvfp4_down_launch(
+                Tensor(routed_activation, DType::BF16, {kIntermediate, assignments}), weights,
+                offsets, route_job_experts, route_job_columns, route_job_count,
+                static_cast<std::uint8_t*>(workspace.nvfp4_down_codes.data),
+                static_cast<std::uint8_t*>(workspace.nvfp4_down_scales.data), grouped_io, stream);
             break;
         default:
             throw std::invalid_argument("sparse_moe prefill: unsupported down codec");

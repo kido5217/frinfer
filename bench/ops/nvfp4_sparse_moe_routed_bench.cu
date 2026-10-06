@@ -1,10 +1,10 @@
-// Kernel A/B for the NVFP4 routed gate/up prefill stage (ticket #211, map #175). Times the
-// production `sparse_moe_nvfp4_gate_up_launch` — activation quantisation + grouped W4A4
-// `mma_nvfp4_e4m3` gate/up GEMM — over a token sweep at the registered 35B-A3B expert geometry
-// (gate/up N=1024 K=2048). The timed scope includes the activation quantisation and the per-launch
-// host table build, so the reported TFLOP/s is a lower bound on the GEMM alone. Compare against the
-// published Q4/Q5 sparse-MoE body baseline (125 logical TFLOP/s at prefill scale, evidence gate
-// `research/nvfp4-moe-evidence`).
+// Kernel A/B for the NVFP4 routed prefill stages (tickets #211/#212, map #175). Times the
+// production `sparse_moe_nvfp4_gate_up_launch` and `sparse_moe_nvfp4_down_launch` — activation
+// quantisation + grouped W4A4 `mma_nvfp4_e4m3` GEMM — over a token sweep at the registered 35B-A3B
+// expert geometry (gate/up N=1024 K=2048, down N=2048 K=512). The timed scope includes the
+// activation quantisation and the per-launch host table build, so the reported TFLOP/s is a lower
+// bound on the GEMM alone. Compare against the published Q4/Q5 sparse-MoE body baseline (125
+// logical TFLOP/s at prefill scale, evidence gate `research/nvfp4-moe-evidence`).
 
 #include "core/arena.h"
 #include "core/device.h"
@@ -14,6 +14,7 @@
 
 #include "ninfer_bench_common.h"
 #include "ops/sparse_moe/nvfp4/sparse_moe_nvfp4_gate_up.h"
+#include "ops/sparse_moe/nvfp4/sparse_moe_nvfp4_down.h"
 #include "quantized_weight.cuh"
 
 #include <cuda_runtime.h>
@@ -154,6 +155,9 @@ struct Point {
     DeviceBuffer plane_codes;
     DeviceBuffer plane_scales;
     DeviceBuffer output;
+    DeviceBuffer down_codes;
+    DeviceBuffer down_scales;
+    DeviceBuffer down_output;
     int assignments = 0;
 };
 
@@ -170,6 +174,9 @@ Point make_point(std::int32_t tokens) {
     point.plane_codes = DeviceBuffer(std::size_t(tokens) * (kHidden / 2));
     point.plane_scales = DeviceBuffer(std::size_t(tokens) * (kHidden / 16));
     point.output = DeviceBuffer(std::size_t(kIntermediate) * route.assignments * sizeof(std::uint16_t));
+    point.down_codes  = DeviceBuffer(std::size_t(route.assignments) * (512 / 2));
+    point.down_scales = DeviceBuffer(std::size_t(route.assignments) * (512 / 16));
+    point.down_output = DeviceBuffer(std::size_t(kHidden) * route.assignments * sizeof(std::uint16_t));
     return point;
 }
 
@@ -193,6 +200,11 @@ int main(int argc, char** argv) {
             parents.push_back(bench::make_nvfp4_weight(kGateRows, kHidden, 0x211u + expert * 2));
             parents.push_back(bench::make_nvfp4_weight(kGateRows, kHidden, 0x212u + expert * 2));
         }
+        std::vector<bench::PackedQuantizedWeight> down_parents;
+        down_parents.reserve(kExperts);
+        for (int expert = 0; expert < kExperts; ++expert) {
+            down_parents.push_back(bench::make_nvfp4_weight(kHidden, kIntermediate, 0x213u + expert));
+        }
         ops::SparseMoeWeights weights{};
         weights.routed_gate_up.qtype = QType::NVFP4;
         weights.routed_down.qtype    = QType::NVFP4;
@@ -200,9 +212,15 @@ int main(int argc, char** argv) {
         for (const bench::PackedQuantizedWeight& parent : parents) {
             weights.routed_gate_up_experts.push_back(parent.weight);
         }
+        weights.routed_down_experts.reserve(down_parents.size());
+        for (const bench::PackedQuantizedWeight& parent : down_parents) {
+            weights.routed_down_experts.push_back(parent.weight);
+        }
 
-        const std::uint64_t weight_bytes =
+        const std::uint64_t gate_up_weight_bytes =
             2ull * kExperts * parents.front().model_weight_bytes();
+        const std::uint64_t down_weight_bytes =
+            static_cast<std::uint64_t>(kExperts) * down_parents.front().model_weight_bytes();
         std::printf("%-16s %8s %8s %6s %11s %11s %11s %9s %10s\n", "op", "N", "K", "T", "median_us",
                     "min_us", "p95_us", "eff_GB/s", "TFLOP/s");
 
@@ -241,13 +259,45 @@ int main(int argc, char** argv) {
             const double flops =
                 2.0 * static_cast<double>(point.assignments) * 2.0 * kGateRows * kHidden;
             const double useful_tflops = flops / seconds / 1.0e12;
-            const double effective_gbs  = static_cast<double>(weight_bytes) / seconds / 1.0e9;
+            const double effective_gbs  = static_cast<double>(gate_up_weight_bytes) / seconds / 1.0e9;
             std::printf("%-16s %8d %8d %6d %11.3f %11.3f %11.3f %9.1f %10.2f\n",
                         "nvfp4_gate_up", 2 * kGateRows, kHidden, point.tokens, timing.median_us,
                         timing.min_us, timing.p95_us, effective_gbs, useful_tflops);
             if (csv) {
                 csv << "sparse_moe_gate_up,NVFP4," << 2 * kGateRows << ',' << kHidden << ','
-                    << point.tokens << ',' << weight_bytes << ',' << timing.median_us << ','
+                    << point.tokens << ',' << gate_up_weight_bytes << ',' << timing.median_us << ','
+                    << timing.min_us << ',' << timing.p95_us << ',' << effective_gbs << ','
+                    << useful_tflops << ',' << options.warmup << ',' << options.repeat << ','
+                    << kFlushBytes << '\n';
+            }
+        }
+
+        for (Point& point : points) {
+            const auto launch = [&](cudaStream_t launch_stream) {
+                Tensor activation(point.output.p, DType::BF16, {kIntermediate, point.assignments});
+                ops::detail::sparse_moe_nvfp4_down_launch(
+                    activation, weights, static_cast<const int*>(point.expert_offsets.p),
+                    static_cast<const int*>(point.job_experts.p),
+                    static_cast<const int*>(point.job_columns.p),
+                    static_cast<const int*>(point.job_count.p),
+                    static_cast<std::uint8_t*>(point.down_codes.p),
+                    static_cast<std::uint8_t*>(point.down_scales.p),
+                    static_cast<__nv_bfloat16*>(point.down_output.p), launch_stream);
+            };
+            const bench::ColdTiming timing = bench::measure_cold_launch(
+                launch, flush, stream, options.warmup, options.repeat);
+            const double seconds = timing.median_us * 1.0e-6;
+            const double flops =
+                2.0 * static_cast<double>(point.assignments) * kHidden * kIntermediate;
+            const double useful_tflops = flops / seconds / 1.0e12;
+            const double effective_gbs =
+                static_cast<double>(down_weight_bytes) / seconds / 1.0e9;
+            std::printf("%-16s %8d %8d %6d %11.3f %11.3f %11.3f %9.1f %10.2f\n", "nvfp4_down",
+                        kHidden, kIntermediate, point.tokens, timing.median_us, timing.min_us,
+                        timing.p95_us, effective_gbs, useful_tflops);
+            if (csv) {
+                csv << "sparse_moe_down,NVFP4," << kHidden << ',' << kIntermediate << ','
+                    << point.tokens << ',' << down_weight_bytes << ',' << timing.median_us << ','
                     << timing.min_us << ',' << timing.p95_us << ',' << effective_gbs << ','
                     << useful_tflops << ',' << options.warmup << ',' << options.repeat << ','
                     << kFlushBytes << '\n';
@@ -257,7 +307,7 @@ int main(int argc, char** argv) {
         CUDA_CHECK(cudaStreamDestroy(stream));
         return 0;
     } catch (const std::exception& error) {
-        std::fprintf(stderr, "ninfer_nvfp4_sparse_moe_gate_up_bench: %s\n", error.what());
+        std::fprintf(stderr, "ninfer_nvfp4_sparse_moe_routed_bench: %s\n", error.what());
         return 1;
     }
 }
