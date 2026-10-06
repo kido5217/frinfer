@@ -1,13 +1,15 @@
 # Wayfinder port status
 
-Status of [map #175 — llama.cpp port implementation](https://github.com/kido5217/frinfer/issues/175) as of 2026-10-05.
+Status of [map #175 — llama.cpp port implementation](https://github.com/kido5217/frinfer/issues/175) as of 2026-10-06.
 Temporary working note: remove this file when the map closes.
 
 ## Destination
 
 All 20 tickets closed: the 15 port items landed (one PR per ticket through the pipeline) plus the three
-evidence gates resolved. The NVFP4 MoE item was split into three ordered tickets (converter + codec +
-binding → W4A4 GEMM → e2e A/B + perplexity); the original ticket is closed as superseded.
+evidence gates resolved. The NVFP4 MoE item was split twice: converter + codec + binding (#206) →
+routed prefill gate/up (#211) → routed prefill down + merge (#212), with the `T < 20` routed path
+(#213) independent, and the e2e A/B + perplexity check (#208) blocked by #212 and #213. The original
+ticket (#182) is closed as superseded.
 
 ## Landed
 
@@ -21,35 +23,42 @@ binding → W4A4 GEMM → e2e A/B + perplexity); the original ticket is closed a
 | Implement: Anthropic `output_config.format` | landed | #202 → `b89fc98c` |
 | Implement: logprobs / `top_logprobs` | landed | #205 → `dc40c531` |
 | Implement: NVFP4 35B-A3B converter + expert codec + binding | landed | #209 → `cc2c0d1c` |
-| Implement: NVFP4 MoE experts + W4A4 GEMM (original) | closed superseded, split into three | — |
-
-Non-map fixes landed this session: #203 → `854ef166` (`cuda_profiler_api` in the devShell, restored the
-bench build) and #204 → `43419e0d` (`just` task runner + `justfile`).
+| Implement: NVFP4 routed gate/up W4A4 prefill stage | landed | #218 → `612c25a8` |
+| Implement: NVFP4 grouped W4A4 down + prefill routed merge | landed | #219 → `9d91068b` |
+| Implement: jinja for-loop scope fix (llama-jinja fork) | landed | #214 → `26e4688d` |
+| Implement: `--version` on all four binaries | landed | #215 → `36f4f558` |
+| Implement: artifact integrity hashing | landed | #216 → `1ecd85aa` |
+| Implement: CLI `--show-prompt` | landed | #217 → `1b225087` |
+| Implement: NVFP4 MoE experts + W4A4 GEMM (original) | closed superseded, split twice | — |
 
 ## Open frontier
 
-Wave 3–4 tickets, all open and unblocked except as noted: jinja for-loop scope fix, GGUF converter
-source, model-acquisition flags, `reasoning_end` control endpoint, Prometheus `/metrics`, `--version`,
-CLI `--prompt-file`/stdin, CLI `--show-prompt`, tokenizer CLI, artifact integrity hashing.
-The W4A4 `sparse_moe` GEMM (#207) is unblocked; the 35B-A3B NVFP4 e2e A/B + perplexity (#208) is
-blocked by it.
+NVFP4 stream: **#213** — the routed expert path for `T < 20` (decode + small-T) — is the next ticket
+in the chain and the last blocker before **#208** (35B-A3B NVFP4 e2e A/B + perplexity), which is now
+blocked by #213 alone.
+
+Wave 3–4 tickets, all open, unblocked and unclaimed: GGUF converter source (#185), model-acquisition
+flags (#186), `reasoning_end` control endpoint (#187), Prometheus `/metrics` (#188), CLI
+`--prompt-file`/stdin (#190), tokenizer CLI (#192). Claim order is wave order (#174's locked
+decision): the NVFP4 stream (#213) precedes the wave-4 items.
 
 ## Resources on this machine
 
 - `models/qwen3_6_27b.ninfer` — 17.5 GB, sha256-verified; ordinary/MTP serve and real tests.
 - `models/qwen3_8_27b_nvfp4.ninfer` — 23.7 GB; carries the `dflash2` component the 27B lacks.
 - `out/qwen3_6_35b_a3b_nvfp4.ninfer` — 20,647,342,340 bytes; the produced NVFP4 artifact (30,720 routed
-  nvfp4 parents). Loads; execution awaits #207.
+  nvfp4 parents). Loads; the routed prefill path executes end to end at `T >= 20`; `T < 20` is #213.
 - Local source: `unsloth/Qwen3.6-35B-A3B-NVFP4-Fast` (compressed-tensors `nvfp4-pack-quantized`) in the
   HF cache; the non-`Fast` variant has FP8 experts in layers 32–39, so `Fast` is required.
 
 ## Next
 
-1. #207 — the W4A4 `sparse_moe` GEMM. The gate measured at the fused `N=1024` gate/up shape; the landed
-   representation binds two `N=512` GEMMs, so re-measure at `N=512` before reusing the gate's number.
-2. #208 — e2e A/B against the published `groupwise-int` baseline + perplexity.
+1. #213 — the NVFP4 routed path for `T < 20` (decode + small-T). The gate measured at the fused
+   `N=1024` gate/up shape; the landed representation binds two `N=512` GEMMs, so re-measure at `N=512`
+   before reusing the gate's number.
+2. #208 — e2e A/B against the published `groupwise-int` baseline + perplexity (unblocked once #213 lands).
 
 ## Backlog
 
-Open non-map bugs: #199 (silent stall — a served turn ends with no tool call and no demotion) and #201
-(closed). Open backlog is #199 only.
+Open non-map bugs: #199 (silent stall — a served turn ends with no tool call and no demotion). Open
+backlog is #199 only.
