@@ -71,6 +71,11 @@ struct SparseMoePrefillWorkspace {
     // Q4/Q5/Q6/Q8 profiles.
     DeviceSpan nvfp4_activation_codes;
     DeviceSpan nvfp4_activation_scales;
+    // The nvfp4 routed down stage quantises the routed SwiGLU activation, which is indexed per
+    // packed column rather than per token: assignments * 512/2 code bytes and assignments * 512/16
+    // scale bytes. Empty on the packed profiles.
+    DeviceSpan nvfp4_down_codes;
+    DeviceSpan nvfp4_down_scales;
 };
 
 template <class Arena>
@@ -118,6 +123,12 @@ SparseMoePrefillWorkspace allocate_sparse_moe_prefill_workspace(Arena& arena,
             arena.alloc_bytes(static_cast<std::size_t>(capacity_tokens) * (2048 / 2), 256);
         out.nvfp4_activation_scales =
             arena.alloc_bytes(static_cast<std::size_t>(capacity_tokens) * (2048 / 16), 256);
+        // The routed down stage quantises the routed SwiGLU activation per packed column: 512/2
+        // code bytes and 512/16 scale bytes for each of the 8 * tokens assignments.
+        out.nvfp4_down_codes =
+            arena.alloc_bytes(static_cast<std::size_t>(assignments) * (512 / 2), 256);
+        out.nvfp4_down_scales =
+            arena.alloc_bytes(static_cast<std::size_t>(assignments) * (512 / 16), 256);
     }
     return out;
 }

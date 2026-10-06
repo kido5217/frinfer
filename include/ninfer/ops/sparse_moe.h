@@ -77,13 +77,17 @@ struct SparseMoeHints {
  * or repack occurs. The nvfp4 routed profile is admitted as per-expert parents
  * (routed_gate_up_experts/routed_down_experts, one complete [512,2048] or [2048,512] parent per
  * expert projection) because gate/up are separate tensors and the source selects an FP32 divisor
- * per expert; gate/up share that divisor within an expert. Its routed gate/up prefill stage executes
- * on the Blackwell W4A4 tensor-core path (`mma_nvfp4_e4m3`): the routed activation is quantised
- * once per token into a compact FP4 plane and shared by every expert the token routes to, using one
- * private activation divisor (activation quantisation is a private execution choice, not the
- * source's per-expert activation_input_divisor).
+ * per expert; gate/up share that divisor within an expert. At T >= 20 the nvfp4 routed prefill
+ * path executes end to end on the Blackwell W4A4 tensor-core path (`mma_nvfp4_e4m3`): the routed
+ * activation is quantised once per token into a compact FP4 plane shared by every expert the token
+ * routes to for the grouped 64-column/64-row gate/up GEMM, the SwiGLU result is quantised per
+ * packed column for the grouped down GEMM, and the routed output is merged with the shared expert.
+ * Each quantisation uses one private activation divisor (activation quantisation is a private
+ * execution choice, not the source's per-expert activation_input_divisor).
  *
- * Every positive T is supported.
+ * Every positive T is supported by the packed Q4/Q5/Q6/Q8 profiles. The nvfp4 routed profile is
+ * admitted at T >= 20; its routed gate/up, routed down, and merge execute on the Blackwell W4A4
+ * tensor-core path.
  *
  * x, destination, all weight planes, and live workspace must be pairwise non-overlapping.
  * Execution is enqueued on stream without host synchronization. Workspace is caller-owned,

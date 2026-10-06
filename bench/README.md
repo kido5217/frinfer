@@ -796,20 +796,20 @@ cmake --build build --parallel --target ninfer_nvfp4_linear_swiglu_bench
   --warmup 10 --repeat 50
 ```
 
-## NVFP4 routed gate/up Op benchmark
+## NVFP4 routed MoE Op benchmark
 
-`ninfer_nvfp4_sparse_moe_gate_up_bench` measures the prefill stage of the SparseMoe nvfp4 routed
-path at the registered 35B-A3B expert geometry (gate/up `N=1024 K=2048`): activation quantisation
-into the compact per-token FP4 plane plus the grouped W4A4 `mma_nvfp4_e4m3` GEMM over a synthetic
-packed route, with one complete nvfp4 parent per expert projection. The timed scope is the routed
-gate/up stage — including activation quantisation and the per-launch host table build — not the
-complete SparseMoe Op (routed down + merge is #212; the T<20 path is #213), so the reported
-TFLOP/s is a lower bound on the GEMM alone. Compare against the published Q4/Q5 sparse-MoE body
-baseline (125 logical TFLOP/s at prefill scale).
+`ninfer_nvfp4_sparse_moe_routed_bench` measures the prefill stages of the SparseMoe nvfp4 routed
+path at the registered 35B-A3B expert geometry — gate/up `N=1024 K=2048` and down `N=2048 K=512`:
+activation quantisation into the compact FP4 plane plus the grouped W4A4 `mma_nvfp4_e4m3` GEMM over
+a synthetic packed route, with one complete nvfp4 parent per expert projection. The timed scope is
+each routed stage — including activation quantisation and the per-launch host table build — not the
+complete SparseMoe Op (the T<20 path is #213; the e2e A/B is #208), so the reported TFLOP/s is a
+lower bound on the GEMM alone. Compare against the published Q4/Q5 sparse-MoE body baseline (125
+logical TFLOP/s at prefill scale).
 
 ```bash
-cmake --build build --parallel --target ninfer_nvfp4_sparse_moe_gate_up_bench
-./build/bench/ninfer_nvfp4_sparse_moe_gate_up_bench \
+cmake --build build --parallel --target ninfer_nvfp4_sparse_moe_routed_bench
+./build/bench/ninfer_nvfp4_sparse_moe_routed_bench \
   --t-sweep 20,256,512,1024,2048 --warmup 10 --repeat 50
 ```
 
