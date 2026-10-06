@@ -326,10 +326,11 @@ int main() {
         return 77;
     }
     int failures = 0;
-    // T=20 is the first prefill token count; T=200 is an interior extent spanning many full and
-    // partial 64-column route tiles. The larger extent samples columns (and always every expert's
-    // last column) to keep the FP64 oracle bounded.
-    failures += run_case("nvfp4 gate/up T=20", 20, 16, 1);
+    // T=20 concentrates every assignment on one expert, so the three route jobs cover every
+    // 64-column A-tile position (two full tiles and a partial tail) and the oracle checks all of
+    // them. T=200 spreads overlap across 128 experts with a sampled oracle to keep the FP64
+    // reference bounded while still crossing every expert and partial-tile boundary.
+    failures += run_case("nvfp4 gate/up T=20", 20, 1, 1);
     failures += run_case("nvfp4 gate/up T=200", 200, 128, 8);
     std::cout << (failures == 0 ? "OK" : "FAIL") << " sparse_moe nvfp4 gate/up correctness\n";
     return failures == 0 ? 0 : 1;

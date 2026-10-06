@@ -1,7 +1,10 @@
 // Kernel A/B for the NVFP4 routed gate/up prefill stage (ticket #211, map #175). Times the
 // production `sparse_moe_nvfp4_gate_up_launch` — activation quantisation + grouped W4A4
 // `mma_nvfp4_e4m3` gate/up GEMM — over a token sweep at the registered 35B-A3B expert geometry
-// (gate/up N=1024 K=2048), against the published Q4/Q5 sparse-MoE body baseline.
+// (gate/up N=1024 K=2048). The timed scope includes the activation quantisation and the per-launch
+// host table build, so the reported TFLOP/s is a lower bound on the GEMM alone. Compare against the
+// published Q4/Q5 sparse-MoE body baseline (125 logical TFLOP/s at prefill scale, evidence gate
+// `research/nvfp4-moe-evidence`).
 
 #include "core/arena.h"
 #include "core/device.h"

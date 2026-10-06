@@ -5,7 +5,9 @@
 
 #include "core/weight.h"
 #include "core/weight_view.h"
+#include "ninfer/ops/sparse_moe.h"
 #include "ninfer/ops/weight_input.h"
+#include "ops/sparse_moe/prefill/sparse_moe_prefill.h"
 
 #include <array>
 #include <cstddef>
@@ -240,6 +242,22 @@ void rejects_mismatched_gate_up_divisor() {
                    "nvfp4 gate/up activation divisors disagreeing was accepted");
 }
 
+void checks_nvfp4_prefill_plan() {
+    // The public workspace query and the prefill route plan must agree: they share one allocation
+    // function, and the nvfp4 activation plane is part of that workspace.
+    const std::size_t capacity =
+        ops::sparse_moe_workspace_capacity_bytes(QType::NVFP4, QType::NVFP4, 20, 200);
+    const auto plan = ops::detail::resolve_sparse_moe_prefill_plan(200, QType::NVFP4, QType::NVFP4);
+    check(plan.workspace_bytes == capacity,
+          "nvfp4 prefill workspace query disagrees with the route plan");
+    check(ops::detail::sparse_moe_uses_prefill(20, QType::NVFP4, QType::NVFP4) &&
+              ops::detail::sparse_moe_uses_prefill(200, QType::NVFP4, QType::NVFP4),
+          "nvfp4 does not select the prefill route at T>=20");
+    // Workspace must cover the compact FP4 activation plane (2048/2 + 2048/16 bytes per token).
+    check(capacity >= static_cast<std::size_t>(200) * (kHidden / 2 + kHidden / 16),
+          "nvfp4 prefill workspace is smaller than the activation plane");
+}
+
 } // namespace
 
 int main() {
@@ -247,6 +265,7 @@ int main() {
         accepts_nvfp4_bank();
         rejects_non_nvfp4_and_bad_geometry();
         rejects_mismatched_gate_up_divisor();
+        checks_nvfp4_prefill_plan();
     } catch (const std::exception& error) {
         std::cerr << "FAIL: unexpected exception: " << error.what() << '\n';
         return 1;
