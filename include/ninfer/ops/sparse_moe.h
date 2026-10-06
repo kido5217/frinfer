@@ -85,7 +85,9 @@ struct SparseMoeHints {
  * Each quantisation uses one private activation divisor (activation quantisation is a private
  * execution choice, not the source's per-expert activation_input_divisor).
  *
- * Every positive T is supported.
+ * Every positive T is supported by the packed Q4/Q5/Q6/Q8 profiles. The nvfp4 routed profile is
+ * admitted at T >= 20; its routed gate/up, routed down, and merge execute on the Blackwell W4A4
+ * tensor-core path.
  *
  * x, destination, all weight planes, and live workspace must be pairwise non-overlapping.
  * Execution is enqueued on stream without host synchronization. Workspace is caller-owned,

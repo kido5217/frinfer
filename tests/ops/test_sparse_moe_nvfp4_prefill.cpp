@@ -16,6 +16,7 @@
 
 #include "ops/op_tester.h"
 #include "ops/quantized_weight.h"
+#include "ops/sparse_moe/nvfp4/sparse_moe_nvfp4_down.h"
 #include "ops/sparse_moe/prefill/sparse_moe_prefill.h"
 
 #include <cuda_runtime.h>
@@ -418,6 +419,57 @@ int check_fused(Oracle& oracle, const Run& run, const char* label) {
 }
 
 
+// Exercises an expert with more than one 64-column route job, covering the `column_base > 0`
+// route-job mapping directly (the routed test route never concentrates that hard).
+int check_down_multi_job(Bank& bank) {
+    constexpr int M = 128;
+    std::vector<int> offsets(kExperts + 1, M);
+    offsets[0] = 0;
+    const std::vector<int> job_experts{0, 0};
+    const std::vector<int> job_columns{0, 64};
+    const std::vector<int> job_count{2, 0};
+    const std::vector<float> act =
+        random_values(static_cast<std::size_t>(M) * 512, 0x888u, -4.0F, 4.0F);
+    DeviceBuffer act_dev  = to_device_bf16(act);
+    DeviceBuffer codes(M * 256);
+    DeviceBuffer scales(M * 32);
+    DeviceBuffer out(static_cast<std::size_t>(M) * kHidden * 2);
+    DeviceBuffer off_dev = to_device(offsets);
+    DeviceBuffer je_dev  = to_device(job_experts);
+    DeviceBuffer jc_dev  = to_device(job_columns);
+    DeviceBuffer jn_dev  = to_device(job_count);
+    Tensor act_t(act_dev.p, DType::BF16, {512, M});
+    ops::detail::sparse_moe_nvfp4_down_launch(
+        act_t, bank.weights, static_cast<const int*>(off_dev.p),
+        static_cast<const int*>(je_dev.p), static_cast<const int*>(jc_dev.p),
+        static_cast<const int*>(jn_dev.p), static_cast<std::uint8_t*>(codes.p),
+        static_cast<std::uint8_t*>(scales.p), static_cast<__nv_bfloat16*>(out.p), nullptr);
+    cuda_synchronize();
+
+    const auto plane = decode_down_plane(from_device<std::uint8_t>(codes.p, M * 256),
+                                         from_device<std::uint8_t>(scales.p, M * 32), M);
+    const auto produced = from_device<std::uint16_t>(out.p, static_cast<std::size_t>(M) * kHidden);
+    const auto weights  = decode_nvfp4_matrix(bank.down[0]->host);
+    std::vector<double> actual;
+    std::vector<double> reference;
+    actual.reserve(static_cast<std::size_t>(M) * kHidden);
+    reference.reserve(static_cast<std::size_t>(M) * kHidden);
+    for (int column = 0; column < M; ++column) {
+        for (std::int32_t n = 0; n < kHidden; ++n) {
+            const float* w = &weights[static_cast<std::size_t>(n) * 512];
+            const float* a = &plane[static_cast<std::size_t>(column) * 512];
+            double accumulator = 0.0;
+            for (std::int32_t k = 0; k < 512; ++k) {
+                accumulator += static_cast<double>(a[k]) * static_cast<double>(w[k]);
+            }
+            reference.push_back(bf16_to_f32(f32_to_bf16(static_cast<float>(accumulator))));
+            actual.push_back(
+                bf16_to_f32(produced[static_cast<std::size_t>(column) * kHidden + n]));
+        }
+    }
+    return verify_reduction("nvfp4 down multi-job", actual, reference, kFusedTolerance);
+}
+
 int run_case(Bank& bank, std::int32_t tokens, int column_stride) {
     const std::string label = "nvfp4 fused T=" + std::to_string(tokens);
     const Run run           = run_fused(bank, tokens);
@@ -449,6 +501,7 @@ int main() {
         }
         // T=20 verifies the down stage on every packed column; the larger interior extent samples
         // columns (the fused output is still checked for every token).
+        failures += check_down_multi_job(bank);
         failures += run_case(bank, 20, 1);
         failures += run_case(bank, 200, 8);
     } catch (const std::exception& error) {
