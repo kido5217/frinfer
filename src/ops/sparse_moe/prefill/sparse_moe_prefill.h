@@ -65,11 +65,18 @@ struct SparseMoePrefillWorkspace {
     Tensor grouped_io;
     Tensor routed_storage;
     Tensor routed_sum;
+
+    // The nvfp4 routed profile quantises the routed activation into one compact FP4 plane per
+    // slice (one copy per token, shared by every expert the token routes to). Empty on the packed
+    // Q4/Q5/Q6/Q8 profiles.
+    DeviceSpan nvfp4_activation_codes;
+    DeviceSpan nvfp4_activation_scales;
 };
 
 template <class Arena>
 SparseMoePrefillWorkspace allocate_sparse_moe_prefill_workspace(Arena& arena,
-                                                                std::int32_t capacity_tokens) {
+                                                                std::int32_t capacity_tokens,
+                                                                bool nvfp4) {
     SparseMoePrefillWorkspace out;
     const std::int32_t assignments = 8 * capacity_tokens;
     const std::int32_t route_tiles =
@@ -104,12 +111,21 @@ SparseMoePrefillWorkspace allocate_sparse_moe_prefill_workspace(Arena& arena,
 
     out.routed_storage = arena.alloc(DType::BF16, {512, assignments}, 256);
     out.routed_sum     = Tensor(out.routed_storage.data, DType::FP32, {2048, capacity_tokens});
+
+    if (nvfp4) {
+        // nvfp4 routed profile: 2048/2 code bytes and 2048/16 scale bytes per token.
+        out.nvfp4_activation_codes =
+            arena.alloc_bytes(static_cast<std::size_t>(capacity_tokens) * (2048 / 2), 256);
+        out.nvfp4_activation_scales =
+            arena.alloc_bytes(static_cast<std::size_t>(capacity_tokens) * (2048 / 16), 256);
+    }
     return out;
 }
 
 [[nodiscard]] bool sparse_moe_uses_prefill(std::int32_t tokens, QType routed_gate_up,
                                            QType routed_down) noexcept;
-[[nodiscard]] std::size_t sparse_moe_prefill_workspace_bytes(std::int32_t max_tokens);
+[[nodiscard]] std::size_t sparse_moe_prefill_workspace_bytes(std::int32_t max_tokens,
+                                                             bool nvfp4);
 [[nodiscard]] SparseMoePrefillPlan
 resolve_sparse_moe_prefill_plan(std::int32_t tokens, QType routed_gate_up, QType routed_down);
 

@@ -10,6 +10,7 @@
 #include "ops/linear/q5/q5_rowsplit_storage.cuh"
 #include "ops/linear/q6/q6_rowsplit_storage.cuh"
 #include "ops/sparse_moe/decode/sparse_moe_decode.h"
+#include "ops/sparse_moe/nvfp4/sparse_moe_nvfp4_gate_up.h"
 #include "ops/sparse_moe/sparse_moe_route.cuh"
 #include "ops/sparse_moe/small_t/sparse_moe_small_t.h"
 
@@ -1213,6 +1214,8 @@ void sparse_moe_prefill_launch(const Tensor& x, const SparseMoeWeights& weights,
     auto* routed_activation = static_cast<__nv_bfloat16*>(workspace.routed_storage.data);
     auto* routed_sum        = static_cast<float*>(workspace.routed_sum.data);
 
+    const bool nvfp4_profile = weights.routed_gate_up.qtype == QType::NVFP4;
+
     for (std::int32_t token0 = 0; token0 < plan.tokens; token0 += plan.slice_tokens) {
         const std::int32_t tokens =
             std::min(plan.slice_tokens, static_cast<std::int32_t>(plan.tokens - token0));
@@ -1239,7 +1242,7 @@ void sparse_moe_prefill_launch(const Tensor& x, const SparseMoeWeights& weights,
         CUDA_CHECK(cudaGetLastError());
 
         const bool wide_plan   = tokens >= kSparseMoePrefillWideMin;
-        const int route_job_bn = wide_plan ? 64 : 32;
+        const int route_job_bn = (nvfp4_profile || wide_plan) ? 64 : 32;
         // The scan emits one route job per nonempty column tile of an expert, so it cannot
         // emit more than one job per full tile of assignments plus one tail per expert --
         // the same bound the workspace is sized by. Each job expands into row blocks, and
@@ -1271,7 +1274,7 @@ void sparse_moe_prefill_launch(const Tensor& x, const SparseMoeWeights& weights,
             sparse_moe_prefill_index_kernel<true><<<index_blocks, kExpertThreads, 0, stream>>>(
                 ids, local_rank, packed_index, tile_bases, packed_token, assignments,
                 route_job_count);
-        } else if (routed_gate_up_q4) {
+        } else if (routed_gate_up_q4 || nvfp4_profile) {
             sparse_moe_prefill_index_kernel<false><<<index_blocks, kExpertThreads, 0, stream>>>(
                 ids, local_rank, packed_index, tile_bases, packed_token, assignments, nullptr);
         } else {
@@ -1299,6 +1302,13 @@ void sparse_moe_prefill_launch(const Tensor& x, const SparseMoeWeights& weights,
                         input, packed_token, offsets, route_job_experts, route_job_columns,
                         route_job_count, routed_gate_codes, routed_gate_scales, routed_activation);
             }
+        } else if (nvfp4_profile) {
+            sparse_moe_nvfp4_gate_up_launch(
+                input_slice, weights, packed_token, offsets, route_job_experts, route_job_columns,
+                route_job_count,
+                static_cast<std::uint8_t*>(workspace.nvfp4_activation_codes.data),
+                static_cast<std::uint8_t*>(workspace.nvfp4_activation_scales.data),
+                routed_activation, stream);
         } else if (weights.routed_gate_up.qtype == QType::Q8_G32_FP16) {
             sparse_moe_prefill_q8_gate_up_kernel<true>
                 <<<routed_gate_grid, kExpertThreads, 0, stream>>>(
