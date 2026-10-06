@@ -208,6 +208,7 @@ std::size_t sparse_moe_workspace_capacity_bytes(QType routed_gate_up, QType rout
     const bool q8_profile =
         (routed_gate_up == QType::Q8_G32_FP16 && routed_down == QType::Q8_G32_FP16) ||
         (routed_gate_up == QType::NVFP4 && routed_down == QType::NVFP4);
+    const bool nvfp4_profile = routed_gate_up == QType::NVFP4 && routed_down == QType::NVFP4;
     const std::int32_t prefill_first =
         q8_profile ? detail::kSparseMoePrefillQ8Q8Min
                    : (routed_down == QType::Q5_G64_FP16 ? detail::kSparseMoePrefillQ4Q5Min
@@ -225,7 +226,8 @@ std::size_t sparse_moe_workspace_capacity_bytes(QType routed_gate_up, QType rout
 
     const std::int32_t prefill_interval_first = std::max(min_tokens, prefill_first);
     if (prefill_interval_first <= max_tokens) {
-        required = std::max(required, detail::sparse_moe_prefill_workspace_bytes(max_tokens));
+        required = std::max(required,
+                            detail::sparse_moe_prefill_workspace_bytes(max_tokens, nvfp4_profile));
     }
     return required;
 }
@@ -284,8 +286,10 @@ void sparse_moe(const Tensor& x, const SparseMoeWeights& weights, SparseMoeEpilo
     if (use_prefill) {
         const detail::SparseMoePrefillPlan plan = detail::resolve_sparse_moe_prefill_plan(
             tokens, weights.routed_gate_up.qtype, weights.routed_down.qtype);
+        const bool nvfp4_profile = weights.routed_gate_up.qtype == QType::NVFP4;
         const detail::SparseMoePrefillWorkspace views =
-            detail::allocate_sparse_moe_prefill_workspace(workspace, plan.slice_tokens);
+            detail::allocate_sparse_moe_prefill_workspace(workspace, plan.slice_tokens,
+                                                          nvfp4_profile);
         detail::sparse_moe_prefill_launch(x, weights, destination, plan, views, stream);
         return;
     }
