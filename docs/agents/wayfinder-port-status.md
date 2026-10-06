@@ -1,6 +1,6 @@
 # Wayfinder port status
 
-Status of [map #175 — llama.cpp port implementation](https://github.com/kido5217/frinfer/issues/175) as of 2026-10-06.
+Status of [map #175 — llama.cpp port implementation](https://github.com/kido5217/frinfer/issues/175) as of 2026-10-07.
 Temporary working note: remove this file when the map closes.
 
 ## Destination
