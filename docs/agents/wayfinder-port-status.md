@@ -26,6 +26,7 @@ ticket (#182) is closed as superseded.
 | Implement: NVFP4 routed gate/up W4A4 prefill stage | landed | #218 → `612c25a8` |
 | Implement: NVFP4 grouped W4A4 down + prefill routed merge | landed | #219 → `9d91068b` |
 | Implement: NVFP4 routed expert path for `T<20` (decode + small-T) | landed | #221 → `6501fa3e` |
+| Verify: 35B-A3B NVFP4 e2e A/B + perplexity | measured | #208 (resolved on-ticket) |
 | Implement: jinja for-loop scope fix (llama-jinja fork) | landed | #214 → `26e4688d` |
 | Implement: `--version` on all four binaries | landed | #215 → `36f4f558` |
 | Implement: artifact integrity hashing | landed | #216 → `1ecd85aa` |
@@ -34,17 +35,23 @@ ticket (#182) is closed as superseded.
 
 ## Open frontier
 
-NVFP4 stream: **#208** (35B-A3B NVFP4 e2e A/B + perplexity) is now unblocked — its last blocker,
-**#213** (routed `T<20` decode + small-T), landed in #221.
+The NVFP4 stream is complete: **#208** (35B-A3B NVFP4 e2e A/B + perplexity) was resolved on-ticket —
+e2e prefill **+8.5–18.8 %**, corpus makespan −9.4 %, decode parity vs the published rows,
+perplexity **+0.94 %** overall. Adverse finding (reported, not a gate failure as written): decode runs
+**3–7 % below the same-build groupwise artifact** (5–7 % at three of four contexts; the 3 % end at
+260,096 is within run-to-run spread) because the current build's groupwise decode has drifted ~5–8 %
+above the Sep-07 published rows; cause unattributed (no `T<20` op-level bench).
 
-Wave 3–4 tickets, all open, unblocked and unclaimed: GGUF converter source (#185), model-acquisition
+The remaining frontier is the Wave 3–4 tickets, all open, unblocked and unclaimed: GGUF converter source (#185), model-acquisition
 flags (#186), `reasoning_end` control endpoint (#187), Prometheus `/metrics` (#188), CLI
 `--prompt-file`/stdin (#190), tokenizer CLI (#192). Claim order is wave order (#174's locked
-decision): the NVFP4 stream (#213) precedes the wave-4 items.
+decision).
 
 ## Resources on this machine
 
 - `models/qwen3_6_27b.ninfer` — 17.5 GB, sha256-verified; ordinary/MTP serve and real tests.
+- `models/qwen3_6_35b_a3b.ninfer` — 22.8 GB, sha256 `3e332976…` (matches the published manifest); the
+  groupwise-int 35B-A3B artifact, downloaded for the #208 A/B.
 - `models/qwen3_8_27b_nvfp4.ninfer` — 23.7 GB; carries the `dflash2` component the 27B lacks.
 - `out/qwen3_6_35b_a3b_nvfp4.ninfer` — 20,647,342,340 bytes; the produced NVFP4 artifact (30,720 routed
   nvfp4 parents). Loads; the routed path executes end to end at every `T` (`T>=20` prefill, `T<20`
@@ -54,7 +61,7 @@ decision): the NVFP4 stream (#213) precedes the wave-4 items.
 
 ## Next
 
-1. #208 — e2e A/B against the published `groupwise-int` baseline + perplexity (now unblocked).
+1. Wave 3–4 tickets in order: GGUF converter source (#185) first.
 
 ## Backlog
 
