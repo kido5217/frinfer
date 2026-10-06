@@ -25,7 +25,7 @@ ticket (#182) is closed as superseded.
 | Implement: NVFP4 35B-A3B converter + expert codec + binding | landed | #209 → `cc2c0d1c` |
 | Implement: NVFP4 routed gate/up W4A4 prefill stage | landed | #218 → `612c25a8` |
 | Implement: NVFP4 grouped W4A4 down + prefill routed merge | landed | #219 → `9d91068b` |
-| Implement: NVFP4 routed expert path for `T<20` (decode + small-T) | landed | #221 → `28c821de` |
+| Implement: NVFP4 routed expert path for `T<20` (decode + small-T) | landed | #221 → `6501fa3e` |
 | Implement: jinja for-loop scope fix (llama-jinja fork) | landed | #214 → `26e4688d` |
 | Implement: `--version` on all four binaries | landed | #215 → `36f4f558` |
 | Implement: artifact integrity hashing | landed | #216 → `1ecd85aa` |
