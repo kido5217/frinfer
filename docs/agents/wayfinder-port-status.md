@@ -31,6 +31,7 @@ ticket (#182) is closed as superseded.
 | Implement: `--version` on all four binaries | landed | #215 → `36f4f558` |
 | Implement: artifact integrity hashing | landed | #216 → `1ecd85aa` |
 | Implement: CLI `--show-prompt` | landed | #217 → `1b225087` |
+| Implement: GGUF as a converter source | landed | #224 → `00f55637` |
 | Implement: NVFP4 MoE experts + W4A4 GEMM (original) | closed superseded, split twice | — |
 
 ## Open frontier
@@ -42,10 +43,10 @@ perplexity **+0.94 %** overall. Adverse finding (reported, not a gate failure as
 260,096 is within run-to-run spread) because the current build's groupwise decode has drifted ~5–8 %
 above the Sep-07 published rows; cause unattributed (no `T<20` op-level bench).
 
-The remaining frontier is the Wave 3–4 tickets, all open, unblocked and unclaimed: GGUF converter source (#185), model-acquisition
-flags (#186), `reasoning_end` control endpoint (#187), Prometheus `/metrics` (#188), CLI
-`--prompt-file`/stdin (#190), tokenizer CLI (#192). Claim order is wave order (#174's locked
-decision).
+The remaining frontier is five Wave 3–4 tickets, all open, unblocked and unclaimed:
+model-acquisition flags (#186), `reasoning_end` control endpoint (#187), Prometheus `/metrics`
+(#188), CLI `--prompt-file`/stdin (#190), tokenizer CLI (#192). Claim order is wave order
+(#174's locked decision).
 
 ## Resources on this machine
 
@@ -61,7 +62,7 @@ decision).
 
 ## Next
 
-1. Wave 3–4 tickets in order: GGUF converter source (#185) first.
+1. Wave 3–4 tickets in order: model-acquisition flags (#186) first.
 
 ## Backlog
 
