@@ -13,6 +13,7 @@ from typing import Mapping
 
 from .model import Model, Parameter
 from .resources import load_resources
+from .sources.gguf import GgufSource, gguf_has_experts, gguf_param_source
 from .sources.logical import LogicalSource, select_rows, transpose_source
 from .sources.safetensors import SafetensorsSource, tensor_source
 from .sources.compressed_tensors import matrix_source
@@ -320,7 +321,7 @@ def draft_config(raw: dict, target: dict, backend: str) -> dict:
     return result
 
 
-def _has_model_config(source: SafetensorsSource) -> bool:
+def _has_model_config(source: SafetensorsSource | GgufSource) -> bool:
     return bool(
         source.config.keys()
         - {
@@ -452,6 +453,17 @@ class _Builder:
 
         def factory(selected, format=None):
             self.validate_source(selected, store, name)
+            if isinstance(selected, GgufSource):
+                return gguf_param_source(
+                    selected,
+                    source_name,
+                    shape,
+                    source_shape=original,
+                    offset=offset,
+                    rows=rows,
+                    transpose=transpose,
+                    format=format,
+                )
             selected_name = source_name
             if name.startswith("text/") and _has_model_config(selected):
                 if "text_config" not in selected.config:
@@ -659,6 +671,8 @@ class _Builder:
         per_expert = store.has(sp + "experts.0.gate_proj.weight_packed") or store.has(
             sp + "experts.0.gate_proj.weight"
         )
+        if isinstance(store, GgufSource):
+            per_expert = gguf_has_experts(store, sp)
         gate_up, downs = [], []
         for expert in range(e):
             ep = p + f"experts/{expert}/"
@@ -930,7 +944,7 @@ class _Builder:
 
 
 def build_model(
-    base: SafetensorsSource,
+    base: SafetensorsSource | GgufSource,
     *,
     components: tuple[str, ...] = ("text",),
     companions: Mapping[str, SafetensorsSource] | None = None,

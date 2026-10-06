@@ -14,7 +14,14 @@ from .pipeline import convert
 from .proposal import DEFAULT_RANKING, add_official_proposal
 from .qwen3_5 import build_model
 from .recipe import Recipe
+from .sources.gguf import GgufSource
 from .sources.safetensors import SafetensorsSource
+
+
+def _open_source(stack, path):
+    if Path(path).suffix == ".gguf":
+        return stack.enter_context(GgufSource(path))
+    return stack.enter_context(SafetensorsSource(path))
 
 
 class SourceInputs(Mapping):
@@ -31,9 +38,7 @@ class SourceInputs(Mapping):
                 raise ValueError(
                     f"selected recipe requires source {name!r}; provide --source {name}=PATH"
                 )
-            self._sources[name] = self._stack.enter_context(
-                SafetensorsSource(self._paths[name])
-            )
+            self._sources[name] = _open_source(self._stack, self._paths[name])
         return self._sources[name]
 
     def __iter__(self):
@@ -138,7 +143,7 @@ def main(argv=None):
         raise ValueError("select the base source with --model")
     overrides = _pairs(args.resource, "resource")
     with ExitStack() as stack:
-        base = stack.enter_context(SafetensorsSource(args.model))
+        base = _open_source(stack, args.model)
         sources = SourceInputs(base, paths, stack)
         companions = {
             key: sources[key] for key in ("dflash", "dflash2") if key in components

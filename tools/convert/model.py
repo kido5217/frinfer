@@ -5,10 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Callable
 
+from .sources.gguf import GgufSource
 from .sources.logical import LogicalSource
 from .sources.safetensors import SafetensorsSource
 
-SourceFactory = Callable[[SafetensorsSource, str | None], LogicalSource]
+SourceFactory = Callable[[SafetensorsSource | GgufSource, str | None], LogicalSource]
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,7 +50,10 @@ class Model:
         self.parameters[parameter.name] = parameter
 
     def source(
-        self, parameter: str, store: SafetensorsSource, format: str | None = None
+        self,
+        parameter: str,
+        store: SafetensorsSource | GgufSource,
+        format: str | None = None,
     ) -> LogicalSource:
         item = self.parameters[parameter]
         if item.source_factory is None:

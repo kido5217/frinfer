@@ -297,6 +297,40 @@ values. To preserve existing compatible encoded words, also provide `read_encode
 `EncodedRows`, and the format's required divisor accessors. Their definitions are in
 [`sources/logical.py`](../tools/convert/sources/logical.py).
 
+## Convert from a GGUF file
+
+`--model` (and `--source NAME=`) also accepts a single `.gguf` file. The GGUF reader
+([`sources/gguf.py`](../tools/convert/sources/gguf.py)) supports the `qwen35` and `qwen35moe`
+architectures with `F32`/`F16`/`BF16`, `Q8_0`, `Q4_K`/`Q5_K`/`Q6_K`, and NVFP4 tensors:
+
+```bash
+python3 -m tools.convert \
+  --model /path/to/Qwen3.5-0.8B-BF16.gguf \
+  --recipe qwen3_6_27b \
+  --resource tokenizer.json=/path/to/tokenizer.json \
+  --resource tokenizer_config.json=/path/to/tokenizer_config.json \
+  --resource generation_config.json=/path/to/generation_config.json \
+  --out models/qwen3_5_08b.ninfer
+```
+
+The recipe's HF checkpoint names map to the canonical GGUF tensors (`embed_tokens` to
+`token_embd`, `self_attn.q_proj` to `blk.{i}.attn_q`, `mlp.experts.{e}.gate_proj` to the stacked
+`blk.{i}.ffn_gate_exps`, `linear_attn.in_proj_qkv` to `blk.{i}.attn_qkv`, and so on); a tied
+head reads `token_embd` when the file has no `output` tensor. Model geometry comes from the GGUF
+metadata (`embedding_length`, `block_count`, attention/SSM/rope keys, expert counts), with the
+vocabulary size cross-checked against the token embedding rows — there is no `config.json`.
+A GGUF carries no `tokenizer.json`, so pass the tokenizer resources explicitly as above.
+
+Quantized tensors decode to values at conversion (K-quants follow the ggml dequantization
+reference exactly) and the recipe quantizes from there. Two GGUF specifics survive into the
+artifact unchanged:
+
+- Linear-attention (GDN) tensors keep llama.cpp's tiled V-head order in the file; the reader
+  applies the inverse tiling to restore HF order (including on NVFP4 code/scale words).
+- NVFP4 tensors import encoded: the `.scale`/`.input_scale` sidecars hold inference-time
+  multipliers (the reciprocals of the checkpoint global scales), so the stored divisors are the
+  sidecar reciprocals, and the ggml code packing is reframed into NInfer words.
+
 ## Write a conversion method
 
 A method receives a `PrepareRequest` and returns `request.job(produce=...)`. Preparation validates
