@@ -40,6 +40,7 @@ ninfer_add_op_bench(ninfer_gdn_input_proj_conv_snapshot_bench
 ninfer_add_op_bench(ninfer_attn_input_proj_bench SOURCES "${CMAKE_CURRENT_LIST_DIR}/attn_input_proj_bench.cu")
 ninfer_add_op_bench(ninfer_q8_linear_swiglu_bench SOURCES "${CMAKE_CURRENT_LIST_DIR}/q8_linear_swiglu_bench.cu")
 ninfer_add_op_bench(ninfer_nvfp4_linear_swiglu_bench SOURCES "${CMAKE_CURRENT_LIST_DIR}/nvfp4_linear_swiglu_bench.cu")
+ninfer_add_op_bench(ninfer_nvfp4_sparse_moe_gate_up_bench SOURCES "${CMAKE_CURRENT_LIST_DIR}/nvfp4_sparse_moe_gate_up_bench.cu")
 ninfer_add_op_bench(ninfer_fp8_linear_swiglu_bench SOURCES "${CMAKE_CURRENT_LIST_DIR}/fp8_linear_swiglu_bench.cu")
 ninfer_add_op_bench(ninfer_q4_linear_swiglu_bench SOURCES "${CMAKE_CURRENT_LIST_DIR}/q4_linear_swiglu_bench.cu")
 ninfer_add_op_bench(ninfer_q8_linear_add_bench SOURCES "${CMAKE_CURRENT_LIST_DIR}/q8_linear_add_bench.cu")

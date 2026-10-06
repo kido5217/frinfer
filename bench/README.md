@@ -796,6 +796,20 @@ cmake --build build --parallel --target ninfer_nvfp4_linear_swiglu_bench
   --warmup 10 --repeat 50
 ```
 
+## NVFP4 routed gate/up Op benchmark
+
+`ninfer_nvfp4_sparse_moe_gate_up_bench` measures the prefill stage of the SparseMoe nvfp4 routed
+path at the registered 35B-A3B expert geometry (gate/up `N=1024 K=2048`): activation quantisation
+into the compact per-token FP4 plane plus the grouped W4A4 `mma_nvfp4_e4m3` GEMM over a synthetic
+packed route, with one complete nvfp4 parent per expert projection. The timed scope is the routed
+gate/up stage, not the complete SparseMoe Op (routed down + merge is #212; the T<20 path is #213).
+
+```bash
+cmake --build build --parallel --target ninfer_nvfp4_sparse_moe_gate_up_bench
+./build/bench/ninfer_nvfp4_sparse_moe_gate_up_bench \
+  --t-sweep 20,256,512,1024,2048 --warmup 10 --repeat 50
+```
+
 ## FP8 LinearSwiGLU Op benchmark
 
 `ninfer_fp8_linear_swiglu_bench` measures the public row-scaled FP8 `[34816,5120] ->
