@@ -82,8 +82,16 @@ int main(int argc, char** argv) {
         const std::filesystem::path positional =
             options.artifact_path.empty() ? std::filesystem::path{}
                                           : std::filesystem::path(options.artifact_path);
-        const auto resolved =
-            ninfer::product::model_acquire::resolve_local(request, positional);
+        auto progress = [](std::uint64_t done, std::uint64_t total) {
+            std::cerr << "download " << done / (1ULL << 20) << " MiB";
+            if (total > 0) {
+                std::cerr << " / " << total / (1ULL << 20) << " MiB ("
+                          << (100ULL * done / total) << "%)";
+            }
+            std::cerr << '\n';
+        };
+        const auto resolved = ninfer::product::model_acquire::resolve(
+            request, positional, progress);
         options.artifact_path = resolved.artifact_path.string();
         if (resolved.downloaded) {
             std::cerr << "downloaded " << options.artifact_path << '\n';

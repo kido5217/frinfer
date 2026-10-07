@@ -280,8 +280,16 @@ int main(int argc, char** argv) {
         if (cli.acquisition.model_url) { request.model_url = cli.acquisition.model_url; }
         request.cache_dir = cli.acquisition.cache_dir;
         request.offline   = cli.acquisition.offline;
-        const auto resolved =
-            ninfer::product::model_acquire::resolve_local(request, cli.artifact_path);
+        auto progress = [](std::uint64_t done, std::uint64_t total) {
+            std::cerr << "download " << done / (1ULL << 20) << " MiB";
+            if (total > 0) {
+                std::cerr << " / " << total / (1ULL << 20) << " MiB ("
+                          << (100ULL * done / total) << "%)";
+            }
+            std::cerr << '\n';
+        };
+        const auto resolved = ninfer::product::model_acquire::resolve(
+            request, cli.artifact_path, progress);
         cli.artifact_path = resolved.artifact_path;
         if (resolved.downloaded) {
             std::cerr << "downloaded " << resolved.artifact_path.string() << '\n';

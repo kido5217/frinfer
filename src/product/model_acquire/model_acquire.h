@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -69,6 +70,25 @@ struct ResolveResult {
     bool from_cache = false;
     bool downloaded = false;
 };
+
+using DownloadProgress = std::function<void(std::uint64_t downloaded_bytes,
+                                            std::uint64_t total_bytes)>;
+
+// Streaming download with resume (`.part` sidecar) and fail-closed HTTP mapping:
+// 404 -> NotFound (`hf_not_found`), 401/403 -> DownloadFailed (token hint),
+// other failures -> DownloadFailed (`hf_download_failed`). Publishes atomically.
+[[nodiscard]] std::filesystem::path download_hf(const HfSpec& spec,
+                                                const std::filesystem::path& cache_dir,
+                                                const DownloadProgress& progress = {});
+[[nodiscard]] std::filesystem::path download_url(std::string_view url,
+                                                 const std::filesystem::path& cache_dir,
+                                                 const DownloadProgress& progress = {});
+
+// Full resolution: local passthrough, cache hits, `--offline`, and streaming
+// download for cache misses. `progress` reports download bytes when used.
+[[nodiscard]] ResolveResult resolve(const Acquisition& acquisition,
+                                   const std::filesystem::path& positional_artifact,
+                                   const DownloadProgress& progress = {});
 
 // Slice 0: resolves local paths, cache hits, `--offline` and `--cache-list`.
 // A remote source whose file is not yet cached fails closed with DownloadFailed;
