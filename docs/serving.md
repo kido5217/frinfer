@@ -116,6 +116,18 @@ ever rise, so a rate over them — including the two `*_per_second` gauges — i
 rather than an interval rate. Use the JSONL `throughput` event for interval rates. Metric names are
 `frinfer_`-namespaced: this is the Prometheus *format*, not a name-compatible llama.cpp replica.
 
+The token counters describe Engine work, which is not the same as request work, and reconciling a
+scrape against the JSONL record stream has to account for two exact differences:
+
+- Startup runs a warmup request, so a fresh server already reports non-zero token counters with no
+  `request_start` record behind them. Reconcile a window's delta, not an absolute.
+- `request_done.completion_tokens` counts the first token a request emits from prefill, and
+  `frinfer_generation_tokens_total` counts only decode rounds. One token per request is the
+  difference.
+
+With those accounted for, a window's counter delta equals its `request_done` records exactly, and
+`frinfer_requests_started_total` equals the JSONL `request_start` count exactly.
+
 All three generation SSE endpoints emit the standard `: keep-alive` comment after five seconds
 without a protocol event. The comment is transport-only: SSE clients ignore it, and it does not
 change generated text, event ordering, usage, stored Responses, or request logs. On Linux, accepted
