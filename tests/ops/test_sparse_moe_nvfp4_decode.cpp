@@ -223,8 +223,9 @@ Route run_route(Bank& bank, std::int32_t tokens) {
 
     Tensor x(x_storage.p, DType::BF16, {kHidden, tokens});
     Tensor destination(destination_storage.p, DType::BF16, {kHidden, tokens});
+    DeviceContext device;
     ops::sparse_moe(x, bank.weights, ops::SparseMoeEpilogue::AddResidual, destination, workspace,
-                    nullptr);
+                    device.execution_view());
     cuda_synchronize();
 
     // The Op rewinds its arena on return, so re-allocating reproduces the identical layout and

@@ -659,11 +659,8 @@ int run_yarn_structural_inert(DeviceExecutionView execution, const Geometry& geo
     return failures;
 }
 
-int run_single_case(const Geometry& geometry, int heads, int first_position, int padding = 0) {
-=======
 int run_single_case(DeviceExecutionView execution, const Geometry& geometry, int heads,
                     int first_position, int padding = 0) {
->>>>>>> a667efdd (refactor(rope): derive launch capacity from device sm count)
     constexpr std::uint16_t kPadding = 0x3f81U;
     const int dense_per_token        = geometry.head_dim * heads;
     const int token_stride           = dense_per_token + padding;
