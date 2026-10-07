@@ -112,6 +112,31 @@ Engine wraps the grammar so the constraint carries the reasoning stream and hand
 answer grammar at the wire-format close. Grammar completion ends generation; a `--max-new`
 truncation can cut a constrained answer mid-document.
 
+## Model acquisition
+
+The CLI loads a local `.ninfer` file by default, or downloads one from Hugging Face
+into a local cache on first use. Exactly one source is accepted: the positional
+`<model.ninfer>`, `--hf-repo OWNER/REPO` with `--hf-file FILE`, or `--model-url
+https://.../model.ninfer`:
+
+```bash
+./build/apps/frinfer \
+  --hf-repo neroued/Qwen3.8-27B-nvfp4-NInfer \
+  --hf-file qwen3_8_27b_nvfp4.ninfer \
+  --prompt "Reply with one short sentence." \
+  --max-context 4096 \
+  --max-new 64 \
+  --kv-dtype fp8
+```
+
+Downloads stream to `--cache-dir` (default `~/.cache/frinfer`, or `$FRINFER_CACHE_DIR`)
+with resume across interrupted runs, and cached files are reused without network access.
+`--hf-revision` (default `main`) pins the Hub revision; `--hf-token` supplies Hub
+authentication, defaulting to `$HF_TOKEN` / `$HUGGING_FACE_HUB_TOKEN`. `--offline`
+fails closed when the file is not cached. `--cache-list` prints cached `.ninfer`
+artifacts and exits without running a prompt. A missing Hub file fails with
+`hf_not_found`; an interrupted download resumes on the next run.
+
 ## Startup memory profile
 
 GPU residency is frozen when the Engine starts:
@@ -250,6 +275,13 @@ The table lists executable defaults. The examples above select FP8 KV and MTP3.
 | `--no-cuda-graph` | disable CUDA Graph decode | graphs on |
 | `--show-prompt` | dump the exact rendered prompt to stderr before generation | off |
 | `--chat-template FILE` | use a local Jinja template | artifact template |
+| `--hf-repo OWNER/REPO` + `--hf-file FILE` | Hugging Face artifact source (cached) | unset |
+| `--hf-revision REV` | Hub revision for `--hf-repo` | `main` |
+| `--hf-token TOKEN` | Hub bearer token (env fallback) | unset |
+| `--model-url URL` | direct `https://` artifact source (cached) | unset |
+| `--cache-dir DIR` | download cache directory | `~/.cache/frinfer` |
+| `--offline` | reuse the cache, no network | off |
+| `--cache-list` | list cached artifacts and exit | off |
 | `--grammar GBNF` / `--grammar-file FILE` | GBNF answer grammar, compiled by the Engine | unset |
 | `--json-schema JSON` / `--json-schema-file FILE` | JSON Schema answer grammar, converted through the serve contract | unset |
 | `--no-thinking` | disable thinking | template default |
