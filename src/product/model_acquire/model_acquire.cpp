@@ -504,6 +504,11 @@ void download_to(const std::string& initial_url, const std::filesystem::path& de
                 existing = std::filesystem::file_size(tmp, size_error);
             }
         }
+        std::error_code offset_error;
+        const std::uintmax_t hop_start =
+            std::filesystem::is_regular_file(tmp, offset_error)
+                ? std::filesystem::file_size(tmp, offset_error)
+                : 0;
         std::ofstream stream(tmp, std::ios::binary | std::ios::app);
         if (!stream) {
             throw Error(ErrorKind::CacheError,
@@ -512,6 +517,15 @@ void download_to(const std::string& initial_url, const std::filesystem::path& de
         const Performed done = perform_one(url, parts, resolve, stream,
                                            token, throttle,
                                            static_cast<curl_off_t>(existing));
+        // Redirect/error pages share the stream with the artifact bytes: anything this
+        // hop wrote is framing, not content, so rewind the file past it. Only a 200/206
+        // body is kept (with the resume-ignored restart below truncating first).
+        if (done.code == CURLE_OK && done.status != 200 && done.status != 206) {
+            stream.flush();
+            stream.close();
+            std::error_code truncate_error;
+            std::filesystem::resize_file(tmp, hop_start, truncate_error);
+        }
         stream.flush();
         stream.close();
         if (done.code != CURLE_OK) {
