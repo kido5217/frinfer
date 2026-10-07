@@ -642,6 +642,11 @@ void OutputSession::request_reasoning_close() noexcept {
         impl_->thinking.control_pending) {
         return;
     }
+    // A close is only meaningful while the model-origin reasoning block is still open. Testing the
+    // phase here rather than relying on its monotonicity at the consumption point means the request
+    // is dropped where it is received, instead of latching until some later boundary happens to
+    // look admissible.
+    if (!impl_->core.in_reasoning()) { return; }
     impl_->thinking.close_requested = true;
 }
 

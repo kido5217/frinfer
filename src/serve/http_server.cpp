@@ -252,18 +252,6 @@ void HttpServer::RequestLifecycle::response_failure(const RequestFailure& failur
     owner_->record_response_failure(context_.id, failure);
 }
 
-// The control route addresses a completion by its streamed id, so it stays reachable exactly as
-// long as this lifecycle, which every terminal path releases.
-HttpServer::RequestLifecycle::~RequestLifecycle() {
-    if (!control_id_.empty()) { owner_->reasoning_controls_.unregister_completion(control_id_); }
-}
-
-void HttpServer::RequestLifecycle::arm_reasoning_control(std::string completion_id,
-                                                         ninfer::GenerationControl control) {
-    control_id_ = std::move(completion_id);
-    owner_->reasoning_controls_.register_completion(control_id_, std::move(control));
-}
-
 std::shared_ptr<HttpServer::RequestLifecycle> HttpServer::begin_request(RequestLogContext context) {
     return std::make_shared<RequestLifecycle>(*this, std::move(context));
 }
@@ -502,10 +490,15 @@ void HttpServer::handle_chat_control(const httplib::Request& req, httplib::Respo
     try {
         control = parse_chat_control_request(parse_json_body(req));
     } catch (const ApiException& exception) {
+        operational_log_.http_failure(endpoint_name(req.path),
+                                      make_request_failure(RequestFailurePhase::Http,
+                                                           exception.error()),
+                                      response_request_id(res));
         write_openai_error(res, exception.error());
         return;
     }
     const ChatControlOutcome outcome = reasoning_controls_.request_reasoning_end(control.id);
+    operational_log_.reasoning_control(++request_seq_, control.id, outcome);
     res.set_content(make_chat_control_response(outcome.success, outcome.message),
                     "application/json");
 }

@@ -4,21 +4,21 @@
 #include <utility>
 
 namespace ninfer::serve {
+namespace {
+
+// llama.cpp reads both fields through a defaulting accessor, so an absent field and a wrong-typed
+// one are the same empty string. Reproducing that is what keeps the route's rejections identical.
+std::string string_field(const RequestJson& body, const char* name) {
+    if (!body.is_object() || !body.contains(name) || !body.at(name).is_string()) { return {}; }
+    return body.at(name).get<std::string>();
+}
+
+} // namespace
 
 ChatControlRequest parse_chat_control_request(const RequestJson& body) {
-    if (!body.is_object()) { bad_request("request body must be a JSON object"); }
-    if (!body.contains("id") || !body.at("id").is_string() ||
-        body.at("id").get_ref<const std::string&>().find_first_not_of(" \t\r\n") ==
-            std::string::npos) {
-        // A blank id can never name a completion; naming it "missing" keeps the caller from reading
-        // "no active completion" for an obviously malformed body.
-        bad_request("missing completion id", "id");
-    }
-    ChatControlRequest request{.id = body.at("id").get<std::string>()};
-    if (!body.contains("action") || !body.at("action").is_string()) {
-        bad_request("action must be a string", "action");
-    }
-    request.action = body.at("action").get<std::string>();
+    ChatControlRequest request{.id = string_field(body, "id"),
+                               .action = string_field(body, "action")};
+    if (request.id.empty()) { bad_request("missing completion id", "id"); }
     if (request.action != "reasoning_end") { bad_request("unknown control action", "action"); }
     return request;
 }
@@ -59,6 +59,40 @@ void ReasoningControlRegistry::unregister_completion(const std::string& id) {
 std::size_t ReasoningControlRegistry::size() const {
     std::lock_guard lock(mutex_);
     return completions_.size();
+}
+
+ReasoningControlRegistration::ReasoningControlRegistration(ReasoningControlRegistry& registry,
+                                                           std::string id,
+                                                           ninfer::GenerationControl control)
+    : registry_(&registry), id_(std::move(id)) {
+    registry_->register_completion(id_, std::move(control));
+}
+
+ReasoningControlRegistration::~ReasoningControlRegistration() {
+    if (registry_ != nullptr) { registry_->unregister_completion(id_); }
+}
+
+ReasoningControlRegistration::ReasoningControlRegistration(
+    ReasoningControlRegistration&& other) noexcept
+    : registry_(std::exchange(other.registry_, nullptr)), id_(std::move(other.id_)) {}
+
+ReasoningControlRegistration&
+ReasoningControlRegistration::operator=(ReasoningControlRegistration&& other) noexcept {
+    if (this != &other) {
+        if (registry_ != nullptr) { registry_->unregister_completion(id_); }
+        registry_ = std::exchange(other.registry_, nullptr);
+        id_       = std::move(other.id_);
+    }
+    return *this;
+}
+
+std::shared_ptr<ReasoningControlRegistration>
+arm_reasoning_control(ReasoningControlRegistry& registry, std::string id,
+                      ReasoningControlArming arming) {
+    if (!arming.id_live_while_generating) { return nullptr; }
+    if (arming.requested && !arming.control.is_valid()) { return nullptr; }
+    return std::make_shared<ReasoningControlRegistration>(registry, std::move(id),
+                                                          std::move(arming.control));
 }
 
 } // namespace ninfer::serve

@@ -442,6 +442,27 @@ void OperationalLog::http_failure(std::string_view endpoint, const RequestFailur
     write({.severity = failure_severity(failure.classification), .message = out.str()});
 }
 
+OperationalRecord render_reasoning_control(std::uint64_t request_id,
+                                            std::string_view completion_id,
+                                            const ChatControlOutcome& outcome) {
+    std::ostringstream out;
+    // The completion id is what an operator searches for; the control request's own sequence number
+    // is carried too, so two attempts against one completion stay distinguishable.
+    out << "control reasoning_end | req#" << request_id << " | "
+        << product::format_pretty_text(completion_id);
+    if (outcome.success) {
+        out << " | applied at the next decode boundary";
+        return {.severity = OperationalSeverity::Info, .message = out.str()};
+    }
+    out << " | refused: " << outcome.message;
+    return {.severity = OperationalSeverity::Warning, .message = out.str()};
+}
+
+void OperationalLog::reasoning_control(std::uint64_t request_id, std::string_view completion_id,
+                                       const ChatControlOutcome& outcome) const {
+    write(render_reasoning_control(request_id, completion_id, outcome));
+}
+
 void OperationalLog::engine_capacity(const GenerationService& service) const {
     const ninfer::MemorySummary memory            = service.memory_summary();
     const ninfer::EngineOptions& engine           = service.engine_options();

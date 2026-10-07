@@ -57,15 +57,6 @@ private:
         void failure(const RequestFailure& failure);
         void response_failure(const RequestFailure& failure);
 
-        // Publishes this completion to the real-time reasoning-control route for as long as its
-        // response lives. An empty control means the request did not opt in; the completion stays
-        // registered so the route can report that instead of claiming no live completion.
-        void arm_reasoning_control(std::string completion_id, ninfer::GenerationControl control);
-
-        // Releases the control-route registration. Public so the owning shared_ptr can destroy it;
-        // RequestLifecycle itself stays private to HttpServer.
-        ~RequestLifecycle();
-
         [[nodiscard]] std::uint64_t request_id() const noexcept { return context_.id; }
 
     private:
@@ -79,7 +70,6 @@ private:
 
         HttpServer* owner_ = nullptr;
         RequestLogContext context_;
-        std::string control_id_;
         std::atomic<State> state_{State::Pending};
     };
 
