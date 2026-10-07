@@ -357,12 +357,20 @@ curl http://127.0.0.1:8080/v1/chat/completions/control \
 ```
 
 `id` names the in-flight completion; `action` must be `reasoning_end`. The answer is always HTTP 200
-with `{"success": true}`, or `{"success": false, "message": "…"}` naming the reason: an unknown or
-already-finished id matches nothing (`no active completion for this id`), and a live completion that
-did not set `reasoning_control` reports `reasoning control not enabled for this completion`. An
-aggregate completion is never registered: its `id` reaches the client only once generation has
-already finished. Only a malformed body — a missing or blank `id`, a missing `action`, or any other
-action — is an HTTP 400 error. A router-mode `model` field is ignored on a single-model server.
+with `{"success": true}`, or `{"success": false, "message": "…"}` naming the reason: an unknown,
+already-finished, or padded id matches nothing (`no active completion for this id`), and a live
+completion that did not set `reasoning_control` reports `reasoning control not enabled for this
+completion`. An aggregate completion is never registered: its `id` reaches the client only once
+generation has already finished, and a request that asked for control but finished before any
+boundary could consume a signal is likewise not live.
+
+Only a malformed body is an HTTP 400, and it uses llama.cpp's two messages: an `id` that is absent,
+empty, or not a string is `missing completion id`; an `action` that is absent, not a string, or not
+`reasoning_end` is `unknown control action`. A router-mode `model` field is ignored on a
+single-model server.
+
+Every attempt is recorded in the operational log, applied or refused, so a thinking block reported
+not to close leaves a trace. The full-precision JSONL stream is unchanged.
 
 The close is committed exactly as a thinking-budget cap commits it, at the next decode boundary
 rather than mid-unit: the canonical early-close guidance and close marker go to the same model
