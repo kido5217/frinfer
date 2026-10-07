@@ -38,9 +38,15 @@ PendingBatch ProgramImpl::wrap_pending(std::span<const std::uint32_t> lanes,
             ContractAccess::make_sequence(this, runtime::LaneId{lane}, lane_epochs[lane]);
     }
     pending_transaction_ = transaction;
-    return ContractAccess::make_pending(
+    auto pending         = ContractAccess::make_pending(
         this, transaction.id, std::span<const SequenceHandle>(handles.data(), lanes.size()),
         round.tokens, round.row_counts, round.logprobs, round.row_stride, round.timing);
+    for (std::size_t row = 0; row < lanes.size(); ++row) {
+        const auto count = round.row_counts.empty() ? 1 : round.row_counts[row];
+        ContractAccess::constraint_failed(pending, row,
+                                          (grammar_dead_positions[row] & ((1u << count) - 1)) != 0);
+    }
+    return pending;
 }
 
 PrefillProgress ProgramImpl::wrap_prefill(std::uint32_t lane, runtime::PrefillStepResult step) {
@@ -65,7 +71,8 @@ PrefillProgress ProgramImpl::wrap_prefill(std::uint32_t lane, runtime::PrefillSt
 
 PendingBatch ProgramImpl::decode(std::span<const SequenceHandle> members,
                                  std::span<const runtime::RoundBudget> budgets,
-                                 runtime::ExecutionTiming* failed_timing) {
+                                 runtime::ExecutionTiming* failed_timing,
+                                 runtime::TokenMaskProvider* masks) {
     if (pending_transaction_ || members.empty() || members.size() > max_concurrency ||
         budgets.size() != members.size()) {
         throw std::invalid_argument("decode membership is invalid");
@@ -85,12 +92,8 @@ PendingBatch ProgramImpl::decode(std::span<const SequenceHandle> members,
         lanes[row] = lane;
     }
     const auto lane_span = std::span<const std::uint32_t>(lanes.data(), members.size());
-    // Grammar mask rows are refreshed before the batch executes so every row of the round is
-    // either masked from its grammar or explicitly unconstrained; the upload stays off the GPU
-    // when nothing in the round is masked.
-    refresh_mask_rows(lane_span);
     try {
-        runtime::BatchedGeneratedRound round = decode_raw(lane_span, budgets, failed_timing);
+        runtime::BatchedGeneratedRound round = decode_raw(lane_span, budgets, failed_timing, masks);
         if (failed_timing != nullptr) { *failed_timing += round.timing; }
         return wrap_pending(lane_span, std::move(round));
     } catch (...) {
@@ -316,13 +319,6 @@ runtime::ExecutionTiming ProgramImpl::append_forced_tokens(
 
             commit_generated_prefix_identity(sequence, base_ledger_frontier, forced,
                                              prefix_execution_splits[row]);
-            // A wrapped grammar covers the forced thinking-control span too (its reasoning body,
-            // the close and format whitespace): advance the grammar state so the next round's rows
-            // start at the answer grammar. All-or-nothing; a rejection is a fail-closed generation
-            // error.
-            if (!request.constraint.commit_forced(forced)) {
-                throw std::logic_error("forced thinking-control span diverged from its grammar");
-            }
             sequence.execution_frontier = end;
             sequence.ledger_frontier    = end + 1U;
             sequence.mtp_draft_count    = 0;
@@ -351,31 +347,6 @@ runtime::ExecutionTiming ProgramImpl::append_forced_tokens(
     }
 }
 
-void ProgramImpl::advance_grammar_state(std::span<const std::uint32_t> bases,
-                                        std::span<const std::uint32_t> lanes,
-                                        std::span<const runtime::CommitDecision> decisions,
-                                        std::span<const std::uint32_t> accepted) {
-    for (std::size_t row = 0; row < lanes.size(); ++row) {
-        RequestControl& request = requests[lanes[row]];
-        if (!request.constraint.constrained() || request.constraint.planned_columns() == 0 ||
-            decisions[row].cancelled || accepted[row] == 0) {
-            continue;
-        }
-        const SequenceState& sequence = active_sequence(lanes[row]);
-        if (accepted[row] > kMaximumConcurrency ||
-            bases[row] + accepted[row] > sequence.ledger.size()) {
-            throw std::logic_error("constrained round produced an invalid accepted span");
-        }
-        std::array<int, kMaximumConcurrency> tokens{};
-        for (std::uint32_t index = 0; index < accepted[row]; ++index) {
-            tokens[index] = sequence.ledger[bases[row] + index];
-        }
-        if (!request.constraint.commit(std::span<const int>(tokens.data(), accepted[row]))) {
-            throw std::logic_error("constrained generation diverged from its grammar");
-        }
-    }
-}
-
 CommitResult ProgramImpl::commit(PendingBatch&& pending,
                                  std::span<const runtime::CommitDecision> decisions,
                                  runtime::CommitObservation observation,
@@ -385,6 +356,10 @@ CommitResult ProgramImpl::commit(PendingBatch&& pending,
     const auto input_rows       = ContractAccess::rows(pending);
     const std::size_t row_count = input_rows.size();
     for (std::size_t row = 0; row < row_count; ++row) { members[row] = input_rows[row]; }
+    std::array<bool, kMaximumConcurrency> constraint_failed{};
+    for (std::size_t row = 0; row < row_count; ++row) {
+        constraint_failed[row] = pending.constraint_failed(row);
+    }
     const bool valid = valid_pending(pending);
     ContractAccess::consume(pending);
 
@@ -413,33 +388,32 @@ CommitResult ProgramImpl::commit(PendingBatch&& pending,
         }
         std::array<std::uint32_t, kMaximumConcurrency> accepted{};
         std::array<std::uint8_t, kMaximumConcurrency> terminal{};
-        std::array<std::uint8_t, kMaximumConcurrency> cancelled{};
+        std::array<std::uint8_t, kMaximumConcurrency> discarded{};
         std::array<std::optional<std::uint32_t>, kMaximumConcurrency> prefix_execution_splits{};
-        std::array<std::uint32_t, kMaximumConcurrency> grammar_bases{};
         for (std::size_t row = 0; row < row_count; ++row) {
             const std::uint32_t lane                = ContractAccess::lane(members[row]).value;
             lanes[row]                              = lane;
             const PendingCandidate& candidate       = requests[lane].pending;
             pending_kinds[row]                      = candidate.kind;
             const runtime::CommitDecision& decision = decisions[row];
-            if ((decision.cancelled && (decision.accepted_tokens != 0 || !decision.terminal)) ||
-                (!decision.cancelled &&
+            if ((decision.cancelled && decision.failed) ||
+                (!decision.cancelled && decision.failed != constraint_failed[row]) ||
+                ((decision.cancelled || decision.failed) &&
+                 (decision.accepted_tokens != 0 || !decision.terminal)) ||
+                (!(decision.cancelled || decision.failed) &&
                  (decision.accepted_tokens == 0 || decision.accepted_tokens > candidate.produced ||
                   (!decision.terminal && decision.accepted_tokens != candidate.produced))) ||
                 (decision.prefix_execution_split_after &&
-                 (decision.cancelled || *decision.prefix_execution_split_after == 0 ||
+                 ((decision.cancelled || decision.failed) ||
+                  *decision.prefix_execution_split_after == 0 ||
                   *decision.prefix_execution_split_after > decision.accepted_tokens))) {
                 throw std::logic_error("pending transaction decision is invalid");
             }
             accepted[row]                = decision.accepted_tokens;
-            // A Begin span starts at the prompt frontier; later rounds start at their own base.
-            grammar_bases[row]           = requests[lane].pending.kind == PendingKind::Begin
-                                               ? requests[lane].pending.prompt_tokens
-                                               : requests[lane].pending.base_S;
             terminal[row]                = decision.terminal ? 1U : 0U;
-            cancelled[row]               = decision.cancelled ? 1U : 0U;
+            discarded[row]               = (decision.cancelled || decision.failed) ? 1U : 0U;
             prefix_execution_splits[row] = decision.prefix_execution_split_after;
-            if (decision.cancelled) {
+            if (discarded[row]) {
                 timings[row]     = requests[lane].timings;
                 speculative[row] = std::move(requests[lane].speculative_stats);
             }
@@ -450,30 +424,25 @@ CommitResult ProgramImpl::commit(PendingBatch&& pending,
             resolve_pending_raw(std::span<const std::uint32_t>(lanes.data(), row_count),
                                 std::span<const std::uint32_t>(accepted.data(), row_count),
                                 std::span<const std::uint8_t>(terminal.data(), row_count),
-                                std::span<const std::uint8_t>(cancelled.data(), row_count),
+                                std::span<const std::uint8_t>(discarded.data(), row_count),
                                 std::span<const std::optional<std::uint32_t>>(
                                     prefix_execution_splits.data(), row_count),
                                 failed_timing));
         timing.resume_post();
         pending_transaction_.reset();
 
-        // Grammar constraints advance by the licensed tokens of masked columns. The mask makes an
-        // ungrammatical licensed token impossible, so a rejection is an invariant violation and
-        // fails closed.
-        advance_grammar_state(std::span<const std::uint32_t>(grammar_bases.data(), row_count),
-                              std::span<const std::uint32_t>(lanes.data(), row_count), decisions,
-                              std::span<const std::uint32_t>(accepted.data(), row_count));
-
         for (std::size_t row = 0; row < row_count; ++row) {
-            if (!decisions[row].cancelled) { settle_unit(lanes[row]); }
+            if (!discarded[row]) { settle_unit(lanes[row]); }
         }
         CommitResult out;
         out.row_count = row_count;
         for (std::size_t row = 0; row < row_count; ++row) {
-            if (decisions[row].cancelled) {
+            if (discarded[row]) {
                 invalidate_lane(lanes[row]);
                 out.rows[row] = CommitRowResult{
-                    .disposition = runtime::CommitDisposition::CancelledReleased,
+                    .disposition = decisions[row].failed
+                                       ? runtime::CommitDisposition::FailedReleased
+                                       : runtime::CommitDisposition::CancelledReleased,
                     .timings     = timings[row],
                     .speculative = std::move(speculative[row]),
                 };
@@ -491,11 +460,11 @@ CommitResult ProgramImpl::commit(PendingBatch&& pending,
                 }
             }
 
-            const auto& stats = decisions[row].cancelled ? out.rows[row].speculative
-                                                         : requests[lanes[row]].speculative_stats;
+            const auto& stats =
+                discarded[row] ? out.rows[row].speculative : requests[lanes[row]].speculative_stats;
             out.rows[row].speculative_counters = {stats.rounds, stats.drafted_tokens,
                                                   stats.accepted_tokens, stats.fallback_steps};
-            if (pending_kinds[row] != PendingKind::Begin || decisions[row].cancelled) { continue; }
+            if (pending_kinds[row] != PendingKind::Begin || discarded[row]) { continue; }
             RequestControl& request = requests[lanes[row]];
             if (decisions[row].terminal) {
                 request.prefill.reset();

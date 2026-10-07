@@ -260,15 +260,9 @@ SpeculativeBackend Program::speculative_backend() const noexcept {
     return impl_->speculative_backend;
 }
 
-void Program::set_constraint(SequenceHandle sequence,
-                             std::shared_ptr<const frontend::CompiledGrammar> grammar,
-                             bool carries_reasoning) {
-    impl_->set_constraint(detail::ContractAccess::lane(sequence).value, std::move(grammar),
-                          carries_reasoning);
-}
-
-PrefillProgress Program::advance_prefill(SequenceHandle h, runtime::ExecutionTiming* t) {
-    return impl_->advance_prefill(h, t);
+PrefillProgress Program::advance_prefill(SequenceHandle h, runtime::ExecutionTiming* t,
+                                         runtime::TokenMaskProvider* m) {
+    return impl_->advance_prefill(h, t, m);
 }
 
 ReplayProgress Program::advance_replay(SequenceHandle h, runtime::ExecutionTiming* t) {
@@ -276,8 +270,9 @@ ReplayProgress Program::advance_replay(SequenceHandle h, runtime::ExecutionTimin
 }
 
 PendingBatch Program::decode(std::span<const SequenceHandle> s,
-                             std::span<const runtime::RoundBudget> b, runtime::ExecutionTiming* t) {
-    return impl_->decode(s, b, t);
+                             std::span<const runtime::RoundBudget> b, runtime::ExecutionTiming* t,
+                             runtime::TokenMaskProvider* m) {
+    return impl_->decode(s, b, t, m);
 }
 
 runtime::ExecutionTiming Program::append_forced_tokens(

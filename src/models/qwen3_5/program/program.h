@@ -272,7 +272,8 @@ public:
           transaction_(std::exchange(other.transaction_, 0)), rows_(other.rows_),
           row_count_(std::exchange(other.row_count_, 0)), tokens_(other.tokens_),
           row_counts_(other.row_counts_), logprobs_(other.logprobs_),
-          row_stride_(other.row_stride_), timing_(other.timing_) {
+          row_stride_(other.row_stride_), timing_(other.timing_),
+          constraint_failed_(other.constraint_failed_) {
         other.tokens_     = {};
         other.row_counts_ = {};
         other.logprobs_   = {};
@@ -296,6 +297,10 @@ public:
 
     [[nodiscard]] std::uint32_t row_stride() const noexcept { return row_stride_; }
 
+    [[nodiscard]] bool constraint_failed(std::size_t row) const {
+        return constraint_failed_.at(row);
+    }
+
     [[nodiscard]] runtime::ExecutionTiming execution_timing() const noexcept { return timing_; }
 
 private:
@@ -308,6 +313,7 @@ private:
     std::span<const runtime::RawTokenLogprob> logprobs_;
     std::uint32_t row_stride_ = 0;
     runtime::ExecutionTiming timing_;
+    std::array<bool, kMaximumConcurrency> constraint_failed_{};
 
     friend struct detail::ContractAccess;
 };
@@ -470,13 +476,15 @@ public:
     [[nodiscard]] bool context_blocks(SequenceHandle sequence) const noexcept;
     // A resumed binding retains its complete recovery capacity until committed new progress.
     [[nodiscard]] bool recovery_pending(SequenceHandle sequence) const noexcept;
-    [[nodiscard]] PrefillProgress
-    advance_prefill(SequenceHandle sequence, runtime::ExecutionTiming* failed_timing = nullptr);
+    [[nodiscard]] PrefillProgress advance_prefill(SequenceHandle sequence,
+                                                  runtime::ExecutionTiming* failed_timing = nullptr,
+                                                  runtime::TokenMaskProvider* masks = nullptr);
     [[nodiscard]] ReplayProgress advance_replay(SequenceHandle sequence,
                                                 runtime::ExecutionTiming* failed_timing = nullptr);
     [[nodiscard]] PendingBatch decode(std::span<const SequenceHandle> sequences,
                                       std::span<const runtime::RoundBudget> budgets,
-                                      runtime::ExecutionTiming* failed_timing = nullptr);
+                                      runtime::ExecutionTiming* failed_timing = nullptr,
+                                      runtime::TokenMaskProvider* masks       = nullptr);
     // Forced control contributes to counts once. Replay does not call this operation.
     [[nodiscard]] runtime::ExecutionTiming
     append_forced_tokens(std::span<const SequenceHandle> sequences,
@@ -490,13 +498,6 @@ public:
     [[nodiscard]] DiscardResult abort_pending(PendingBatch&& pending) noexcept;
     [[nodiscard]] FinishResult finish(SequenceHandle sequence) noexcept;
     [[nodiscard]] AbortResult abort(SequenceHandle sequence) noexcept;
-    // Attaches (or, with a null grammar, clears) the sequence's grammar constraint. Called once
-    // when the sequence starts; the Program owns the per-request mask state until the lane is
-    // recycled. `carries_reasoning` marks the full-stream thinking wrapper: forced
-    // thinking-control tokens then advance the grammar state as answer tokens.
-    void set_constraint(SequenceHandle sequence,
-                        std::shared_ptr<const frontend::CompiledGrammar> grammar,
-                        bool carries_reasoning);
     [[nodiscard]] SpeculativeBackend speculative_backend() const noexcept;
     void fail_all_cleanup() noexcept;
     [[nodiscard]] PhysicalUsageSnapshot physical_usage() const noexcept;

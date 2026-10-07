@@ -40,6 +40,10 @@ ninfer_add_test(ninfer_qwen3_5_prefix_real_test
 # suite; its replacement is ninfer_qwen3_5_no_preemption_real_test below. The source is retained
 # for the serving/bench reconciliation (#241) and the merge ticket (#242).
 
+ninfer_add_test(ninfer_qwen3_5_grammar_real_test
+  SOURCES "${CMAKE_CURRENT_LIST_DIR}/test_engine_grammar_real.cpp"
+  LIBRARIES ninfer_engine ninfer::json)
+
 ninfer_add_test(ninfer_qwen3_5_score_real_test
   SOURCES "${CMAKE_CURRENT_LIST_DIR}/test_engine_score_real.cpp"
   LIBRARIES ninfer_engine)
@@ -106,10 +110,6 @@ ninfer_add_test(ninfer_grammar_producer_test
   SOURCES "${CMAKE_CURRENT_LIST_DIR}/test_grammar_producer.cpp"
   NEEDS_SOURCE_DIR
   LIBRARIES ninfer_grammar ninfer_llama_grammar ninfer_llama_chat ninfer_model_loading ninfer::json)
-
-ninfer_add_test(ninfer_constraint_state_test
-  SOURCES "${CMAKE_CURRENT_LIST_DIR}/test_constraint_state.cpp"
-  LIBRARIES ninfer_engine ninfer_grammar ninfer_core)
 
 ninfer_add_test(ninfer_qwen3_5_constrained_real_test
   SOURCES "${CMAKE_CURRENT_LIST_DIR}/test_engine_constrained_real.cpp"

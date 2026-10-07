@@ -19,6 +19,7 @@ struct ResolvedExecutionOptions {
 };
 
 struct ResolvedRequestOptions {
+    std::optional<std::string> grammar;
     ResolvedExecutionOptions execution;
     StopPolicy stop;
     OutputOptions output;

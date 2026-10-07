@@ -61,14 +61,34 @@ ApiError request_error_to_api_error(const ninfer::RequestError& exception, Const
         error.code   = "invalid_media";
         break;
     case ninfer::RequestErrorKind::InvalidConstraint:
+    case ninfer::RequestErrorKind::InvalidGrammar:
+    case ninfer::RequestErrorKind::InvalidChoice:
+    case ninfer::RequestErrorKind::InvalidRegex:
         error.status = 400;
-        if (source == ConstraintSource::JsonSchema) {
+        if (source == ConstraintSource::JsonSchema ||
+            exception.kind() == ninfer::RequestErrorKind::InvalidJsonSchema) {
             error.param = "response_format";
             error.code  = "json_schema_invalid";
         } else {
             error.param = "grammar";
             error.code  = "grammar_invalid";
         }
+        break;
+    case ninfer::RequestErrorKind::InvalidJsonSchema:
+    case ninfer::RequestErrorKind::UnsupportedJsonSchema:
+    case ninfer::RequestErrorKind::UnsatisfiableJsonSchema:
+        error.param  = "response_format";
+        error.status = 400;
+        error.code   = "json_schema_invalid";
+        break;
+    case ninfer::RequestErrorKind::ConstraintDeadEnd:
+        error.param.clear();
+        error.status = 409;
+        error.code   = "constraint_dead_end";
+        break;
+    case ninfer::RequestErrorKind::InvalidToolConstraint:
+        error.status = 400;
+        error.code   = "tool_constraint_invalid";
         break;
     case ninfer::RequestErrorKind::Overloaded:
         error.param.clear();

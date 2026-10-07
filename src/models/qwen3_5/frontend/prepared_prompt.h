@@ -154,6 +154,8 @@ struct PreparedPromptData {
     // The exact rendered prompt text handed to the tokenizer, with media placeholders already
     // expanded in place. Exposed for the CLI's --show-prompt; empty for token-id-only prompts.
     std::string rendered_text;
+    bool has_active_tools        = false;
+    std::string continuation_content;
     PrepareStats prepare;
 
     [[nodiscard]] std::span<const std::int32_t> position_axis(int axis) const;

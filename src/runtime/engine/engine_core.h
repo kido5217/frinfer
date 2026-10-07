@@ -7,7 +7,6 @@
 #include "ninfer/types.h"
 #include "runtime/contract/execution.h"
 #include "runtime/contract/resources.h"
-#include "runtime/engine/constraint_selection.h"
 #include "runtime/engine/request_record.h"
 #include "runtime/engine/context_cache/resource_manager.h"
 #include "runtime/engine/scheduler.h"
@@ -48,8 +47,6 @@ public:
     using SequenceHandle     = typename ModelContract::SequenceHandle;
     using PendingBatch       = typename ModelContract::PendingBatch;
     using Frontend           = typename ModelContract::Frontend;
-    using CompiledGrammar    = typename ModelContract::CompiledGrammar;
-    using ConstraintScope    = typename Frontend::ConstraintScope;
     using PreparedPrompt     = typename ModelContract::PreparedPrompt;
     using PublishedOutput    = typename ModelContract::PublishedOutput;
     using Request            = RequestRecord<ModelContract>;
@@ -58,6 +55,20 @@ public:
     using ControlMembership  = typename Scheduling::ControlMembership;
     using ResourceManagement = ResourceManager<ModelContract>;
     using Clock              = std::chrono::steady_clock;
+
+    class RoundMasks final : public TokenMaskProvider {
+    public:
+        std::array<decltype(&std::declval<Request&>().output), kMaximumConcurrency> outputs{};
+
+        bool constrained(std::size_t row) const noexcept override {
+            return outputs[row] && outputs[row]->constrained();
+        }
+
+        std::uint32_t fill(std::size_t row, std::span<const TokenId> drafts,
+                           std::span<std::uint32_t> words) override {
+            return outputs[row]->grammar_masks(drafts, words);
+        }
+    };
 
     EngineCore(Instance& instance, DeviceContext& device, const EngineOptions& options,
                ContextMachineCostModel context_cost)
@@ -172,30 +183,6 @@ public:
                                "inference request expired before submission");
         }
 
-        std::shared_ptr<const CompiledGrammar> grammar;
-        bool grammar_carries_reasoning = false;
-        if (options.constraint) {
-            const SpeculativeBackend backend = instance_.program->speculative_backend();
-            if (backend != SpeculativeBackend::None && backend != SpeculativeBackend::Mtp) {
-                throw RequestError(RequestErrorKind::InvalidConstraint,
-                                   "grammar constraints need the ordinary or MTP backend");
-            }
-            // A constrained request that resolves thinking enabled and whose rendered prompt
-            // starts in reasoning gets the full-stream thinking wrapper: the constraint then
-            // carries the reasoning stream and hands off to the answer grammar at the close.
-            grammar_carries_reasoning =
-                constraint_carries_reasoning(options.constraint, prompt_summary.starts_in_reasoning);
-            std::string diagnostic;
-            grammar = instance_.frontend.compile_grammar(
-                options.constraint->gbnf,
-                grammar_carries_reasoning ? ConstraintScope::Thinking : ConstraintScope::Answer,
-                &diagnostic);
-            if (grammar == nullptr) {
-                throw RequestError(RequestErrorKind::InvalidConstraint,
-                                   "grammar constraint rejected: " + diagnostic);
-            }
-        }
-
         std::uint64_t request_id        = 0;
         std::uint64_t publication_order = 0;
         {
@@ -217,8 +204,26 @@ public:
 
         std::shared_ptr<Request> request;
         try {
+            // The fork carries the constraint as GrammarConstraint (text + resolved thinking);
+            // upstream builds the request-owned matcher from the GBNF text and applies the
+            // reasoning wrapper exactly when the rendered prompt starts in reasoning (ADR-0001
+            // amendment). An unsupported speculative backend keeps the fork's fail-closed
+            // rejection.
+            std::optional<std::string> grammar_text;
+            if (options.constraint) {
+                const SpeculativeBackend backend = instance_.program->speculative_backend();
+                if (backend != SpeculativeBackend::None && backend != SpeculativeBackend::Mtp) {
+                    throw RequestError(RequestErrorKind::InvalidConstraint,
+                                       "grammar constraints need the ordinary or MTP backend");
+                }
+                grammar_text = options.constraint->gbnf;
+            }
             auto output = instance_.frontend.make_output_session(
-                prompt, options.stop, options.output, options.execution.thinking);
+                prompt, options.stop, options.output, options.execution.thinking, grammar_text);
+            if (Clock::now() >= pending_deadline) {
+                throw RequestError(RequestErrorKind::QueueTimeout,
+                                   "inference request expired during grammar preparation");
+            }
             const std::uint32_t capacity_output =
                 max_context_ - prompt_summary.prompt_tokens + static_cast<std::uint32_t>(1);
             try {
@@ -232,8 +237,6 @@ public:
                 request_id, publication_order, std::move(prompt), std::move(output), prompt_summary,
                 prepare_seconds, std::move(options), consumer_mode, std::move(observation),
                 pending_deadline, submitted);
-            request->grammar                   = std::move(grammar);
-            request->grammar_carries_reasoning = grammar_carries_reasoning;
         } catch (...) {
             release_reserved_capacity();
             throw;
@@ -998,16 +1001,18 @@ private:
         std::array<ContinuationAction, kMaximumConcurrency> continuations{};
         std::array<std::size_t, kMaximumConcurrency> generated_sizes{};
         std::array<bool, kMaximumConcurrency> cancelled{};
+        std::array<bool, kMaximumConcurrency> failed{};
         bool generated_staged = false;
         std::array<std::shared_ptr<Request>, kMaximumConcurrency> terminal_requests{};
         std::array<std::uint32_t, kMaximumConcurrency> terminal_lanes{};
         std::array<FinishReason, kMaximumConcurrency> terminal_reasons{};
         std::size_t terminal_count    = 0;
-        const auto rollback_generated = [&]() noexcept {
-            if (!generated_staged) { return; }
+        const auto rollback_generated = [&]() {
             for (std::size_t row = 0; row < row_count; ++row) {
                 const auto& request = slots_[lane_indices[row]];
-                if (request != nullptr && request->generated.size() >= generated_sizes[row]) {
+                if (request != nullptr) { request->output.discard_preview(); }
+                if (generated_staged && request != nullptr &&
+                    request->generated.size() >= generated_sizes[row]) {
                     request->generated.resize(generated_sizes[row]);
                 }
             }
@@ -1023,6 +1028,7 @@ private:
                 }
                 if (decode_round) { ++request->host_timing.decode_rounds; }
                 cancelled[row] = cancelled_at_unit_start[lane];
+                failed[row]    = !cancelled[row] && pending.constraint_failed(row);
                 const std::int32_t raw_count =
                     pending.row_counts().empty() ? 1 : pending.row_counts()[row];
                 if (raw_count <= 0 || raw_count > static_cast<std::int32_t>(pending.row_stride())) {
@@ -1032,6 +1038,10 @@ private:
                 const auto row_tokens     = pending.tokens().subspan(row * pending.row_stride(),
                                                                      static_cast<std::size_t>(count));
                 generated_sizes[row]      = request->generated.size();
+                if (failed[row]) {
+                    decisions[row] = CommitDecision{.terminal = true, .failed = true};
+                    continue;
+                }
                 if (cancelled[row]) {
                     (void)request->output.preview_terminal(FinishReason::Cancelled);
                     decisions[row] = CommitDecision{
@@ -1118,10 +1128,11 @@ private:
             throw std::logic_error("Runtime commit result is not row aligned");
         }
         for (std::size_t row = 0; row < row_count; ++row) {
-            const CommitDisposition expected = cancelled[row] ? CommitDisposition::CancelledReleased
-                                               : decisions[row].terminal
-                                                   ? CommitDisposition::Finishable
-                                                   : CommitDisposition::Active;
+            const CommitDisposition expected =
+                failed[row]               ? CommitDisposition::FailedReleased
+                : cancelled[row]          ? CommitDisposition::CancelledReleased
+                : decisions[row].terminal ? CommitDisposition::Finishable
+                                          : CommitDisposition::Active;
             if (committed.rows[row].disposition != expected) {
                 throw std::logic_error("Runtime commit row disposition is invalid");
             }
@@ -1149,7 +1160,7 @@ private:
             observed.drafted_tokens  = counters.drafted_tokens;
             observed.accepted_tokens = counters.accepted_tokens;
             observed.fallback_steps  = counters.fallback_steps;
-            if (cancelled[row]) {
+            if (cancelled[row] || failed[row]) {
                 request->generation_timings = committed.rows[row].timings;
                 request->speculative_stats  = std::move(committed.rows[row].speculative);
             }
@@ -1172,6 +1183,13 @@ private:
                 const std::uint32_t lane     = lane_indices[row];
                 const auto& request          = slots_[lane];
                 const std::uint32_t accepted = decisions[row].accepted_tokens;
+                if (failed[row]) {
+                    complete_error(request, std::make_exception_ptr(
+                                                RequestError(RequestErrorKind::ConstraintDeadEnd,
+                                                             "grammar has no valid next token")));
+                    remove_completed_slot(lane);
+                    continue;
+                }
                 if (!cancelled[row]) { request->budget->commit(accepted); }
                 update_recovery(request, cancelled[row]);
                 auto published = request->output.commit_preview();
@@ -1369,9 +1387,12 @@ private:
             throw std::logic_error("prefill request has no sequence handle");
         }
         setup.finish();
+        RoundMasks masks;
+        masks.outputs[0] = &request->output;
+        auto* provider   = request->output.constrained() ? &masks : nullptr;
         ProgramCallScope program_call(*this);
-        auto progress =
-            instance_.program->advance_prefill(*request->sequence, &program_call.failed_timing());
+        auto progress = instance_.program->advance_prefill(*request->sequence,
+                                                           &program_call.failed_timing(), provider);
         program_call.finish(progress.timing);
         if (!request->first_output_timing) {
             record_execution_work(request->prefill_work, progress.timing);
@@ -1454,10 +1475,6 @@ private:
             if (!request->sequence) {
                 throw std::logic_error("binding completed without a native sequence");
             }
-            // Attach (or clear, for an unconstrained request) the lane's grammar constraint so a
-            // recycled lane can never keep an earlier request's mask state.
-            instance_.program->set_constraint(*request->sequence, request->grammar,
-                                              request->grammar_carries_reasoning);
             request->model_state = progress.replaying ? EngineRequestState::Replay
                                    : control.resumed  ? request->resume_phase
                                                       : EngineRequestState::Prefill;
@@ -2082,8 +2099,15 @@ private:
         nvtx::ScopedRange decode_range(nvtx::Name::Decode, nvtx::Category::Decode,
                                        static_cast<std::uint64_t>(membership.size));
         ProgramCallScope program_call(*this);
+        RoundMasks masks;
+        bool constrained = false;
+        for (std::size_t row = 0; row < membership.size; ++row) {
+            masks.outputs[row] = &slots_[membership.lane_span()[row]]->output;
+            constrained |= masks.outputs[row]->constrained();
+        }
         auto pending = instance_.program->decode(
-            membership.sequence_span(), membership.budget_span(), &program_call.failed_timing());
+            membership.sequence_span(), membership.budget_span(), &program_call.failed_timing(),
+            constrained ? &masks : nullptr);
         program_call.finish(pending.execution_timing());
         commit_pending(std::move(pending), membership.lane_span(), true, cancelled_at_unit_start);
         publish_runtime_stats();
@@ -2102,10 +2126,11 @@ private:
         std::array<std::size_t, kMaximumConcurrency> generated_sizes{};
         std::array<std::optional<std::uint32_t>, kMaximumConcurrency> prefix_execution_splits{};
         bool generated_staged         = false;
-        const auto rollback_generated = [&]() noexcept {
+        const auto rollback_generated = [&]() {
             if (!generated_staged) { return; }
             for (std::size_t row = 0; row < membership.size; ++row) {
                 const auto& request = slots_[membership.lanes[row]];
+                if (request != nullptr) { request->output.discard_preview(); }
                 if (request != nullptr && request->generated.size() >= generated_sizes[row]) {
                     request->generated.resize(generated_sizes[row]);
                 }

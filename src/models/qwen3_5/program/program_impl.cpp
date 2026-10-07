@@ -34,8 +34,9 @@ ProgramImpl::ProgramImpl(const execution::Parameters& parameters_in, const Seque
       graph_allowance_bytes(plan.graph_allowance_bytes), workspace_plan(plan.workspace),
       persistent(plan.persistent.bytes), workspace_storage(plan.workspace.capacity),
       work(DeviceSpan{workspace_storage.base(), plan.workspace.general_capacity}),
-      round_host(plan.causal_scoring ? std::nullopt
-                                     : std::make_optional<PinnedHostBuffer>(sizeof(TokenId))),
+      round_host(plan.causal_scoring
+                     ? std::nullopt
+                     : std::make_optional<PinnedHostBuffer>(sizeof(qwen3_5::PrefillRoundHost))),
       score_logprobs_host(plan.causal_scoring ? std::make_optional<PinnedHostBuffer>(
                                                     kCausalScoreTile * sizeof(float))
                                               : std::nullopt),
@@ -167,11 +168,20 @@ ProgramImpl::ProgramImpl(const execution::Parameters& parameters_in, const Seque
     if (plan.persistent.sampling_config) {
         sampling_config = plan.persistent.sampling_config->bind(backing);
     }
+    if (plan.persistent.grammar_masks) {
+        grammar_masks_device = plan.persistent.grammar_masks->bind(backing);
+        grammar_masks_host.emplace(grammar_masks_device.bytes());
+    }
+    if (is_masked_draft_backend(speculative_backend)) {
+        dflash_draft_handoff.emplace(device, draft_window * max_concurrency);
+    }
     for (std::uint32_t lane = 0; lane < max_concurrency; ++lane) {
         lane_epochs[lane]    = 1;
         sequences[lane].lane = lane;
     }
-    host_tokens = round_host ? static_cast<TokenId*>(round_host->data()) : nullptr;
+    host_tokens = round_host
+                      ? &static_cast<qwen3_5::PrefillRoundHost*>(round_host->data())->sampled_token
+                      : nullptr;
     if (ordinary_host) {
         ordinary_host_ingress = static_cast<qwen3_5::OrdinaryDecodeIngress*>(ordinary_host->data());
         ordinary_host_egress  = reinterpret_cast<qwen3_5::OrdinaryDecodeEgress*>(
@@ -216,14 +226,6 @@ ProgramImpl::ProgramImpl(const execution::Parameters& parameters_in, const Seque
                                    plan.persistent.round.yarn_inv_freq_values.data(),
                                    io.yarn_inv_freq.bytes(), cudaMemcpyHostToDevice,
                                    device.stream));
-    }
-    // Mask rows start all-ones (every token allowed) with the active flag cleared, so an
-    // unconstrained program behaves exactly like one without the mask transport; a constrained
-    // round rewrites its lanes' rows and raises the flag. Written once, before graph capture.
-    if (io.mask_rows.data != nullptr) {
-        CUDA_CHECK(cudaMemsetAsync(io.mask_rows.data, 0xFF, io.mask_rows.bytes(), device.stream));
-        CUDA_CHECK(cudaMemsetAsync(io.mask_active.data, 0, io.mask_active.bytes(), device.stream));
-        mask_transport_.attach(io.mask_rows, io.mask_active, device.stream);
     }
     device.synchronize();
     if (use_cuda_graph) {

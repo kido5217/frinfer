@@ -31,10 +31,11 @@ struct RoundStateSpec {
     std::vector<float> yarn_inv_freq;
     std::uint32_t yarn_rotary_dim = 0;
     float yarn_mscale             = 1.0f;
-    // Grammar mask transport (constrained decoding): the public token domain a mask row covers.
-    // Zero disables the mask regions on this program; a positive value allocates the persistent
-    // row table and the round active flag, and lets the decode paths apply the mask Op.
-    std::int32_t mask_token_domain = 0;
+};
+
+struct PrefillRoundHost {
+    TokenId sampled_token = 0;
+    ops::SamplingConfig sampling;
 };
 
 // Stable pinned/device transfer format for ordinary decode. The full fixed-size object is copied
@@ -226,11 +227,6 @@ struct RoundStateLayout {
     std::optional<TensorRegion> yarn_inv_freq;
     std::vector<float> yarn_inv_freq_values;
     float yarn_mscale = 1.0f;
-    // Grammar mask transport: I32 [words, rows] mask rows mirroring the decode batch layout
-    // (present only when spec.mask_token_domain > 0; geometry in mask_transport.h) and the
-    // device-resident I32[1] active flag that gates the apply-mask Op per round.
-    std::optional<TensorRegion> mask_rows;
-    std::optional<TensorRegion> mask_active;
     bool complete = false;
 };
 
@@ -397,10 +393,6 @@ struct RoundState {
     // unextended) and the host-side attention magnitude.
     Tensor yarn_inv_freq;
     float yarn_mscale = 1.0f;
-    // Grammar mask transport: I32 [words, rows] table and the I32[1] active flag (null-backed
-    // when the program has no mask regions; geometry in mask_transport.h).
-    Tensor mask_rows;
-    Tensor mask_active;
 
     RoundState() = default;
     RoundState(DeviceSpan backing, const RoundStateLayout& layout);

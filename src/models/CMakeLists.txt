@@ -23,7 +23,7 @@ target_link_libraries(ninfer_grammar PRIVATE ninfer_llama_grammar)
 add_library(ninfer_model_runtime STATIC)
 ninfer_internal_includes(ninfer_model_runtime)
 target_link_libraries(ninfer_model_runtime
-  PUBLIC ninfer_model_loading ninfer_ops ninfer_runtime_support ninfer_grammar
+  PUBLIC ninfer_model_loading ninfer_ops ninfer_runtime_support ninfer_grammar ninfer_text_grammar
   PRIVATE ninfer_media_decode ninfer_jinja ninfer_chat_parsing)
 
 

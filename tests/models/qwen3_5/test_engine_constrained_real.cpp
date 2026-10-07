@@ -94,7 +94,10 @@ int exercise(const char* artifact) {
         try {
             (void)run(8, "root ::= [");
         } catch (const ninfer::RequestError& error) {
-            rejected = error.kind() == ninfer::RequestErrorKind::InvalidConstraint;
+            // The ported XGrammar path reports the precise upstream kind; the fork's
+            // InvalidConstraint is kept accepted until the constraint contract collapses.
+            rejected = error.kind() == ninfer::RequestErrorKind::InvalidGrammar ||
+                       error.kind() == ninfer::RequestErrorKind::InvalidConstraint;
         }
         if (!rejected) {
             std::cerr << "an invalid grammar was not rejected\n";

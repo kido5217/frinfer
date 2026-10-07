@@ -113,7 +113,6 @@ struct RequestRecord {
     using OutputSession  = typename ModelContract::OutputSession;
     using BasePlan       = typename ModelContract::RequestBasePlan;
     using SequenceHandle = typename ModelContract::SequenceHandle;
-    using CompiledGrammar = typename ModelContract::CompiledGrammar;
     using ResumeState    = typename ModelContract::ResumeState;
     using StreamEvent = std::variant<GenerationTimingObservation, GenerationFirstTokenObservation,
                                      OutputDelta, std::unique_ptr<GenerationSchedulingObservation>>;
@@ -184,11 +183,6 @@ struct RequestRecord {
     std::string reasoning;
     std::optional<LaneId> lane;
     std::optional<SequenceHandle> sequence;
-    // Compiled grammar constraint shared with the Program; null for an unconstrained request.
-    std::shared_ptr<const CompiledGrammar> grammar;
-    // True when the compiled grammar carries the reasoning stream (the thinking wrapper): the
-    // mask engages from token 0 and the forced thinking-control span advances the grammar.
-    bool grammar_carries_reasoning = false;
     std::atomic<bool> cancelled{false};
     // Real-time control surface, shared with any caller-side GenerationControl: a signal raised from
     // another thread outlives the handle that submitted the request.

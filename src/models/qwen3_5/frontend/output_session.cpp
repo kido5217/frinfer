@@ -1,4 +1,5 @@
 #include "models/qwen3_5/frontend/output_session.h"
+#include "text/grammar.h"
 #include "models/qwen3_5/frontend/chat_parse_core.h"
 #include "models/qwen3_5/frontend/chat_template.h"
 #include "models/qwen3_5/frontend/tokenizer.h"
@@ -279,9 +280,11 @@ public:
     Impl(std::shared_ptr<const fi::Tokenizer> tokenizer_, StopPolicy policy_, OutputOptions output,
          bool starts_in_reasoning, ThinkingControlOptions thinking_,
          std::shared_ptr<const std::vector<TokenId>> thinking_control_tokens_,
-         std::shared_ptr<const fi::ToolCallOutputContract> tool_call_output_)
+         std::shared_ptr<const fi::ToolCallOutputContract> tool_call_output_,
+         std::unique_ptr<text::GrammarSession> grammar_)
         : tokenizer(std::move(tokenizer_)), policy(std::move(policy_)),
           thinking_control_tokens(std::move(thinking_control_tokens_)),
+          grammar(std::move(grammar_)),
           preserve_special(output.raw || output.preserve_special_tokens),
           raw_presentation(output.raw), split_reasoning(starts_in_reasoning && !output.raw),
           core(output.raw ? nullptr : std::move(tool_call_output_),
@@ -428,6 +431,20 @@ public:
     std::vector<TokenLogprob> content_logprobs;
     std::string round_fed;
     bool preview_ready = false;
+    // Request-owned constrained-decoding matcher; null for an unconstrained request.
+    std::unique_ptr<text::GrammarSession> grammar;
+
+    // Advances the matcher over the accepted token prefix. A rejection is an invariant violation
+    // (the mask licensed the token), so it fails closed.
+    void accept_grammar(std::span<const TokenId> tokens) {
+        if (!grammar) { return; }
+        try {
+            for (TokenId token : tokens) { grammar->accept(token); }
+        } catch (...) {
+            grammar->discard();
+            throw;
+        }
+    }
 };
 
 PublishedOutput::PublishedOutput(PublishedOutput&& other) noexcept
@@ -462,10 +479,12 @@ OutputSession::OutputSession(
     std::shared_ptr<const frontend::Tokenizer> tokenizer, StopPolicy policy, OutputOptions output,
     bool starts_in_reasoning, ThinkingControlOptions thinking,
     std::shared_ptr<const std::vector<TokenId>> thinking_control_tokens,
-    std::shared_ptr<const frontend::ToolCallOutputContract> tool_call_output)
+    std::shared_ptr<const frontend::ToolCallOutputContract> tool_call_output,
+    std::unique_ptr<text::GrammarSession> grammar)
     : impl_(std::make_unique<Impl>(
           std::move(tokenizer), std::move(policy), output, starts_in_reasoning, thinking,
-          std::move(thinking_control_tokens), std::move(tool_call_output))) {}
+          std::move(thinking_control_tokens), std::move(tool_call_output),
+          std::move(grammar))) {}
 
 runtime::OutputDecision
 OutputSession::preview_model(std::span<const TokenId> tokens, std::uint32_t total_budget_remaining,
@@ -510,6 +529,7 @@ OutputSession::preview_model(std::span<const TokenId> tokens, std::uint32_t tota
         if (impl_->preview_execution_split_after && *impl_->preview_execution_split_after > count) {
             throw std::logic_error("prefix execution split exceeds the accepted token prefix");
         }
+        impl_->accept_grammar(tokens.first(count));
         impl_->preview_ready = true;
         return runtime::OutputDecision{
             .accepted_tokens              = count,
@@ -699,6 +719,7 @@ runtime::OutputDecision OutputSession::preview_control(std::span<const TokenId> 
     impl_->preview_thinking.control_pending = false;
     impl_->preview_thinking.applied         = true;
     impl_->preview_thinking.injected_tokens = static_cast<std::uint32_t>(tokens.size());
+    impl_->accept_grammar(tokens);
     impl_->preview_ready                    = true;
     return runtime::OutputDecision{
         .accepted_tokens              = static_cast<std::uint32_t>(tokens.size()),
@@ -761,7 +782,27 @@ PublishedOutput OutputSession::commit_preview() {
     impl_->preview_logprobs.clear();
     impl_->preview_ready = false;
     impl_->core.commit();
+    if (impl_->grammar) { impl_->grammar->confirm(); }
     return output;
+}
+
+bool OutputSession::constrained() const noexcept { return impl_ != nullptr && impl_->grammar != nullptr; }
+
+std::uint32_t OutputSession::grammar_masks(std::span<const TokenId> drafts,
+                                           std::span<std::uint32_t> words) {
+    if (!constrained()) { throw std::logic_error("mask requested for unconstrained output"); }
+    return impl_->grammar->masks(drafts, words);
+}
+
+void OutputSession::discard_preview() noexcept {
+    if (impl_ == nullptr || !impl_->preview_ready) { return; }
+    if (impl_->grammar) { impl_->grammar->discard(); }
+    impl_->preview_ready = false;
+    impl_->preview_output.clear();
+    impl_->preview_logprobs.clear();
+    impl_->preview_execution_split_after.reset();
+    impl_->round_fed.clear();
+    impl_->core.begin_preview();
 }
 
 std::vector<GeneratedToolCall> OutputSession::take_tool_calls() noexcept {

@@ -12,6 +12,7 @@ target_sources(ninfer_model_runtime PRIVATE
   "${CMAKE_CURRENT_LIST_DIR}/program/graphs.cpp"
   "${CMAKE_CURRENT_LIST_DIR}/program/prefill.cpp"
   "${CMAKE_CURRENT_LIST_DIR}/program/decode.cpp"
+  "${CMAKE_CURRENT_LIST_DIR}/program/grammar_masks.cpp"
 
   "${CMAKE_CURRENT_LIST_DIR}/program/planning/startup.cpp"
   "${CMAKE_CURRENT_LIST_DIR}/program/planning/graph_profiles.cpp"
@@ -32,6 +33,4 @@ target_sources(ninfer_model_runtime PRIVATE
 
   "${CMAKE_CURRENT_LIST_DIR}/program/speculative/mtp.cpp"
   "${CMAKE_CURRENT_LIST_DIR}/program/speculative/target_verification.cpp"
-  "${CMAKE_CURRENT_LIST_DIR}/program/constraint_state.cpp"
-  "${CMAKE_CURRENT_LIST_DIR}/program/mask_transport.cpp"
 )
