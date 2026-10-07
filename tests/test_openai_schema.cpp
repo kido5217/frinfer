@@ -2,14 +2,17 @@
 #include "serve/generation_service.h"
 #include "serve/openai_chat.h"
 #include "serve/openai_common.h"
+#include "serve/reasoning_control.h"
 #include "serve/tool_call_signal.h"
 #include "serve/translate.h"
 
 #include <nlohmann/json.hpp>
 
+#include <atomic>
 #include <cstdint>
 #include <iostream>
 #include <limits>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -96,11 +99,13 @@ int test_request_envelope_and_sampling() {
     body["min_p"]                 = 0.05;
     body["timings_per_token"]     = true;
     body["return_progress"]       = true;
+    body["reasoning_control"]     = true;
 
     const OpenAIChatRequest request = parse(body);
     failures += check(request.model == "qwen", "model remains in OpenAI envelope");
     failures += check(request.stream && request.include_usage, "stream metadata parsed");
-    failures += check(request.timings_per_token && request.return_progress,
+    failures += check(request.timings_per_token && request.return_progress &&
+                          request.reasoning_control,
                       "llama.cpp response observations remain in the protocol envelope");
     failures += check(request.output_tokens_explicit && request.generation.max_tokens == 48,
                       "max_completion_tokens wins and explicitness stays in envelope");
@@ -123,6 +128,7 @@ int test_request_envelope_and_sampling() {
     failures +=
         check(!defaults.stream && !defaults.include_usage && !defaults.output_tokens_explicit &&
                   !defaults.timings_per_token && !defaults.return_progress &&
+                  !defaults.reasoning_control &&
                   defaults.generation.max_tokens == limits().default_max_tokens,
               "protocol defaults remain outside GenerationRequest");
 
@@ -138,6 +144,120 @@ int test_request_envelope_and_sampling() {
     malformed["return_progress"] = 1;
     failures += check(api_error([&] { (void)parse(malformed); }).param == "return_progress",
                       "non-boolean return_progress rejected");
+    malformed                     = base_request();
+    malformed["reasoning_control"] = "yes";
+    failures += check(api_error([&] { (void)parse(malformed); }).param == "reasoning_control",
+                      "non-boolean reasoning_control rejected");
+    return failures;
+}
+
+// The real-time control route: its request envelope, its answer shape, and the registry that maps a
+// streamed completion id to that completion's Engine control surface.
+int test_reasoning_control() {
+    int failures = 0;
+
+    // The two rejections this route makes are the ones llama.cpp makes, with its messages: an `id`
+    // that is absent or empty cannot name a completion, and any action other than `reasoning_end`
+    // is an unknown action — including an absent or wrong-typed one.
+    const ChatControlRequest parsed =
+        parse_chat_control_request(Json{{"id", "chatcmpl-1"}, {"action", "reasoning_end"}});
+    failures += check(parsed.id == "chatcmpl-1" && parsed.action == "reasoning_end",
+                      "a well-formed control request parsed");
+    const auto rejection = [&](const Json& body) { return api_error([&] { (void)parse_chat_control_request(body); }); };
+    failures += check(rejection(Json::array()).message == "missing completion id",
+                      "a non-object body is reported as a missing id, as llama.cpp reports it");
+    failures += check(rejection(Json{{"action", "reasoning_end"}}).message == "missing completion id",
+                      "a missing id rejected");
+    failures += check(rejection(Json{{"id", ""}, {"action", "reasoning_end"}}).message ==
+                          "missing completion id",
+                      "an empty id rejected");
+    failures += check(rejection(Json{{"id", 5}, {"action", "reasoning_end"}}).message ==
+                          "missing completion id",
+                      "a wrong-typed id rejected, matching llama.cpp's defaulting accessor");
+    failures += check(rejection(Json{{"id", "chatcmpl-1"}}).message == "unknown control action",
+                      "a missing action is an unknown action, not a type error");
+    failures += check(rejection(Json{{"id", "chatcmpl-1"}, {"action", 3}}).message ==
+                          "unknown control action",
+                      "a wrong-typed action is an unknown action, matching llama.cpp");
+    failures += check(rejection(Json{{"id", "chatcmpl-1"}, {"action", "reasoning_start"}}).message ==
+                          "unknown control action",
+                      "an unknown action rejected");
+    // A non-empty id that names nothing is a lookup miss, not a malformed body: a client that padded
+    // its id gets the same readable 200 as one that raced the completion.
+    failures += check(parse_chat_control_request(
+                          Json{{"id", "  "}, {"action", "reasoning_end"}}).id == "  ",
+                      "a padded id is a lookup, not a rejection");
+    failures += check(
+        parse_chat_control_request(
+            Json{{"id", "chatcmpl-1"}, {"action", "reasoning_end"}, {"model", "qwen"}}).id ==
+            "chatcmpl-1",
+        "the router-mode model field is ignored rather than rejected");
+
+    const Json accepted = Json::parse(make_chat_control_response(true));
+    failures += check(accepted.at("success") == true && !accepted.contains("message"),
+                      "an accepted control answer carries only success");
+    const Json refused =
+        Json::parse(make_chat_control_response(false, "no active completion for this id"));
+    failures += check(refused.at("success") == false &&
+                          refused.at("message") == "no active completion for this id",
+                      "a refused control answer carries its reason");
+
+    // The publication policy: what the route can reach, and for how long.
+    ReasoningControlRegistry registry;
+    const auto armed_flag                = std::make_shared<std::atomic<bool>>(false);
+    const ninfer::GenerationControl armed(armed_flag);
+    failures += check(armed.is_valid(), "a bound control reports itself valid");
+    failures += check(!ninfer::GenerationControl{}.is_valid(), "a default control names no request");
+
+    failures += check(registry.request_reasoning_end("chatcmpl-absent").message ==
+                          "no active completion for this id",
+                      "an unknown completion id matches nothing");
+
+    // Two concurrent responses, so the registry is shown to address each completion by its own id.
+    // A live request that did not ask for control stays registered, so the route can name that
+    // instead of claiming no completion exists. The registration is the release rule: holding it is
+    // exactly what makes a completion controllable.
+    {
+        const auto unarmed = arm_reasoning_control(
+            registry, "chatcmpl-unarmed",
+            {.control = ninfer::GenerationControl{}, .requested = false, .id_live_while_generating = true});
+        const auto live = arm_reasoning_control(registry, "chatcmpl-1",
+                                               {.control = armed, .requested = true,
+                                                .id_live_while_generating = true});
+        failures += check(unarmed != nullptr && live != nullptr && live->id() == "chatcmpl-1",
+                          "a streaming armed completion is registered under its own id");
+        failures += check(registry.size() == 2, "both completions are registered");
+        const ChatControlOutcome unarmed_outcome = registry.request_reasoning_end("chatcmpl-unarmed");
+        failures += check(!unarmed_outcome.success &&
+                              unarmed_outcome.message ==
+                                  "reasoning control not enabled for this completion",
+                          "an unarmed live completion names the missing opt-in");
+        failures += check(!armed_flag->load(),
+                          "a refused control signal must not reach another completion's Engine surface");
+        const ChatControlOutcome outcome = registry.request_reasoning_end("chatcmpl-1");
+        failures += check(outcome.success && outcome.message.empty() && armed_flag->load(),
+                          "a control signal reached the Engine surface of a live completion");
+    }
+    // Both responses ended, so both registrations went out of scope with them.
+    failures += check(!registry.request_reasoning_end("chatcmpl-1").success &&
+                          !registry.request_reasoning_end("chatcmpl-unarmed").success &&
+                          registry.size() == 0,
+                      "a finished response stops matching its completion");
+
+    // An aggregate completion's id reaches the client only after generation ends, so it is never
+    // registered at all — that absence is what keeps it unreachable.
+    const auto aggregate = arm_reasoning_control(registry, "chatcmpl-aggregate",
+                                                 {.control = armed, .requested = true,
+                                                  .id_live_while_generating = false});
+    failures += check(aggregate == nullptr,
+                      "an aggregate completion is not registered even when it asked for control");
+    failures += check(registry.request_reasoning_end("chatcmpl-aggregate").message ==
+                          "no active completion for this id",
+                      "an aggregate completion id matches nothing");
+    failures += check(!arm_reasoning_control(registry, "chatcmpl-immediate",
+                                             {.control = ninfer::GenerationControl{},
+                                              .requested = true, .id_live_while_generating = true}),
+                      "a request that asked for control but never entered the Engine is not live");
     return failures;
 }
 
@@ -1317,6 +1437,7 @@ int main() {
     failures += test_logprobs_response();
     failures += test_common_objects();
     failures += test_tool_call_demotion_signal();
+    failures += test_reasoning_control();
     if (failures == 0) { std::cout << "OpenAI Chat protocol tests passed\n"; }
     return failures == 0 ? 0 : 1;
 }

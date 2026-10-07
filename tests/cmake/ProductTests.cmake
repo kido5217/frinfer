@@ -40,6 +40,14 @@ set_tests_properties(
   ninfer_serve_constrained_real_test
   PROPERTIES SKIP_RETURN_CODE 77)
 
+ninfer_add_test(ninfer_reasoning_control_real_test
+  SOURCES "${CMAKE_CURRENT_LIST_DIR}/../test_reasoning_control_real.cpp"
+  LIBRARIES ninfer_serve)
+
+set_tests_properties(
+  ninfer_reasoning_control_real_test
+  PROPERTIES SKIP_RETURN_CODE 77)
+
 ninfer_add_test(ninfer_openai_responses_test
   SOURCES "${CMAKE_CURRENT_LIST_DIR}/../test_openai_responses.cpp"
   LIBRARIES ninfer_serve)

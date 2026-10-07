@@ -97,6 +97,9 @@ public:
     public:
         virtual ~Concept() = default;
         virtual GenerationResult wait(OutputSink* sink, const CancellationView& cancellation) = 0;
+        // The Engine consumes this flag at the next decode boundary. The request record owns it, so
+        // a control handed to a caller stays valid for the whole request, past its handle.
+        virtual std::shared_ptr<std::atomic<bool>> reasoning_end_flag() = 0;
     };
 
     template <class Submission>
@@ -107,6 +110,10 @@ public:
 
         GenerationResult wait(OutputSink* sink, const CancellationView& cancellation) override {
             return submission_.wait(sink, cancellation);
+        }
+
+        std::shared_ptr<std::atomic<bool>> reasoning_end_flag() override {
+            return submission_.reasoning_end_flag();
         }
 
     private:
@@ -124,6 +131,8 @@ public:
         return state_->wait(sink, cancellation);
     }
 
+    GenerationControl control() const { return GenerationControl(state_->reasoning_end_flag()); }
+
     [[nodiscard]] const ResolvedSamplingParameters& resolved_sampling() const noexcept {
         return sampling_;
     }
@@ -133,6 +142,10 @@ private:
     ResolvedSamplingParameters sampling_;
 };
 
+void GenerationControl::end_reasoning() noexcept {
+    if (flag_ != nullptr) { flag_->store(true, std::memory_order_release); }
+}
+
 GenerationHandle::GenerationHandle() noexcept                              = default;
 GenerationHandle::~GenerationHandle()                                      = default;
 GenerationHandle::GenerationHandle(GenerationHandle&&) noexcept            = default;
@@ -141,6 +154,11 @@ GenerationHandle& GenerationHandle::operator=(GenerationHandle&&) noexcept = def
 GenerationHandle::GenerationHandle(std::unique_ptr<Impl> impl) noexcept : impl_(std::move(impl)) {}
 
 GenerationHandle::operator bool() const noexcept { return impl_ != nullptr; }
+
+GenerationControl GenerationHandle::control() const {
+    if (impl_ == nullptr) { return {}; }
+    return impl_->control();
+}
 
 const ResolvedSamplingParameters& GenerationHandle::resolved_sampling() const noexcept {
     static const ResolvedSamplingParameters empty;
@@ -327,6 +345,9 @@ GenerationHandle Engine::submit(PreparedPrompt prompt, RequestOptions options,
                 if (cancellation.requested()) { result.finish_reason = FinishReason::Cancelled; }
                 return std::move(result);
             }
+
+            // No request entered the Engine, so there is no boundary that could consume a signal.
+            std::shared_ptr<std::atomic<bool>> reasoning_end_flag() { return nullptr; }
         } immediate{.consumer_mode = consumer_mode};
 
         immediate.result.prompt                     = prompt_summary;

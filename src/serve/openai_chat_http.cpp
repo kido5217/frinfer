@@ -70,6 +70,15 @@ void HttpServer::handle_chat_completions(const httplib::Request& req, httplib::R
     const OpenAIChatResponseIdentity identity = make_openai_chat_response_identity(request.model);
     auto lifecycle                            = begin_request(make_request_log_context(
         req_id, "openai_chat_completions", request.generation, metadata, prepared));
+    // A streaming completion publishes its id before the first delta, which is what makes the
+    // control route addressable while the client still reads the stream. The registration lives as
+    // long as this handler's shared state, so it is released when the response ends either way.
+    const std::shared_ptr<ReasoningControlRegistration> control_registration = arm_reasoning_control(
+        reasoning_controls_, identity.id,
+        {.control                 = request.reasoning_control ? prepared.generation.control()
+                                                              : ninfer::GenerationControl{},
+         .requested               = request.reasoning_control,
+         .id_live_while_generating = request.stream});
 
     if (!request.stream) {
         GenerationOutcome outcome;
@@ -125,7 +134,10 @@ void HttpServer::handle_chat_completions(const httplib::Request& req, httplib::R
         prepare_sse_response(res);
         res.set_chunked_content_provider(
             "text/event-stream",
-            [this, stream, encoder, lifecycle, return_progress,
+            // The registration is captured, not left in the handler: the provider runs after this
+            // frame returns, and the completion must stay controllable for as long as its stream
+            // is still being read.
+            [this, stream, encoder, lifecycle, control_registration, return_progress,
              timings_per_token](std::size_t, httplib::DataSink& sink) -> bool {
                 if (stream->started.exchange(true, std::memory_order_acq_rel)) {
                     sink.done();

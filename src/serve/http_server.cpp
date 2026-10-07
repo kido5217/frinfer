@@ -126,6 +126,7 @@ bool report_has_activity(const ThroughputReport& report) {
 
 const char* endpoint_name(std::string_view path) noexcept {
     if (path == "/v1/chat/completions") { return "openai_chat_completions"; }
+    if (path == "/v1/chat/completions/control") { return "openai_chat_control"; }
     if (path == "/v1/responses") { return "openai_responses"; }
     if (path == "/v1/responses/input_tokens") { return "openai_responses_input_tokens"; }
     if (path == "/v1/messages") { return "anthropic_messages"; }
@@ -441,6 +442,10 @@ void HttpServer::register_routes() {
                  [this](const httplib::Request& req, httplib::Response& res) {
                      handle_chat_completions(req, res);
                  });
+    server_.Post("/v1/chat/completions/control",
+                 [this](const httplib::Request& req, httplib::Response& res) {
+                     handle_chat_control(req, res);
+                 });
     server_.Post("/v1/responses", [this](const httplib::Request& req, httplib::Response& res) {
         handle_responses(req, res);
     });
@@ -475,6 +480,27 @@ void HttpServer::register_routes() {
     server_.Post("/v1/messages", [this](const httplib::Request& req, httplib::Response& res) {
         handle_messages(req, res);
     });
+}
+
+// Real-time reasoning control. The answer is always 200: a control request for a completion that
+// already finished, or that never opted in, is a no-op the caller must be able to read, not a
+// protocol error. Only a malformed body is rejected.
+void HttpServer::handle_chat_control(const httplib::Request& req, httplib::Response& res) {
+    ChatControlRequest control;
+    try {
+        control = parse_chat_control_request(parse_json_body(req));
+    } catch (const ApiException& exception) {
+        operational_log_.http_failure(endpoint_name(req.path),
+                                      make_request_failure(RequestFailurePhase::Http,
+                                                           exception.error()),
+                                      response_request_id(res));
+        write_openai_error(res, exception.error());
+        return;
+    }
+    const ChatControlOutcome outcome = reasoning_controls_.request_reasoning_end(control.id);
+    operational_log_.reasoning_control(++request_seq_, control.id, outcome);
+    res.set_content(make_chat_control_response(outcome.success, outcome.message),
+                    "application/json");
 }
 
 void HttpServer::handle_models(const httplib::Request&, httplib::Response& res) const {

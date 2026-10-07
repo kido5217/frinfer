@@ -1,5 +1,6 @@
 #pragma once
 
+#include "serve/reasoning_control.h"
 #include "serve/request_events.h"
 
 #include <cstdint>
@@ -36,6 +37,12 @@ render_tool_call_fallback(const RequestLogContext& context, const GenerationOutc
 [[nodiscard]] OperationalRecord render_response_failure(std::uint64_t request_id,
                                                         const RequestFailure& failure);
 [[nodiscard]] OperationalRecord render_throughput(const ThroughputReport& report);
+// A real-time reasoning-control attempt. This is the one trace an operator gets for an endpoint that
+// otherwise leaves nothing: a client reporting a thinking block that will not close reaches this
+// line whether the signal was applied or refused.
+[[nodiscard]] OperationalRecord render_reasoning_control(std::uint64_t request_id,
+                                                        std::string_view completion_id,
+                                                        const ChatControlOutcome& outcome);
 
 class OperationalLog {
 public:
@@ -49,6 +56,8 @@ public:
     void throughput(const ThroughputReport& report) const;
     void http_failure(std::string_view endpoint, const RequestFailure& failure,
                       std::string_view request_id = {}) const;
+    void reasoning_control(std::uint64_t request_id, std::string_view completion_id,
+                           const ChatControlOutcome& outcome) const;
     void engine_capacity(const GenerationService& service) const;
     void warmup_started() const;
     void warmup_complete(double seconds) const;

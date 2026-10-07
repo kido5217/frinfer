@@ -72,6 +72,13 @@ public:
                   std::span<const runtime::RawTokenLogprob> logprobs = {});
     [[nodiscard]] std::uint32_t
     model_token_budget_remaining(std::uint32_t total_budget_remaining) const noexcept;
+    // Arms an early close of the model-origin reasoning block for the next model round. The close is
+    // committed exactly as a thinking-budget boundary commits it, under the same capacity rule: a
+    // remaining output budget that cannot fit the complete control suffix plus one post-close model
+    // token ends the request instead. A session that never opened reasoning, or that already applied
+    // control, ignores the request. Idempotent.
+    void request_reasoning_close() noexcept;
+
     [[nodiscard]] std::span<const TokenId> pending_control_tokens() const noexcept;
     [[nodiscard]] runtime::OutputDecision preview_control(std::span<const TokenId> tokens,
                                                           std::uint32_t total_budget_remaining);

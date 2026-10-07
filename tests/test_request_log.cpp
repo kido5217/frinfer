@@ -667,6 +667,24 @@ int main() {
         "single-request pretty throughput is noisy or incomplete");
     const Json throughput_json =
         Json::parse(format_throughput_json("serve-test", 5000, throughput));
+    // The reasoning-control route is the one endpoint whose absence leaves no other trace, so an
+    // operator diagnosing a thinking block that will not close reads these lines.
+    const OperationalRecord control_applied =
+        render_reasoning_control(42, "chatcmpl-abc", ChatControlOutcome{.success = true});
+    failures += check(
+        control_applied.severity == OperationalSeverity::Info &&
+            control_applied.message ==
+                "control reasoning_end | req#42 | chatcmpl-abc | applied at the next decode boundary",
+        "an applied reasoning-control record mismatch");
+    const OperationalRecord control_refused = render_reasoning_control(
+        43, "chatcmpl-gone",
+        ChatControlOutcome{.success = false, .message = "no active completion for this id"});
+    failures += check(
+        control_refused.severity == OperationalSeverity::Warning &&
+            control_refused.message ==
+                "control reasoning_end | req#43 | chatcmpl-gone | refused: no active completion "
+                "for this id",
+        "a refused reasoning-control record mismatch");
     failures += check(throughput_json.at("event") == "throughput", "throughput event mismatch");
     failures += check(throughput_json.at("tokens").at("computed_prefill") == 100 &&
                           throughput_json.at("tokens").at("committed_decode") == 40,

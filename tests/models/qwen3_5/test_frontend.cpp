@@ -1953,6 +1953,95 @@ int test_thinking_budget_control(const Frontend& frontend) {
     return failures;
 }
 
+// The real-time close is the thinking-budget boundary without a budget: an unbudgeted thinking
+// session closes at the boundary a caller signals, under the same capacity rule.
+int test_reasoning_end_control(const Frontend& frontend) {
+    int failures = 0;
+
+    auto prompt  = thinking_prompt(frontend);
+    auto session = frontend.make_output_session(prompt, {}, {}, ninfer::ThinkingControlOptions{});
+    failures += check(session.thinking_stats().configured_budget == std::nullopt &&
+                          session.model_token_budget_remaining(40) == 40,
+                      "an unbudgeted thinking session was clamped");
+
+    // Before the signal the round decodes normally.
+    const auto open = session.preview_model(std::array<ninfer::TokenId, 2>{0, 0}, 40,
+                                            ninfer::FinishReason::OutputLimit);
+    failures += check(open.accepted_tokens == 2 &&
+                          open.continuation == ninfer::runtime::ContinuationAction::Decode,
+                      "an unbudgeted thinking round requested control before any signal");
+    failures += check(
+        channel_text(session.commit_preview(), ninfer::OutputChannel::Reasoning) == "xx",
+        "unbudgeted reasoning output was not published");
+
+    // A real-time close mid-stream arms the identical canonical control span.
+    session.request_reasoning_close();
+    const auto closed = session.preview_model(std::array<ninfer::TokenId, 1>{0}, 38,
+                                              ninfer::FinishReason::OutputLimit);
+    failures += check(closed.accepted_tokens == 1 && !closed.finished() &&
+                          closed.continuation ==
+                              ninfer::runtime::ContinuationAction::ApplyTargetControl,
+                      "a real-time reasoning close did not request target control");
+    (void)session.commit_preview();
+    const std::span<const ninfer::TokenId> pending = session.pending_control_tokens();
+    failures += check(pending.size() > 1,
+                      "a real-time close did not expose the canonical multi-token control span");
+
+    const std::vector<ninfer::TokenId> control(pending.begin(), pending.end());
+    (void)session.preview_control(control, 37);
+    const auto control_output = session.commit_preview();
+    failures += check(channel_text(control_output, ninfer::OutputChannel::Reasoning) ==
+                              kThinkingControlGuidance &&
+                          channel_text(control_output, ninfer::OutputChannel::Content).empty(),
+                      "a real-time close did not publish the early-close guidance to reasoning");
+    const ninfer::ThinkingBudgetStats stats = session.thinking_stats();
+    failures += check(stats.configured_budget == std::nullopt && stats.budget_thinking_tokens == 0 &&
+                          stats.injected_tokens == control.size() && stats.applied &&
+                          session.pending_control_tokens().empty(),
+                      "a real-time close reported budget accounting it never had");
+    const auto answer = session.preview_model(std::array<ninfer::TokenId, 1>{0}, 37,
+                                              ninfer::FinishReason::OutputLimit);
+    failures += check(!answer.finished(), "the round after a real-time close terminated early");
+    failures += check(channel_text(session.commit_preview(), ninfer::OutputChannel::Content) == "x",
+                      "content after a real-time close did not enter the content channel");
+
+    // A second signal after the close has been applied is inert.
+    session.request_reasoning_close();
+    const auto after = session.preview_model(std::array<ninfer::TokenId, 1>{0}, 36,
+                                             ninfer::FinishReason::OutputLimit);
+    failures += check(after.accepted_tokens == 1 &&
+                          after.continuation == ninfer::runtime::ContinuationAction::Decode,
+                      "a late close signal re-armed control");
+    (void)session.commit_preview();
+
+    // A close raised while the model is not in reasoning never arms: a natural close wins first.
+    auto natural_prompt  = thinking_prompt(frontend);
+    auto natural_session =
+        frontend.make_output_session(natural_prompt, {}, {}, ninfer::ThinkingControlOptions{});
+    natural_session.request_reasoning_close();
+    const auto natural = natural_session.preview_model(std::array<ninfer::TokenId, 2>{3, 4}, 40,
+                                                       ninfer::FinishReason::OutputLimit);
+    failures += check(natural.continuation == ninfer::runtime::ContinuationAction::Decode &&
+                          natural_session.pending_control_tokens().empty(),
+                      "a close signal survived a natural thinking close");
+    (void)natural_session.commit_preview();
+
+    // A remaining output budget that cannot fit the control span plus one post-close model token
+    // ends the request instead of partially inserting control.
+    auto tight_prompt  = thinking_prompt(frontend);
+    auto tight_session =
+        frontend.make_output_session(tight_prompt, {}, {}, ninfer::ThinkingControlOptions{});
+    tight_session.request_reasoning_close();
+    const auto tight = tight_session.preview_model(
+        std::array<ninfer::TokenId, 1>{0}, static_cast<std::uint32_t>(control.size() + 1),
+        ninfer::FinishReason::OutputLimit);
+    failures += check(tight.continuation == ninfer::runtime::ContinuationAction::Decode &&
+                          tight_session.pending_control_tokens().empty(),
+                      "a close signal inserted a control span no output budget could admit");
+    (void)tight_session.commit_preview();
+    return failures;
+}
+
 int test_grammar_constraints(const Frontend& frontend) {
     int failures          = 0;
     const auto vocabulary = frontend.grammar_vocabulary();
@@ -2766,6 +2855,7 @@ int main() {
     failures += test_tool_call_demotion_marking();
     failures += test_reasoning_split(frontend);
     failures += test_thinking_budget_control(frontend);
+    failures += test_reasoning_end_control(frontend);
     failures += test_grammar_constraints(frontend);
     failures += test_chat_parsing_corpus_sessions(frontend);
     failures += test_utf8_and_hidden_eos(frontend);

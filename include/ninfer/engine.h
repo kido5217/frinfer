@@ -2,6 +2,7 @@
 
 #include "ninfer/types.h"
 
+#include <atomic>
 #include <chrono>
 #include <memory>
 #include <string_view>
@@ -35,6 +36,30 @@ private:
     friend class Engine;
 };
 
+// Caller-side control surface for one submitted generation. Obtain it from GenerationHandle before
+// wait(): the handle is single-use, while the control stays valid for the whole request and remains
+// safe to hold or signal from another thread. A default-constructed control names no request and
+// ignores every signal.
+class GenerationControl {
+public:
+    GenerationControl() noexcept = default;
+    // Binds a control to a caller-owned flag. The Engine uses this when a request is submitted;
+    // callers normally obtain the control from GenerationHandle::control() instead.
+    explicit GenerationControl(std::shared_ptr<std::atomic<bool>> flag) noexcept
+        : flag_(std::move(flag)) {}
+
+    // Asks the request to close its model-origin thinking block at the next decode boundary, using
+    // the same canonical control suffix a thinking budget commits. A request that never opened a
+    // reasoning block, or that already closed one, ignores the signal; a control span that no
+    // remaining output budget can admit is not committed either.
+    void end_reasoning() noexcept;
+
+    [[nodiscard]] bool is_valid() const noexcept { return flag_ != nullptr; }
+
+private:
+    std::shared_ptr<std::atomic<bool>> flag_;
+};
+
 class GenerationHandle {
 public:
     GenerationHandle() noexcept;
@@ -48,6 +73,10 @@ public:
 
     [[nodiscard]] explicit operator bool() const noexcept;
     [[nodiscard]] const ResolvedSamplingParameters& resolved_sampling() const noexcept;
+
+    // Stable control surface for the submitted request. Empty when the request never entered the
+    // Engine (for example a zero-token submission that completes immediately).
+    [[nodiscard]] GenerationControl control() const;
 
     GenerationResult wait(OutputSink* sink = nullptr, const CancellationView& cancellation = {});
 
