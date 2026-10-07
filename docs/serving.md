@@ -11,7 +11,7 @@ See [CUDA synchronization](cli.md#cuda-synchronization) for the shared `NINFER_C
 ./build/apps/ninfer-serve models/qwen3_8_27b_nvfp4.ninfer \
   --host 127.0.0.1 \
   --port 8080 \
-  --max-context 240000 \
+  --max-context 120000 \
   --kv-capacity 240000 \
   --max-concurrency 2 \
   --kv-dtype fp8 \
@@ -21,10 +21,11 @@ See [CUDA synchronization](cli.md#cuda-synchronization) for the shared `NINFER_C
   --preserve-thinking
 ```
 
-The command uses Qwen3.8-27B NVFP4. Each request has a 240,000-token logical ceiling. A shared
-240,000-token Main Text KV pool serves admitted requests; either request may use the full capacity
-when running alone. Requests acquire KV pages as execution advances; if concurrent growth exhausts
-the pool, the scheduler can pause a request and restore it later.
+The command uses Qwen3.8-27B NVFP4. Each request has a 120,000-token logical ceiling. A shared
+240,000-token Main Text KV pool admits two lanes at full context, so either request may reach its
+full 120,000-token ceiling while the other is resident. Requests acquire KV pages as execution
+advances; if concurrent growth exhausts the pool, the scheduler can pause a request and restore it
+later.
 
 With `C=2` and two extra Device slots, the process owns four Device StateImages. The default shared
 pinned Host budget is 8 GiB plus eight model StateImages. It holds retained state, KV and pause
@@ -762,7 +763,7 @@ The table lists executable defaults. The startup example selects a long-context 
 | `--api-key KEY` | required bearer or `x-api-key` value | unset |
 | `--model-id ID` | override the public OpenAI model alias | artifact `metadata.name`, or architecture name |
 | `--max-context N` | logical context ceiling of each sequence | `8192` |
-| `--kv-capacity N\|auto` | explicit shared Main Text KV capacity, or maximize it from remaining GPU memory; omitted means `--max-context` (one lane); the pool must cover `--max-concurrency` lanes at full context | `8192` |
+| `--kv-capacity N\|auto` | explicit shared Main Text KV capacity, or maximize it from remaining GPU memory; omitted follows `--max-concurrency` lanes at full `--max-context`; the pool must cover every lane | `8192` |
 | `--max-concurrency N` | resident execution lanes; valid range `1..8` | `1` |
 | `--max-pending-requests N` | additional requests allowed to wait for admission | `16` |
 | `--pending-timeout-ms N` | maximum preparation-plus-admission wait | `30000` |
@@ -1032,14 +1033,13 @@ outside the GPU executor and do not delay formation of the next batch.
 
 `--max-context` is each sequence's logical ceiling. `--kv-capacity` fixes the shared Main Text KV
 pool used by active requests and retained prefixes. `auto` accounts for the complete enabled runtime
-and leaves 1 GiB of sizing headroom; omitting the option makes it follow `--max-context`. Capacity
-resolves once at startup. Because active-request preemption is pinned off, the pool must cover
-`--max-concurrency` lanes each at full `--max-context`: an explicit capacity that rounds below that
-bound, or an `auto` resolution that cannot reach it from the available GPU memory, is rejected at
-startup with an error naming the required and supplied capacity. With `--max-concurrency` above 1,
-omit `--kv-capacity` only if a single-lane pool is intended — otherwise pass an explicit capacity
-covering every lane or `auto`. The MTP/DFlash backend KV pool is sized on top of the Main pool and
-covered by the same bound.
+and leaves 1 GiB of sizing headroom; omitting the option makes the pool follow `--max-concurrency`
+lanes at full `--max-context`. Capacity resolves once at startup. Because active-request preemption
+is pinned off, the pool must cover `--max-concurrency` lanes each at full `--max-context`: an
+explicit capacity that rounds below that bound, or an `auto` resolution that cannot reach it from
+the available GPU memory, is rejected at startup with an error naming the required and supplied
+capacity. The MTP/DFlash backend KV pool is sized on top of the Main pool and covered by the same
+bound.
 
 Before each prefill, decode or replay unit, the runtime reserves the additional pages and temporary
 storage required by that unit. It first reclaims inactive cache resources when capacity is short.

@@ -51,6 +51,24 @@ int main() {
     failures += check(insufficient_rejected,
                       "automatic KV capacity accepted less than the minimum reservation");
 
+    // Fork contract: the pinned no-preemption runtime requires the resolved Main KV pool to be the
+    // curve's full worst-case pool. The synthetic budget above resolves to fewer than M_max pages,
+    // so the startup check the Engine applies to an Automatic resolution must reject it.
+    bool full_resident_accepted = true;
+    try {
+        ninfer::runtime::require_full_resident_capacity(curve, curve.maximum_main_page_groups);
+    } catch (const std::invalid_argument&) { full_resident_accepted = false; }
+    failures += check(full_resident_accepted,
+                      "the full resident capacity was rejected as undersized");
+
+    bool automatic_undersize_rejected = false;
+    try {
+        ninfer::runtime::require_full_resident_capacity(curve, automatic.main_page_groups);
+    } catch (const std::invalid_argument&) { automatic_undersize_rejected = true; }
+    failures += check(automatic.main_page_groups < curve.maximum_main_page_groups &&
+                          automatic_undersize_rejected,
+                      "an Automatic resolution below the full resident pool was accepted");
+
     if (failures == 0) { std::cout << "ok\n"; }
     return failures == 0 ? 0 : 1;
 }

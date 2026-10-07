@@ -43,8 +43,9 @@ The Main KV pool must cover `max_concurrency` lanes at full `max_context`:
   the accepted memory tax; `maximum_pages64` was already the range's upper bound.
 - `auto` can no longer undersize; on a memory-starved machine it rejects at startup instead of
   degrading at runtime.
-- `--max-concurrency > 1` with `--kv-capacity` omitted (serve's single-lane default) is now rejected
-  at startup; the operator must pass an explicit capacity covering all lanes or `auto`.
+- An omitted `--kv-capacity` follows `--max-concurrency` lanes at full `--max-context` in the
+  serve, so the product's own default invocation for a supported configuration starts without an
+  operator-supplied capacity; the CLI keeps its single-lane `--max-context` default.
 - Low-level Program tests that build deliberately tight pools keep doing so through the
   planner/finalize path, but must now declare a compliant `kv_capacity`. `test_engine_no_preemption_real`
   pins both the accepted concurrent run and the rejection message.

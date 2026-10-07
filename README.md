@@ -165,7 +165,7 @@ Start a long-running text/agent server with two active-request lanes:
 
 ```bash
 ./build/apps/frinfer-serve models/qwen3_8_27b_nvfp4.ninfer \
-  --max-context 240000 \
+  --max-context 120000 \
   --kv-capacity 240000 \
   --max-concurrency 2 \
   --kv-dtype fp8 \
@@ -175,9 +175,10 @@ Start a long-running text/agent server with two active-request lanes:
   --preserve-thinking
 ```
 
-Each request has a 240,000-token logical ceiling. A shared 240,000-token Device KV pool serves
-resident requests and retained prefixes. Requests acquire KV pages as execution advances; under
-pressure, the scheduler can pause a request and resume it later. The profile provides two extra
+Each request has a 120,000-token logical ceiling. A shared 240,000-token Device KV pool covers both
+lanes, so each may reach its full 120,000-token context while the other is resident. Requests
+acquire KV pages as execution advances; under pressure, the scheduler can pause a request and
+resume it later. The profile provides two extra
 Device StateImages and the default shared pinned Host budget: 8 GiB plus eight model StateImages,
 used for retained state, KV and pause snapshots.
 
@@ -306,7 +307,7 @@ docker run --rm \
   ninfer:local \
   frinfer-serve /models/qwen3_8_27b_nvfp4.ninfer \
   --host 0.0.0.0 \
-  --max-context 240000 \
+  --max-context 120000 \
   --kv-capacity 240000 \
   --max-concurrency 2 \
   --kv-dtype fp8 \

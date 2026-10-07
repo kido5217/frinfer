@@ -9,7 +9,6 @@
 #include <chrono>
 #include <set>
 #include <stdexcept>
-#include <string>
 #include <utility>
 
 namespace ninfer::runtime {
@@ -144,21 +143,10 @@ ConstructedModel construct_model(EngineOptions& options, DeviceContext& device) 
     const auto& capacity_curve = planner.capacity_curve();
     auto resolution = resolve_kv_capacity(options.kv_capacity, capacity_curve,
                                           current_free_device_bytes());
-    // Fork contract: active-request preemption is pinned off, so the resolved pool must cover
-    // every resident lane at full context. Explicit capacity is rejected up front by the target
-    // validator; Automatic resolution is only known after the memory budget is applied, so it is
-    // checked here. maximum_main_page_groups is exactly max_concurrency * page_count(max_context).
-    if (resolution.main_page_groups < capacity_curve.maximum_main_page_groups) {
-        throw std::invalid_argument(
-            "automatic kv_capacity resolves to " + std::to_string(resolution.main_page_groups) +
-            " Main KV pages (" + std::to_string(resolution.resolved_tokens) +
-            " tokens), but the pinned no-preemption contract requires " +
-            std::to_string(capacity_curve.maximum_main_page_groups) + " pages (" +
-            std::to_string(static_cast<std::uint64_t>(capacity_curve.maximum_main_page_groups) *
-                           capacity_curve.main_page_tokens) +
-            " tokens) so every resident lane can reach max_context; reduce max_context or "
-            "max_concurrency, or free GPU memory");
-    }
+    // Fork contract: explicit capacity is rejected up front by the target validator; an Automatic
+    // resolution is only known once the memory budget is applied, so require the full resident pool
+    // here (maximum_main_page_groups is exactly max_concurrency * page_count(max_context)).
+    require_full_resident_capacity(capacity_curve, resolution.main_page_groups);
     auto sequence   = std::move(planner).finalize(resolution.main_page_groups);
     if (sequence.device_reservation_bytes() != resolution.runtime_reservation_bytes ||
         sequence.kv_capacity() != resolution.resolved_tokens) {
