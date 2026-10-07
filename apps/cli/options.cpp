@@ -5,7 +5,9 @@
 #include <cerrno>
 #include <cmath>
 #include <cstdlib>
+#include <filesystem>
 #include <fstream>
+#include <iostream>
 #include <limits>
 #include <sstream>
 #include <stdexcept>
@@ -109,6 +111,42 @@ std::string convert_json_schema(const std::string& text, std::string_view flag) 
     }
 }
 
+// The prompt body, read verbatim. No escape processing: a backslash is a backslash, so the same
+// bytes read here produce exactly the prompt the inline flag would for the identical bytes.
+std::string read_prompt_file(const char* path) {
+    std::error_code error;
+    if (std::filesystem::is_directory(path, error)) {
+        throw std::invalid_argument(std::string("--prompt-file is a directory: ") + path);
+    }
+    std::ifstream input(path, std::ios::binary);
+    if (!input) {
+        throw std::invalid_argument(std::string("--prompt-file cannot open file: ") + path);
+    }
+    std::ostringstream buffer;
+    buffer << input.rdbuf();
+    if (input.bad()) {
+        throw std::invalid_argument(std::string("--prompt-file failed to read file: ") + path);
+    }
+    return buffer.str();
+}
+
+std::string read_prompt_stdin() {
+    std::ostringstream buffer;
+    buffer << std::cin.rdbuf();
+    if (std::cin.bad()) { throw std::invalid_argument("--prompt-stdin failed to read stdin"); }
+    return buffer.str();
+}
+
+void set_prompt_source(Options& options, Options::PromptSource source) {
+    if (options.prompt_source != Options::PromptSource::None) {
+        throw std::invalid_argument(
+            "pass exactly one prompt source: " +
+            std::string(prompt_source_flag(options.prompt_source)) + " conflicts with " +
+            std::string(prompt_source_flag(source)));
+    }
+    options.prompt_source = source;
+}
+
 ReasoningEffort parse_reasoning_effort(std::string_view text) {
     if (text == "none") { return ReasoningEffort::None; }
     if (text == "minimal") { return ReasoningEffort::Minimal; }
@@ -126,9 +164,21 @@ const char* constraint_error_code(ConstraintSource source) noexcept {
     return source == ConstraintSource::JsonSchema ? "json_schema_invalid" : "grammar_invalid";
 }
 
+std::string_view prompt_source_flag(Options::PromptSource source) noexcept {
+    switch (source) {
+    case Options::PromptSource::Inline: return "--prompt";
+    case Options::PromptSource::File: return "--prompt-file";
+    case Options::PromptSource::Stdin: return "--prompt-stdin";
+    case Options::PromptSource::Messages: return "--messages";
+    case Options::PromptSource::None: break;
+    }
+    return "<none>";
+}
+
 std::string usage_text(const char* argv0) {
     return std::string("usage: ") + argv0 +
-           " <model.ninfer> (--prompt <text>|--messages <messages.json>)\n"
+           " <model.ninfer> (--prompt <text>|--prompt-file FILE|--prompt-stdin|--messages "
+           "<messages.json>)\n"
            "       [--max-context N] [--kv-capacity N|auto] [--prefill-chunk N] [--max-new N]\n"
            "       [--device N]\n"
            "       [--kv-dtype bf16|int8|fp8|nvfp4|k8v4] [--spec mtp|dflash|dflash2 --draft-tokens "
@@ -151,6 +201,10 @@ std::string usage_text(const char* argv0) {
            "       [--version]\n"
            "\n"
            "Streams answer content to stdout and reasoning plus diagnostics to stderr.\n"
+           "--prompt-file FILE and --prompt-stdin read the plain-text prompt verbatim, with no\n"
+           "escape processing, so the same bytes give the same tokens as --prompt. Exactly one\n"
+           "of --prompt, --prompt-file, --prompt-stdin and --messages is required; naming two\n"
+           "is an error rather than a silent winner.\n"
            "Structured message content accepts text, image/image_url, and video/video_url parts;\n"
            "media sources may be local paths, HTTP(S) URLs, or base64 data URIs.\n"
            "--vision enables image/video input and loads the fixed Vision GPU allocations.\n"
@@ -207,10 +261,17 @@ Options parse_options(int argc, char** argv) {
         };
 
         if (arg == "--prompt") {
+            set_prompt_source(options, Options::PromptSource::Inline);
             options.prompt = value(arg);
+        } else if (arg == "--prompt-file") {
+            set_prompt_source(options, Options::PromptSource::File);
+            options.prompt_file_path = value(arg);
+        } else if (arg == "--prompt-stdin") {
+            set_prompt_source(options, Options::PromptSource::Stdin);
         } else if (arg == "--chat-template") {
             options.chat_template_path = value(arg);
         } else if (arg == "--messages") {
+            set_prompt_source(options, Options::PromptSource::Messages);
             options.messages_path = value(arg);
         } else if (arg == "--grammar" || arg == "--grammar-file") {
             if (grammar_source_text) {
@@ -354,10 +415,21 @@ Options parse_options(int argc, char** argv) {
         options.artifact_path.empty()) {
         throw std::invalid_argument(".ninfer model path is required");
     }
-    const bool has_prompt   = !options.prompt.empty();
-    const bool has_messages = !options.messages_path.empty();
-    if (!options.acquisition.cache_list && has_prompt == has_messages) {
-        throw std::invalid_argument("pass exactly one of --prompt or --messages");
+    if (!options.acquisition.cache_list) {
+        // Exactly one prompt source. This is a precedence rule, not a silent winner: a command that
+        // supplies two names both flags in the diagnostic instead of dropping one.
+        if (options.prompt_source == Options::PromptSource::None) {
+            throw std::invalid_argument(
+                "pass exactly one prompt source: --prompt, --prompt-file, --prompt-stdin or "
+                "--messages");
+        }
+        // An empty file or an empty stdin is a supplied prompt, not an absent one; the Engine
+        // reports it as a context that cannot hold a turn.
+        if (options.prompt_source == Options::PromptSource::File) {
+            options.prompt = read_prompt_file(options.prompt_file_path.string().c_str());
+        } else if (options.prompt_source == Options::PromptSource::Stdin) {
+            options.prompt = read_prompt_stdin();
+        }
     }
     if (options.prefill_chunk % 128 != 0) {
         throw std::invalid_argument("--prefill-chunk must be a multiple of 128");
