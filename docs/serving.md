@@ -42,6 +42,13 @@ When `--model-id` is omitted, the server advertises and accepts the artifact's `
 falling back to its architecture name when no name is stored. An explicit `--model-id` is a public
 HTTP alias override and does not select or alter model execution.
 
+The positional artifact may be replaced by `--hf-repo OWNER/REPO --hf-file FILE` or
+`--model-url https://.../model.ninfer`, downloaded once into `--cache-dir` (default
+`~/.cache/frinfer`) and reused afterwards; `--hf-revision` defaults to `main` and
+`--hf-token` defaults to `$HF_TOKEN`. `--offline` serves only cached files and `--cache-list`
+prints the cache and exits. See the [CLI guide](cli.md#model-acquisition) for the shared
+semantics and failure modes.
+
 Vision is disabled by default: its weights and Vision-specific unified-workspace extent are not
 allocated, and media requests and token-count requests fail with HTTP 400 `vision_disabled`. Add
 `--vision` when the server must accept image or video input. Speculative residency is likewise
@@ -919,6 +926,13 @@ The table lists executable defaults. The startup example selects a long-context 
 | `--port N` | listen port | `8080` |
 | `--api-key KEY` | required bearer or `x-api-key` value | unset |
 | `--model-id ID` | override the public OpenAI model alias | artifact `identity.model_id` |
+| `--hf-repo OWNER/REPO` + `--hf-file FILE` | Hugging Face artifact source (cached) | unset |
+| `--hf-revision REV` | Hub revision | `main` |
+| `--hf-token TOKEN` | Hub bearer token (env fallback, redacted in logs) | unset |
+| `--model-url URL` | direct `https://` artifact source (cached) | unset |
+| `--cache-dir DIR` | download cache directory | `~/.cache/frinfer` |
+| `--offline` | reuse the cache, no network | off |
+| `--cache-list` | list cached artifacts and exit | off |
 | `--max-context N` | logical context ceiling of each sequence; above the native `max_position_embeddings` it activates the YaRN context extension (DFlash rejects it) | `8192` |
 | `--kv-capacity N\|auto` | explicit shared Main Text KV capacity, or maximize it from remaining GPU memory; omitted means `--max-context` | `8192` |
 | `--max-concurrency N` | maximum admitted requests; valid range `1..8` | `1` |

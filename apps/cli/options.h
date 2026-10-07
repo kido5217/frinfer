@@ -31,11 +31,23 @@ struct ConstraintOptions {
     bool thinking_enabled = false;
 };
 
+struct ModelAcquisitionOptions {
+    std::optional<std::string> hf_repo;
+    std::optional<std::string> hf_file;
+    std::optional<std::string> hf_revision;
+    std::optional<std::string> hf_token;
+    std::optional<std::string> model_url;
+    std::filesystem::path cache_dir;
+    bool offline    = false;
+    bool cache_list = false;
+};
+
 struct Options {
     bool help_requested    = false;
     bool version_requested = false;
 
     std::filesystem::path artifact_path;
+    ModelAcquisitionOptions acquisition;
     std::filesystem::path chat_template_path;
     std::string prompt;
     std::filesystem::path messages_path;

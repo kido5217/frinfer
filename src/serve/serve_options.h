@@ -5,6 +5,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -19,10 +20,22 @@ inline constexpr std::size_t kDefaultMaxRequestBytes      = 384ULL << 20;
 inline constexpr std::size_t kDefaultResponseStoreRecords = 1024;
 inline constexpr std::size_t kDefaultResponseStoreBytes   = 256ULL << 20;
 
+struct ModelAcquisitionOptions {
+    std::optional<std::string> hf_repo;
+    std::optional<std::string> hf_file;
+    std::optional<std::string> hf_revision;
+    std::optional<std::string> hf_token;
+    std::optional<std::string> model_url;
+    std::filesystem::path cache_dir;
+    bool offline    = false;
+    bool cache_list = false;
+};
+
 struct ServeOptions {
     bool help_requested    = false;
     bool version_requested = false;
     std::string artifact_path;
+    ModelAcquisitionOptions acquisition;
     std::filesystem::path chat_template_path;
     std::string host = "127.0.0.1";
     int port         = 8080;

@@ -19,6 +19,12 @@ add_library(ninfer_constraint STATIC
 ninfer_internal_includes(ninfer_constraint)
 target_link_libraries(ninfer_constraint PUBLIC ninfer::json PRIVATE ninfer_llama_chat)
 
+add_library(ninfer_model_acquire STATIC
+  model_acquire/model_acquire.cpp
+)
+ninfer_internal_includes(ninfer_model_acquire)
+target_link_libraries(ninfer_model_acquire PRIVATE PkgConfig::LIBCURL)
+
 add_library(ninfer_product_logging STATIC
   logging/logging.cpp
   logging/pretty_format.cpp

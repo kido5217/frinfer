@@ -234,6 +234,53 @@ int main() {
     failures += check(schema_file.constraint.source == ninfer::cli::ConstraintSource::JsonSchema &&
                           !schema_file.constraint.gbnf.empty(),
                       "--json-schema-file did not convert the schema");
+    const ninfer::cli::Options hf_options =
+        parse({"ninfer-cli", "--hf-repo", "neroued/Qwen3.8-27B-nvfp4-NInfer", "--hf-file",
+               "qwen3_8_27b_nvfp4.ninfer", "--prompt", "hello"});
+    failures += check(hf_options.acquisition.hf_repo == "neroued/Qwen3.8-27B-nvfp4-NInfer" &&
+                          hf_options.acquisition.hf_file == "qwen3_8_27b_nvfp4.ninfer" &&
+                          !hf_options.acquisition.hf_revision &&
+                          hf_options.artifact_path.empty(),
+                      "--hf-repo/--hf-file did not reach CLI options");
+    const ninfer::cli::Options hf_rev =
+        parse({"ninfer-cli", "--hf-repo", "owner/repo", "--hf-file", "model.ninfer",
+               "--hf-revision", "abc123", "--prompt", "hello"});
+    failures += check(hf_rev.acquisition.hf_revision == "abc123",
+                      "--hf-revision did not reach CLI options");
+    failures += check(rejects([] {
+                          (void)parse({"ninfer-cli", "--hf-repo", "owner/repo", "--prompt",
+                                       "hello"});
+                      }),
+                      "--hf-repo without --hf-file was accepted");
+    failures += check(rejects([] {
+                          (void)parse({"ninfer-cli", "--hf-file", "model.ninfer", "--prompt",
+                                       "hello"});
+                      }),
+                      "--hf-file without --hf-repo was accepted");
+    failures += check(
+        rejection_message([] {
+            (void)parse({"ninfer-cli", "model.ninfer", "--hf-repo", "owner/repo", "--hf-file",
+                         "model.ninfer", "--prompt", "hello"});
+        }).find("mutually exclusive") != std::string::npos,
+        "positional + --hf-repo did not report mutual exclusion");
+    failures += check(
+        rejection_message([] {
+            (void)parse({"ninfer-cli", "--hf-repo", "owner/repo", "--hf-file", "model.ninfer",
+                         "--model-url", "https://example.com/model.ninfer", "--prompt",
+                         "hello"});
+        }).find("mutually exclusive") != std::string::npos,
+        "--hf-repo + --model-url did not report mutual exclusion");
+    const ninfer::cli::Options cache_list = parse({"ninfer-cli", "--cache-list"});
+    failures += check(cache_list.acquisition.cache_list,
+                      "--cache-list did not reach CLI options");
+    const ninfer::cli::Options offline =
+        parse({"ninfer-cli", "model.ninfer", "--prompt", "hello", "--offline"});
+    failures += check(offline.acquisition.offline, "--offline did not reach CLI options");
+    for (const char* flag : {"--hf-repo", "--hf-file", "--model-url", "--cache-list",
+                             "--offline", "--cache-dir", "--hf-token"}) {
+        failures += check(help.find(flag) != std::string::npos,
+                          "CLI help omits a model-acquisition flag");
+    }
     std::error_code ignored;
     std::filesystem::remove(grammar_path, ignored);
     std::filesystem::remove(schema_path, ignored);
