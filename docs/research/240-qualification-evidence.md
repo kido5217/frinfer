@@ -91,11 +91,17 @@ the built binary contains the labels `yarn table: s=1.0 ...`, `yarn 27b text ine
 
 ### Measured before/after (fork `master` build vs `tmp/240-qual-c` build, same GPU)
 
-- `ninfer_rope_bench`: 23/23 cases, identical `route=` labels, median delta 0.000 %, mean +0.29 %,
-  max +5.3 % on a 4.38 µs case (timer granularity); 0.0 % on vision 4096/49152.
+> Corrected 2026-10-07 after independent review. The sub-10 µs timings in this section are NOT a
+> reproducible measurement — the benches' own per-run median on 4–8 µs cases varies by several µs
+> (e.g. the same rope case measured 4.29/4.90/13.15 µs across runs), so no timing percentage here
+> is claimed as evidence. The evidence of no regression is **structural**: identical `route=`
+> labels and identical `workspace=`/`peak=` fields between the baseline and reconciled builds.
+
+- `ninfer_rope_bench`: 23/23 cases, identical `route=` labels (re-checked across 3 runs each).
+  Meaningful workloads unchanged: vision 4096 415.74/415.74 µs, 550.50/550.91 µs, 12.29/12.29 µs.
 - `ninfer_causal_softmax_attention_bench` (both entries, all geometries/dtypes, B=1,8):
-  100/100 cases, **0 workspace/peak differences**, median delta 0.000 %, mean +0.19 %; the only
-  >5 % deltas are 20–43 µs decode cases where the 2 µs timer step is 5–10 %.
+  100/100 cases, **0 workspace/peak differences**, every `entry…workspace=… peak=… nodes=…` case
+  header identical to baseline.
 - `ninfer_sparse_moe_bench` (q4-q5, T=1/33/65/97): identical workspace; medians
   16.384/251.904/319.488/382.944 → 16.384/253.952/319.488/380.928 µs (≤0.8 %).
 - `ninfer_rmsnorm_bench --kind gated27`: 2.816→3.360 µs (T=1) … 18.848→18.144 µs (T=2048), noise.
