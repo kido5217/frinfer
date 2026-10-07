@@ -1824,9 +1824,13 @@ int test_structured_tool_output() {
     const std::vector<ninfer::GeneratedToolCall> calls = session.take_tool_calls();
     failures += check(calls.size() == 1 && calls.front().name == "TaskUpdate",
                       "frontend did not publish the structured tool call");
+    // The fork adds `call_attempted` to upstream's diagnostic struct (ADR-0002 demotion
+    // signaling): a candidate parse formed the function-name element even though the call was
+    // accepted, so a later demotion can consult it. Upstream's shared test predates the field.
     failures += check(session.tool_call_parse_diagnostics() ==
                           ninfer::ToolCallParseDiagnostics{
                               .marker_seen               = true,
+                              .call_attempted            = true,
                               .structured_call_count     = 1,
                               .empty_arguments_omitted   = 1,
                               .schema_mismatch_arguments = 1,
