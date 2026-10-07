@@ -953,6 +953,9 @@ void parse_stream_options(const Json& body, OpenAIChatRequest& output) {
 void parse_response_observations(const Json& body, OpenAIChatRequest& output) {
     output.timings_per_token = get_bool(body, "timings_per_token", false);
     output.return_progress   = get_bool(body, "return_progress", false);
+    // Arms `POST /v1/chat/completions/control` for this completion; the signal itself arrives later,
+    // while the completion is already generating.
+    output.reasoning_control = get_bool(body, "reasoning_control", false);
 }
 
 void parse_output_limit(const Json& body, const RequestLimits& limits, OpenAIChatRequest& output) {

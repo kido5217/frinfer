@@ -67,6 +67,7 @@ selected for this process.
 | `GET /v1/models` | configured OpenAI model alias and effective `max_model_len` |
 | `GET /v1/models/{id}` | lookup of the configured alias and effective `max_model_len` |
 | `POST /v1/chat/completions` | OpenAI-style chat generation |
+| `POST /v1/chat/completions/control` | real-time control of an in-flight chat completion |
 | `POST /v1/responses` | OpenAI Responses Core generation, state, typed Items, and SSE |
 | `POST /v1/responses/input_tokens` | Responses prompt-token count without generation |
 | `GET /v1/responses/{id}` | retrieve a locally stored terminal Response |
@@ -128,6 +129,8 @@ The endpoint supports:
 - `stream_options.include_usage`;
 - llama.cpp-compatible terminal `timings`, plus opt-in `timings_per_token` and
   streaming `return_progress` observations;
+- llama.cpp-compatible `reasoning_control`, which arms
+  [real-time reasoning control](#real-time-reasoning-control) for that streaming completion;
 - non-strict function tools with `tool_choice` `auto`, `none`, or `allowed_tools` in `auto` mode,
   parallel calls enabled, assistant tool-call history, tool-result messages, and legacy
   function-call history;
@@ -340,6 +343,39 @@ Conflicting explicit `enable_thinking` and effort values return `conflicting_tem
 `preserve_thinking` controls reasoning retention according to the selected template. Request
 options override server defaults set with `--no-thinking` and `--preserve-thinking`. Unspecified
 thinking, effort and preservation options use the template's defaults.
+
+### Real-time reasoning control
+
+A streaming chat completion that sets `"reasoning_control": true` can be told to end its reasoning
+block mid-stream, without waiting for a budget cap. The client reads the completion `id` from the
+first streamed chunk and sends the control request while it is still reading tokens:
+
+```bash
+curl http://127.0.0.1:8080/v1/chat/completions/control \
+  -H 'Content-Type: application/json' \
+  -d '{"id": "chatcmpl-…", "action": "reasoning_end"}'
+```
+
+`id` names the in-flight completion; `action` must be `reasoning_end`. The answer is always HTTP 200
+with `{"success": true}`, or `{"success": false, "message": "…"}` naming the reason: an unknown or
+already-finished id matches nothing (`no active completion for this id`), and a live completion that
+did not set `reasoning_control` reports `reasoning control not enabled for this completion`. An
+aggregate completion is never registered: its `id` reaches the client only once generation has
+already finished. Only a malformed body — a missing or blank `id`, a missing `action`, or any other
+action — is an HTTP 400 error. A router-mode `model` field is ignored on a single-model server.
+
+The close is committed exactly as a thinking-budget cap commits it, at the next decode boundary
+rather than mid-unit: the canonical early-close guidance and close marker go to the same model
+sequence without sampling, the guidance streams as a reasoning delta, and content or tool-call
+generation continues. The control tokens count in completion usage and the request's token budget,
+and `request_done` reports them through `thinking_control_tokens` and `thinking_control_applied`.
+
+Two boundaries are honored before the close, exactly as at a budget cap: a natural thinking close, a
+stop condition, cancellation, or a total output/context limit wins, and an output budget that cannot
+fit the complete control suffix plus one post-close model token lets the request reach its limit
+instead of partially inserting control. A completion that never started in thinking has no reasoning
+block to close. The endpoint is on Chat Completions only; Anthropic Messages and Responses have no
+equivalent.
 
 Streaming begins with an assistant-role chunk, sends separate reasoning and content deltas, then a
 finish-reason chunk and `[DONE]`. When `stream_options.include_usage` is true, a final empty
@@ -1041,9 +1077,11 @@ unspecified. `enable_thinking` records whether the response starts in thinking m
 
 `request_done.result.reasoning_tokens` is the realized count of model-origin tokens accepted in
 the reasoning channel, reported with or without a configured budget. The budget counters
-(`thinking_budget`, `budget_thinking_tokens`, `thinking_control_tokens`,
-`thinking_control_applied`) attribute tokens to a configured budget only: without one,
-`thinking_budget` is `null` and `budget_thinking_tokens` is `0`.
+(`thinking_budget`, `budget_thinking_tokens`) attribute tokens to a configured budget only: without
+one, `thinking_budget` is `null` and `budget_thinking_tokens` is `0`. `thinking_control_tokens` and
+`thinking_control_applied` record the canonical early-close control span itself, whichever boundary
+committed it — a thinking budget or a real-time
+[reasoning close](#real-time-reasoning-control) — so they can be nonzero with no configured budget.
 
 `request_done.result.tool_call_parse` records whether a complete marker was seen, whether a
 candidate parse formed a function name (`call_attempted`; with a non-`none` fallback this is the

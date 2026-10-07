@@ -3,6 +3,7 @@
 #include "serve/generation_service.h"
 #include "serve/operational_log.h"
 #include "serve/openai_responses_store.h"
+#include "serve/reasoning_control.h"
 #include "serve/request_log.h"
 #include "serve/serve_options.h"
 
@@ -56,6 +57,15 @@ private:
         void failure(const RequestFailure& failure);
         void response_failure(const RequestFailure& failure);
 
+        // Publishes this completion to the real-time reasoning-control route for as long as its
+        // response lives. An empty control means the request did not opt in; the completion stays
+        // registered so the route can report that instead of claiming no live completion.
+        void arm_reasoning_control(std::string completion_id, ninfer::GenerationControl control);
+
+        // Releases the control-route registration. Public so the owning shared_ptr can destroy it;
+        // RequestLifecycle itself stays private to HttpServer.
+        ~RequestLifecycle();
+
         [[nodiscard]] std::uint64_t request_id() const noexcept { return context_.id; }
 
     private:
@@ -69,6 +79,7 @@ private:
 
         HttpServer* owner_ = nullptr;
         RequestLogContext context_;
+        std::string control_id_;
         std::atomic<State> state_{State::Pending};
     };
 
@@ -87,6 +98,7 @@ private:
     void handle_response_compact(const httplib::Request& req, httplib::Response& res);
     void handle_models(const httplib::Request& req, httplib::Response& res) const;
     void handle_model(const httplib::Request& req, httplib::Response& res) const;
+    void handle_chat_control(const httplib::Request& req, httplib::Response& res);
 
     void record_request_start(const RequestLogContext& context);
     void record_request_rejected(const RequestRejectionLogContext& context);
@@ -101,6 +113,7 @@ private:
     ServeOptions options_;
     std::string public_model_id_;
     OpenAIResponsesStore openai_responses_store_;
+    ReasoningControlRegistry reasoning_controls_;
     OperationalLog operational_log_;
     JsonlRequestLog request_jsonl_;
     httplib::Server server_;

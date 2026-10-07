@@ -35,6 +35,8 @@ struct OpenAIChatRequest {
     // timings_per_token controls only cumulative timing snapshots on streamed output chunks.
     bool timings_per_token = false;
     bool return_progress   = false;
+    // Arms the real-time `reasoning_end` control route for this completion.
+    bool reasoning_control = false;
 };
 
 OpenAIChatRequest parse_chat_completion_request(const RequestJson& body,

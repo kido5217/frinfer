@@ -185,6 +185,9 @@ struct RequestRecord {
     std::optional<LaneId> lane;
     std::optional<SequenceHandle> sequence;
     std::atomic<bool> cancelled{false};
+    // Real-time control surface, shared with any caller-side GenerationControl: a signal raised from
+    // another thread outlives the handle that submitted the request.
+    std::shared_ptr<std::atomic<bool>> reasoning_end = std::make_shared<std::atomic<bool>>(false);
     EngineRequestState model_state        = EngineRequestState::Waiting;
     bool capture_pending                  = false;
     EngineRequestState post_capture_state = EngineRequestState::Prefill;

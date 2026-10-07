@@ -159,6 +159,9 @@ struct ThinkingSessionState {
     std::uint32_t injected_tokens        = 0;
     bool control_pending                 = false;
     bool applied                         = false;
+    // A real-time close request raised from outside the session. It arms the same canonical control
+    // span a budget boundary commits, and stays inert once control has been applied.
+    bool close_requested = false;
 };
 
 struct StopMatch {
@@ -500,7 +503,10 @@ OutputSession::preview_model(std::span<const TokenId> tokens, std::uint32_t tota
     const auto complete = [&](std::uint32_t count, FinishReason reason,
                               runtime::ContinuationAction continuation =
                                   runtime::ContinuationAction::Decode) {
-        if (reason != FinishReason::None) { impl_->preview_thinking.control_pending = false; }
+        if (reason != FinishReason::None) {
+            impl_->preview_thinking.control_pending = false;
+            impl_->preview_thinking.close_requested = false;
+        }
         if (impl_->preview_execution_split_after && *impl_->preview_execution_split_after > count) {
             throw std::logic_error("prefix execution split exceeds the accepted token prefix");
         }
@@ -602,8 +608,15 @@ OutputSession::preview_model(std::span<const TokenId> tokens, std::uint32_t tota
         impl_->preview_state.terminal = true;
         return complete(count, limit_reason);
     }
-    if (impl_->core.preview_in_reasoning() && impl_->preview_thinking.budget &&
-        impl_->preview_thinking.budget_thinking_tokens == *impl_->preview_thinking.budget) {
+    if (impl_->core.preview_in_reasoning() &&
+        ((impl_->preview_thinking.budget &&
+          impl_->preview_thinking.budget_thinking_tokens == *impl_->preview_thinking.budget) ||
+         // A real-time close admits the identical capacity rule a budget boundary admits: the
+         // complete control span plus one post-close model token must fit what the round leaves.
+         (impl_->preview_thinking.close_requested && !impl_->preview_thinking.applied &&
+          impl_->thinking_control_tokens != nullptr &&
+          impl_->thinking_control_tokens->size() + 1U <= total_budget_remaining - count))) {
+        impl_->preview_thinking.close_requested = false;
         impl_->preview_thinking.control_pending = true;
         return complete(count, FinishReason::None, runtime::ContinuationAction::ApplyTargetControl);
     }
@@ -622,6 +635,14 @@ OutputSession::model_token_budget_remaining(std::uint32_t total_budget_remaining
     }
     return std::min(total_budget_remaining,
                     *impl_->thinking.budget - impl_->thinking.budget_thinking_tokens);
+}
+
+void OutputSession::request_reasoning_close() noexcept {
+    if (impl_ == nullptr || impl_->state.terminal || impl_->thinking.applied ||
+        impl_->thinking.control_pending) {
+        return;
+    }
+    impl_->thinking.close_requested = true;
 }
 
 std::span<const TokenId> OutputSession::pending_control_tokens() const noexcept {
@@ -710,6 +731,7 @@ runtime::OutputDecision OutputSession::preview_terminal(FinishReason reason) {
     impl_->preview_prefix_execution = impl_->prefix_execution;
     impl_->preview_execution_split_after.reset();
     impl_->preview_thinking.control_pending = false;
+    impl_->preview_thinking.close_requested = false;
     impl_->preview_output.clear();
     impl_->round_fed.clear();
     impl_->core.begin_preview();

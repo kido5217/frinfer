@@ -126,6 +126,7 @@ bool report_has_activity(const ThroughputReport& report) {
 
 const char* endpoint_name(std::string_view path) noexcept {
     if (path == "/v1/chat/completions") { return "openai_chat_completions"; }
+    if (path == "/v1/chat/completions/control") { return "openai_chat_control"; }
     if (path == "/v1/responses") { return "openai_responses"; }
     if (path == "/v1/responses/input_tokens") { return "openai_responses_input_tokens"; }
     if (path == "/v1/messages") { return "anthropic_messages"; }
@@ -249,6 +250,18 @@ void HttpServer::RequestLifecycle::failure(const RequestFailure& failure) {
 
 void HttpServer::RequestLifecycle::response_failure(const RequestFailure& failure) {
     owner_->record_response_failure(context_.id, failure);
+}
+
+// The control route addresses a completion by its streamed id, so it stays reachable exactly as
+// long as this lifecycle, which every terminal path releases.
+HttpServer::RequestLifecycle::~RequestLifecycle() {
+    if (!control_id_.empty()) { owner_->reasoning_controls_.unregister_completion(control_id_); }
+}
+
+void HttpServer::RequestLifecycle::arm_reasoning_control(std::string completion_id,
+                                                         ninfer::GenerationControl control) {
+    control_id_ = std::move(completion_id);
+    owner_->reasoning_controls_.register_completion(control_id_, std::move(control));
 }
 
 std::shared_ptr<HttpServer::RequestLifecycle> HttpServer::begin_request(RequestLogContext context) {
@@ -441,6 +454,10 @@ void HttpServer::register_routes() {
                  [this](const httplib::Request& req, httplib::Response& res) {
                      handle_chat_completions(req, res);
                  });
+    server_.Post("/v1/chat/completions/control",
+                 [this](const httplib::Request& req, httplib::Response& res) {
+                     handle_chat_control(req, res);
+                 });
     server_.Post("/v1/responses", [this](const httplib::Request& req, httplib::Response& res) {
         handle_responses(req, res);
     });
@@ -475,6 +492,22 @@ void HttpServer::register_routes() {
     server_.Post("/v1/messages", [this](const httplib::Request& req, httplib::Response& res) {
         handle_messages(req, res);
     });
+}
+
+// Real-time reasoning control. The answer is always 200: a control request for a completion that
+// already finished, or that never opted in, is a no-op the caller must be able to read, not a
+// protocol error. Only a malformed body is rejected.
+void HttpServer::handle_chat_control(const httplib::Request& req, httplib::Response& res) {
+    ChatControlRequest control;
+    try {
+        control = parse_chat_control_request(parse_json_body(req));
+    } catch (const ApiException& exception) {
+        write_openai_error(res, exception.error());
+        return;
+    }
+    const ChatControlOutcome outcome = reasoning_controls_.request_reasoning_end(control.id);
+    res.set_content(make_chat_control_response(outcome.success, outcome.message),
+                    "application/json");
 }
 
 void HttpServer::handle_models(const httplib::Request&, httplib::Response& res) const {

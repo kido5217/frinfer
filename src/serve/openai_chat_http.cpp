@@ -70,6 +70,13 @@ void HttpServer::handle_chat_completions(const httplib::Request& req, httplib::R
     const OpenAIChatResponseIdentity identity = make_openai_chat_response_identity(request.model);
     auto lifecycle                            = begin_request(make_request_log_context(
         req_id, "openai_chat_completions", request.generation, metadata, prepared));
+    // A streaming completion publishes its id before the first delta, which is what makes the
+    // control route addressable while the client still reads the stream.
+    if (request.stream) {
+        lifecycle->arm_reasoning_control(identity.id, request.reasoning_control
+                                                            ? prepared.generation.control()
+                                                            : ninfer::GenerationControl{});
+    }
 
     if (!request.stream) {
         GenerationOutcome outcome;

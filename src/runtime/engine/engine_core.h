@@ -152,6 +152,10 @@ public:
             return owner->wait_for_request(std::exchange(request_, nullptr), sink, cancellation);
         }
 
+        [[nodiscard]] std::shared_ptr<std::atomic<bool>> reasoning_end_flag() const noexcept {
+            return request_ != nullptr ? request_->reasoning_end : nullptr;
+        }
+
     private:
         Submission(EngineCore& owner, std::shared_ptr<Request> request) noexcept
             : owner_(&owner), request_(std::move(request)) {}
@@ -1171,6 +1175,13 @@ private:
                 if (!pending.logprobs().empty()) {
                     row_logprobs = pending.logprobs().subspan(
                         static_cast<std::size_t>(row) * pending.row_stride(), count);
+                }
+                // Real-time reasoning control: a close requested while the request was generating is
+                // consumed at this boundary, so the round that admits it publishes the canonical
+                // early-close guidance exactly as a budget boundary does.
+                if (request->reasoning_end->load(std::memory_order_acquire)) {
+                    request->reasoning_end->store(false, std::memory_order_release);
+                    request->output.request_reasoning_close();
                 }
                 const OutputDecision decision = request->output.preview_model(
                     row_tokens, request->budget->remaining(), request->budget->limit_reason(),
