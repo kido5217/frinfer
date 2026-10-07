@@ -145,6 +145,9 @@ std::string usage_text(const char* argv0) {
            "       [--reasoning-effort none|minimal|low|medium|high|xhigh|max] [--vision]\n"
            "       [--no-cuda-graph]\n"
            "       [--log-level trace|debug|info|warning|error|critical|off]\n"
+           "       [--hf-repo OWNER/REPO --hf-file FILE [--hf-revision REV] [--hf-token TOKEN]]\n"
+           "       [--model-url https://.../model.ninfer] [--cache-dir DIR] [--offline] "
+           "[--cache-list]\n"
            "       [--version]\n"
            "\n"
            "Streams answer content to stdout and reasoning plus diagnostics to stderr.\n"
@@ -162,6 +165,11 @@ std::string usage_text(const char* argv0) {
            "extension (spec defaults); the DFlash draft backend rejects it.\n"
            "Sampling defaults come from the loaded model and thinking mode; flags override "
            "individual fields.\n"
+           "Model acquisition takes exactly one source: positional <model.ninfer>, --hf-repo +\n"
+           "--hf-file (cached under --cache-dir, default ~/.cache/frinfer), or --model-url.\n"
+           "--hf-revision defaults to main; --hf-token defaults to $HF_TOKEN/\n"
+           "$HUGGING_FACE_HUB_TOKEN. --offline reuses the cache without network.\n"
+           "--cache-list prints cached .ninfer artifacts and exits without a prompt.\n"
            "Constrained decoding takes exactly one of --grammar (GBNF text), --grammar-file, "
            "--json-schema (a JSON Schema document), or --json-schema-file; the Engine compiles "
            "GBNF and the serve contract converts and validates JSON Schema. A constrained "
@@ -178,15 +186,20 @@ Options parse_options(int argc, char** argv) {
         options.version_requested = true;
         return options;
     }
-    if (argc < 2) { throw std::invalid_argument(".ninfer model path is required"); }
-    options.artifact_path     = argv[1];
+    int positional_end = 2;
+    if (argc >= 2 && !std::string_view(argv[1]).starts_with("--")) {
+        options.artifact_path = argv[1];
+        positional_end        = 2;
+    } else {
+        positional_end = 1;
+    }
     bool kv_capacity_explicit = false;
     std::optional<std::string> grammar_source_text;
     std::string grammar_flag;
     std::optional<std::string> schema_source_text;
     std::string schema_flag;
 
-    for (int i = 2; i < argc; ++i) {
+    for (int i = positional_end; i < argc; ++i) {
         const std::string_view arg(argv[i]);
         const auto value = [&](std::string_view flag) -> const char* {
             if (++i >= argc) { throw std::invalid_argument(std::string(flag) + " needs a value"); }
@@ -286,6 +299,22 @@ Options parse_options(int argc, char** argv) {
             options.greedy = true;
         } else if (arg == "--log-level") {
             options.log_level = product::parse_log_level(value(arg));
+        } else if (arg == "--hf-repo") {
+            options.acquisition.hf_repo = value(arg);
+        } else if (arg == "--hf-file") {
+            options.acquisition.hf_file = value(arg);
+        } else if (arg == "--hf-revision") {
+            options.acquisition.hf_revision = value(arg);
+        } else if (arg == "--hf-token") {
+            options.acquisition.hf_token = value(arg);
+        } else if (arg == "--model-url") {
+            options.acquisition.model_url = value(arg);
+        } else if (arg == "--cache-dir") {
+            options.acquisition.cache_dir = value(arg);
+        } else if (arg == "--offline") {
+            options.acquisition.offline = true;
+        } else if (arg == "--cache-list") {
+            options.acquisition.cache_list = true;
         } else if (arg == "--version") {
             options.version_requested = true;
             return options;
@@ -298,9 +327,36 @@ Options parse_options(int argc, char** argv) {
         options.kv_capacity = KvCapacityPolicy::explicit_capacity(options.max_context);
     }
 
+    const bool has_hf  = options.acquisition.hf_repo.has_value();
+    const bool has_url = options.acquisition.model_url.has_value();
+    if (has_hf && has_url) {
+        throw std::invalid_argument(
+            "hf_spec_invalid: --hf-repo and --model-url are mutually exclusive");
+    }
+    if (options.acquisition.hf_file && !has_hf) {
+        throw std::invalid_argument("hf_spec_invalid: --hf-file needs --hf-repo");
+    }
+    if (options.acquisition.hf_revision && !has_hf) {
+        throw std::invalid_argument("hf_spec_invalid: --hf-revision needs --hf-repo");
+    }
+    if (options.acquisition.hf_token && !has_hf) {
+        throw std::invalid_argument("hf_spec_invalid: --hf-token needs --hf-repo");
+    }
+    if (has_hf && !options.acquisition.hf_file) {
+        throw std::invalid_argument("hf_spec_invalid: --hf-repo needs --hf-file");
+    }
+    if ((has_hf || has_url) && !options.artifact_path.empty()) {
+        throw std::invalid_argument(
+            "hf_spec_invalid: positional <model.ninfer> and --hf-repo/--model-url "
+            "are mutually exclusive");
+    }
+    if (!has_hf && !has_url && !options.acquisition.cache_list &&
+        options.artifact_path.empty()) {
+        throw std::invalid_argument(".ninfer model path is required");
+    }
     const bool has_prompt   = !options.prompt.empty();
     const bool has_messages = !options.messages_path.empty();
-    if (has_prompt == has_messages) {
+    if (!options.acquisition.cache_list && has_prompt == has_messages) {
         throw std::invalid_argument("pass exactly one of --prompt or --messages");
     }
     if (options.prefill_chunk % 128 != 0) {

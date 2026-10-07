@@ -1,5 +1,6 @@
 #include "options.h"
 #include "product/build_info/build_info.h"
+#include "product/model_acquire/model_acquire.h"
 #include "product/logging/logging.h"
 #include "product/logging/pretty_format.h"
 #include "product/logging/startup_log.h"
@@ -248,6 +249,47 @@ int main(int argc, char** argv) {
     if (cli.version_requested) {
         std::cout << ninfer::product::version_text("frinfer") << '\n';
         return 0;
+    }
+
+    if (cli.acquisition.cache_list) {
+        try {
+            const std::filesystem::path base =
+                cli.acquisition.cache_dir.empty()
+                    ? ninfer::product::model_acquire::default_cache_dir()
+                    : cli.acquisition.cache_dir;
+            for (const auto& entry :
+                 ninfer::product::model_acquire::list_cache(base)) {
+                std::cout << entry.relative_path.string() << ' ' << entry.size_bytes << '\n';
+            }
+            return 0;
+        } catch (const std::exception& error) {
+            std::cerr << "error: " << error.what() << '\n';
+            return 1;
+        }
+    }
+    try {
+        ninfer::product::model_acquire::Acquisition request;
+        if (cli.acquisition.hf_repo) {
+            ninfer::product::model_acquire::HfSpec hf;
+            hf.repo     = *cli.acquisition.hf_repo;
+            hf.file     = cli.acquisition.hf_file.value_or("");
+            hf.revision = cli.acquisition.hf_revision.value_or("main");
+            hf.token    = cli.acquisition.hf_token.value_or("");
+            request.hf  = std::move(hf);
+        }
+        if (cli.acquisition.model_url) { request.model_url = cli.acquisition.model_url; }
+        request.cache_dir = cli.acquisition.cache_dir;
+        request.offline   = cli.acquisition.offline;
+        const auto resolved =
+            ninfer::product::model_acquire::resolve_local(request, cli.artifact_path);
+        cli.artifact_path = resolved.artifact_path;
+        if (resolved.downloaded) {
+            std::cerr << "downloaded " << resolved.artifact_path.string() << '\n';
+        }
+    } catch (const std::exception& error) {
+        std::cerr << "error: " << error.what() << '\n';
+        std::cerr << ninfer::cli::usage_text(argv[0]);
+        return 1;
     }
 
     ninfer::product::LoggingRuntime logging(

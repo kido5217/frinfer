@@ -86,6 +86,9 @@ std::string serve_usage_text(const char* argv0) {
            "[--temperature F] [--top-p F] [--top-k N] [--min-p F] [--presence-penalty F] "
            "[--frequency-penalty F] [--seed N] [--greedy]\n"
            "       [--log-level trace|debug|info|warning|error|critical|off]\n"
+           "       [--hf-repo OWNER/REPO --hf-file FILE [--hf-revision REV] [--hf-token TOKEN]]\n"
+           "       [--model-url https://.../model.ninfer] [--cache-dir DIR] [--offline] "
+           "[--cache-list]\n"
            "       [--version]\n"
            "       serves OpenAI Responses/Chat Completions and Anthropic Messages endpoints\n"
            "       --default-max-tokens defaults to " +
@@ -114,7 +117,11 @@ std::string serve_usage_text(const char* argv0) {
            "       --preserve-thinking retains closed-turn assistant reasoning in later prompts\n"
            "       sampler defaults come from the loaded model and resolved thinking mode; "
            "server flags and request fields override individual values.\n"
-           "       --greedy forces temperature 0 (exact argmax).\n";
+           "       --greedy forces temperature 0 (exact argmax).\n"
+           "Model acquisition takes exactly one source: positional <model.ninfer>, "
+           "--hf-repo + --hf-file (cached under --cache-dir), or --model-url.\n"
+           "--hf-revision defaults to main; --hf-token defaults to $HF_TOKEN. "
+           "--offline reuses the cache; --cache-list prints cached artifacts.\n";
 }
 
 ServeOptions parse_serve_options(int argc, char** argv) {
@@ -128,7 +135,8 @@ ServeOptions parse_serve_options(int argc, char** argv) {
             continue;
         }
         options.startup_argv.emplace_back(argv[i] == nullptr ? "" : argv[i]);
-        redact_next = options.startup_argv.back() == "--api-key";
+        const std::string& last = options.startup_argv.back();
+        redact_next = last == "--api-key" || last == "--hf-token";
     }
     bool default_max_tokens_explicit = false;
     bool kv_capacity_explicit        = false;
@@ -141,9 +149,14 @@ ServeOptions parse_serve_options(int argc, char** argv) {
         options.version_requested = true;
         return options;
     }
-    if (argc < 2) { throw std::invalid_argument("artifact path is required"); }
-    options.artifact_path = argv[1];
-    for (int i = 2; i < argc; ++i) {
+    int positional_end = 2;
+    if (argc >= 2 && std::string(argv[1]).rfind("--", 0) != 0) {
+        options.artifact_path = argv[1];
+        positional_end        = 2;
+    } else {
+        positional_end = 1;
+    }
+    for (int i = positional_end; i < argc; ++i) {
         const std::string arg    = argv[i];
         const auto require_value = [&](const char* flag) -> const char* {
             if (++i >= argc) { throw std::invalid_argument(std::string(flag) + " needs a value"); }
@@ -323,6 +336,22 @@ ServeOptions parse_serve_options(int argc, char** argv) {
             options.sampling_overrides.seed = parse_u64(require_value("--seed"), "seed");
         } else if (arg == "--greedy") {
             options.greedy = true;
+        } else if (arg == "--hf-repo") {
+            options.acquisition.hf_repo = require_value("--hf-repo");
+        } else if (arg == "--hf-file") {
+            options.acquisition.hf_file = require_value("--hf-file");
+        } else if (arg == "--hf-revision") {
+            options.acquisition.hf_revision = require_value("--hf-revision");
+        } else if (arg == "--hf-token") {
+            options.acquisition.hf_token = require_value("--hf-token");
+        } else if (arg == "--model-url") {
+            options.acquisition.model_url = require_value("--model-url");
+        } else if (arg == "--cache-dir") {
+            options.acquisition.cache_dir = require_value("--cache-dir");
+        } else if (arg == "--offline") {
+            options.acquisition.offline = true;
+        } else if (arg == "--cache-list") {
+            options.acquisition.cache_list = true;
         } else if (arg == "--log-level") {
             options.log_level = product::parse_log_level(require_value("--log-level"));
         } else if (arg == "--version") {
@@ -343,6 +372,33 @@ ServeOptions parse_serve_options(int argc, char** argv) {
         options.context_cache.enabled                = false;
         options.context_cache.host_state_slots       = 0;
         options.context_cache.host_kv_capacity_bytes = 0;
+    }
+    const bool has_hf  = options.acquisition.hf_repo.has_value();
+    const bool has_url = options.acquisition.model_url.has_value();
+    if (has_hf && has_url) {
+        throw std::invalid_argument(
+            "hf_spec_invalid: --hf-repo and --model-url are mutually exclusive");
+    }
+    if (options.acquisition.hf_file && !has_hf) {
+        throw std::invalid_argument("hf_spec_invalid: --hf-file needs --hf-repo");
+    }
+    if (options.acquisition.hf_revision && !has_hf) {
+        throw std::invalid_argument("hf_spec_invalid: --hf-revision needs --hf-repo");
+    }
+    if (options.acquisition.hf_token && !has_hf) {
+        throw std::invalid_argument("hf_spec_invalid: --hf-token needs --hf-repo");
+    }
+    if (has_hf && !options.acquisition.hf_file) {
+        throw std::invalid_argument("hf_spec_invalid: --hf-repo needs --hf-file");
+    }
+    if ((has_hf || has_url) && !options.artifact_path.empty()) {
+        throw std::invalid_argument(
+            "hf_spec_invalid: positional <model.ninfer> and --hf-repo/--model-url "
+            "are mutually exclusive");
+    }
+    if (!has_hf && !has_url && !options.acquisition.cache_list &&
+        options.artifact_path.empty()) {
+        throw std::invalid_argument("artifact path is required");
     }
     if (options.port <= 0 || options.port > 65535) {
         throw std::invalid_argument("--port must be in [1,65535]");

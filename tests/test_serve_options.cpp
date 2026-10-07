@@ -386,6 +386,46 @@ int main() {
     failures += check(!secret_present, "startup argv retained the API key");
     failures += check(redaction_present, "startup argv omitted the API-key redaction marker");
 
+    const ServeOptions hf_serve =
+        parse({"frinfer-serve", "--hf-repo", "neroued/Qwen3.8-27B-nvfp4-NInfer", "--hf-file",
+               "qwen3_8_27b_nvfp4.ninfer"});
+    failures += check(hf_serve.acquisition.hf_repo == "neroued/Qwen3.8-27B-nvfp4-NInfer" &&
+                          hf_serve.acquisition.hf_file == "qwen3_8_27b_nvfp4.ninfer" &&
+                          hf_serve.artifact_path.empty(),
+                      "serve --hf-repo/--hf-file did not reach options");
+    bool hf_without_file_rejected = false;
+    try {
+        (void)parse({"frinfer-serve", "--hf-repo", "owner/repo"});
+    } catch (const std::invalid_argument&) { hf_without_file_rejected = true; }
+    failures += check(hf_without_file_rejected, "serve --hf-repo without --hf-file was accepted");
+    bool positional_with_hf_rejected = false;
+    try {
+        (void)parse({"frinfer-serve", "model.ninfer", "--hf-repo", "owner/repo", "--hf-file",
+                     "model.ninfer"});
+    } catch (const std::invalid_argument&) { positional_with_hf_rejected = true; }
+    failures += check(positional_with_hf_rejected,
+                      "serve positional + --hf-repo was accepted");
+    const ServeOptions cache_list_serve = parse({"frinfer-serve", "--cache-list"});
+    failures += check(cache_list_serve.acquisition.cache_list,
+                      "serve --cache-list did not reach options");
+    const ServeOptions token_serve =
+        parse({"frinfer-serve", "--hf-repo", "owner/repo", "--hf-file", "model.ninfer",
+               "--hf-token", "secret-token"});
+    failures += check(token_serve.acquisition.hf_token == "secret-token",
+                      "serve --hf-token did not reach options");
+    bool token_secret_present    = false;
+    bool token_redaction_present = false;
+    for (const std::string& argument : token_serve.startup_argv) {
+        token_secret_present    = token_secret_present || argument == "secret-token";
+        token_redaction_present = token_redaction_present || argument == "<redacted>";
+    }
+    failures += check(!token_secret_present, "startup argv retained the HF token");
+    failures += check(token_redaction_present, "startup argv omitted the HF-token redaction");
+    for (const char* flag : {"--hf-repo", "--model-url", "--cache-list", "--offline"}) {
+        failures += check(serve_usage_text("frinfer-serve").find(flag) != std::string::npos,
+                          "serve help omits a model-acquisition flag");
+    }
+
     if (failures == 0) { std::cout << "ok\n"; }
     return failures == 0 ? 0 : 1;
 }

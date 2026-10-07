@@ -1,4 +1,5 @@
 #include "product/build_info/build_info.h"
+#include "product/model_acquire/model_acquire.h"
 #include "product/logging/logging.h"
 #include "product/logging/startup_log.h"
 #include "serve/generation_service.h"
@@ -47,6 +48,49 @@ int main(int argc, char** argv) {
     if (options.version_requested) {
         std::cout << ninfer::product::version_text("frinfer-serve") << '\n';
         return 0;
+    }
+
+    if (options.acquisition.cache_list) {
+        try {
+            const std::filesystem::path base =
+                options.acquisition.cache_dir.empty()
+                    ? ninfer::product::model_acquire::default_cache_dir()
+                    : options.acquisition.cache_dir;
+            for (const auto& entry :
+                 ninfer::product::model_acquire::list_cache(base)) {
+                std::cout << entry.relative_path.string() << ' ' << entry.size_bytes << '\n';
+            }
+            return 0;
+        } catch (const std::exception& error) {
+            std::cerr << "frinfer-serve: " << error.what() << '\n';
+            return 1;
+        }
+    }
+    try {
+        ninfer::product::model_acquire::Acquisition request;
+        if (options.acquisition.hf_repo) {
+            ninfer::product::model_acquire::HfSpec hf;
+            hf.repo     = *options.acquisition.hf_repo;
+            hf.file     = options.acquisition.hf_file.value_or("");
+            hf.revision = options.acquisition.hf_revision.value_or("main");
+            hf.token    = options.acquisition.hf_token.value_or("");
+            request.hf  = std::move(hf);
+        }
+        if (options.acquisition.model_url) { request.model_url = options.acquisition.model_url; }
+        request.cache_dir = options.acquisition.cache_dir;
+        request.offline   = options.acquisition.offline;
+        const std::filesystem::path positional =
+            options.artifact_path.empty() ? std::filesystem::path{}
+                                          : std::filesystem::path(options.artifact_path);
+        const auto resolved =
+            ninfer::product::model_acquire::resolve_local(request, positional);
+        options.artifact_path = resolved.artifact_path.string();
+        if (resolved.downloaded) {
+            std::cerr << "downloaded " << options.artifact_path << '\n';
+        }
+    } catch (const std::exception& error) {
+        std::cerr << "frinfer-serve: " << error.what() << '\n';
+        return 1;
     }
 
     ninfer::product::LoggingRuntime logging(
