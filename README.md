@@ -21,11 +21,19 @@ the `frinfer` product binaries. The rest of this README describes the combined p
 - **Built for opencode.** The primary intended client is the opencode agent harness: the serve is
   the opencode backend (compatibility study: [wayfinder map #139](https://github.com/kido5217/frinfer/issues/139)).
   One-shot CLI use also works.
+- **The llama.cpp parity surface is settled.** The port programme
+  ([wayfinder map #175](https://github.com/kido5217/frinfer/issues/175), closed) landed 15 of 15
+  port items and recorded one measured `no-port`; the research map behind it
+  ([#167](https://github.com/kido5217/frinfer/issues/167)) is closed too. Each decision and its
+  evidence live in that map's closed tickets. Further parity work is a fresh effort, not a
+  continuation — candidates parked past the programme's boundary sit in
+  [Backlog](https://github.com/kido5217/frinfer/labels/Backlog)
+  (#232 draft-family expansion, #233 embeddings/reranking).
 
 ### Changes from upstream
 
 Maintained: add or update a row whenever a fork feature changes or its status changes.
-Last updated 2026-10-07 (`feat/yarn-tokenize-192`).
+Last updated 2026-10-07 (wayfinder map #175 closed: 15/15 port items landed).
 
 | What | Why | How | Status | Source |
 |---|---|---|---|---|
@@ -44,11 +52,13 @@ Last updated 2026-10-07 (`feat/yarn-tokenize-192`).
 | Product executables renamed to the `frinfer` family | Distinguish the fork's binaries from upstream's | CMake target rename (`frinfer`, `frinfer-serve`, `frinfer-perplexity`) | shipped | FrInfer |
 | Nix flake dev environment | Reproducible build environment | `flake.nix` at the repo root: CUDA 13.1, C++20, CMake/Ninja, FFmpeg, libcurl, Python 3.13 + torch; builds run in `nix develop` | shipped | nixpkgs (CUDA 13.1 `cudaPackages_13_1`) |
 | Agent/governance documentation | The fork is developed with LLM agents in the loop | `AGENTS.md` (product boundaries, verification, reporting), issue tracker + triage-label conventions, branch→commit→push→PR→merge→rebase landing pipeline; the LLM is permitted to open and merge PRs | ongoing | FrInfer |
-| Build identity — `--version` on all four product binaries | Scripts and humans probe tools with `--version`; its absence was the survey's basic ecosystem-parity gap | Configure-time version (`git describe --tags`) + short git sha + build config via `configure_file`, exposed as the `ninfer_build_info` interface target; `--version` on `frinfer`, `frinfer-serve`, `frinfer-perplexity`, and `ninfer_bench` | shipped | llama.cpp (the `--version` pattern, adopted) |
+| Build identity — `--version` on all five product binaries | Scripts and humans probe tools with `--version`; its absence was the survey's basic ecosystem-parity gap | Configure-time version (`git describe --tags`) + short git sha + build config via `configure_file`, exposed as the `ninfer_build_info` interface target; `--version` on `frinfer`, `frinfer-serve`, `frinfer-perplexity`, `frinfer-tokenize`, and `ninfer_bench` | shipped | llama.cpp (the `--version` pattern, adopted) |
 | Artifact integrity manifest (`inspect.py --hash` / `--check`) | Downloaded and v2→v3-upgraded artifacts (upgrades write a new output path) need a verifiable integrity story beyond the random `artifact_id` minted at conversion | Stdlib-only sha256 streaming over the reader's object ranges — one manifest line per object plus a whole-payload digest; `--check` re-streams and localizes any mismatch to its object | shipped | FrInfer |
 | Rendered-prompt dump — CLI `--show-prompt` | Chat-template debugging is the project's recurring pain (G1 demotions, chat-drift, froggeric pinning); no rendered-prompt dump existed even at `--log-level debug` | `PreparedPrompt::rendered_text()` retains the exact rendered prompt (media placeholders already expanded) and `--show-prompt` prints it to stderr before generation, leaving stdout the answer channel | shipped | llama.cpp (C5, adopted) |
 | Model-acquisition flags — `--hf-repo`/`--hf-file`, `--model-url`, `--cache-dir`, `--offline`, `--cache-list` on `frinfer` + `frinfer-serve` | The quick start was a two-tool dance (external `hf` CLI + ninfer) while artifacts live on Hugging Face | libcurl streaming download into `~/.cache/frinfer` with resume, offline cache reuse, cache listing, and fail-closed `hf_not_found`/`offline_not_cached` codes | shipped | llama.cpp (the `-hf`/`--hf-repo`, `--offline`, `--cache-list` pattern, adopted) |
 | Tokenizer CLI — `frinfer-tokenize` (encode / decode / per-id spelling) | No surface answers "how does this text tokenize?", which is the daily debugging primitive for prompt framing, template drift and token budgets | `Engine::detokenize` and `Engine::token_piece` alongside the existing `tokenize_text`, plus a small app; encode/decode round-trip tested against the artifact | shipped | FrInfer (decode direction; llama.cpp's `llama-tokenize` is encode-only) |
+| CLI prompt from file or stdin — `--prompt-file FILE` / `--prompt-stdin` | Long or awkward prompts (code, CJK, tabs, newlines) hit shell-quoting pain in the one place a prompt must be typed, and the structured `--messages` route forces JSON for plain text | Both sources read the body verbatim — no escape processing, no trailing-newline trimming, no re-encoding — and feed the same `prompt_from_text` route `--prompt` uses, so identical bytes give an identical token count; the prompt now has exactly one source among `--prompt`/`--prompt-file`/`--prompt-stdin`/`--messages`, and naming two reports both flags | shipped | FrInfer (llama.cpp's `-f`/`--stdin` is the shape; its silent precedence of `--stdin` over `-f`/`-p` is deliberately not copied, because a run that quietly used the wrong prompt is worse than a rejected one) |
+| Attention kernel tuning — measured, **not ported** | The port survey's last open performance candidate, and the only one whose verdict was a measurement rather than a port | Decode attention already runs at 84–91 % of the DRAM roofline at long context under the deployed 8-bit KV profiles, leaving a ≈1.10–1.19× kernel ceiling and a ≈3–7 % end-to-end decode gain — under the bar for a bespoke kernel; nvfp4 KV (63–66 % utilization) is the one profile with real kernel headroom and has no published end-to-end baseline to attach a gain to | no-port (measured) | FrInfer measurement (gate evidence `research/attention-tuning-evidence` @ `08171824`); candidates surveyed from llama.cpp |
 
 ### Bug reporting
 
