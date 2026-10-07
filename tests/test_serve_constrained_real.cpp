@@ -15,6 +15,7 @@
 #include "serve/openai_responses.h"
 #include "serve/translate.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
@@ -116,6 +117,25 @@ int exercise(const char* artifact) {
         schema_detail = std::string("not JSON: ") + error.what() + " content=" + schema_result.content;
     }
     check(schema_valid, "json_schema answer satisfies the schema", schema_detail);
+
+    // 2b. structured_outputs.choice forces one literal alternative.
+    Json choice_body                  = base_request();
+    choice_body["structured_outputs"] = Json{{"choice", Json::array({"cat", "dog"})}};
+    const ninfer::GenerationResult choice_result = run_route(engine, server, choice_body);
+    check(choice_result.content == "cat" || choice_result.content == "dog",
+          "structured_outputs.choice forces one literal alternative",
+          "content=" + choice_result.content);
+
+    // 2c. structured_outputs.regex matches the complete content.
+    Json regex_body                  = base_request();
+    regex_body["structured_outputs"] = Json{{"regex", "[AB]{1,3}"}};
+    const ninfer::GenerationResult regex_result = run_route(engine, server, regex_body);
+    const bool regex_ok =
+        !regex_result.content.empty() && regex_result.content.size() <= 3 &&
+        std::all_of(regex_result.content.begin(), regex_result.content.end(),
+                    [](char byte) { return byte == 'A' || byte == 'B'; });
+    check(regex_ok, "structured_outputs.regex confines the content",
+          "content=" + regex_result.content);
 
     // 3. A grammar that overflows the producer's structural guards is rejected at compile with
     Json invalid_body       = base_request();

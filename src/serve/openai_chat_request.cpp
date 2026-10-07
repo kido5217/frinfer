@@ -233,22 +233,32 @@ std::string schema_to_document(const Json& schema) {
 }
 
 void parse_constraints(const Json& body, GenerationRequest& output) {
-    // Explicit rejections for the constrained-decoding spellings FrInfer does not provide:
-    // vLLM's structured_outputs and the retired guided_* family promise constraint semantics a
-    // hint cannot provide.
+    // The retired vLLM `guided_*` aliases are not accepted; the NInfer `structured_outputs`
+    // extension and the llama.cpp `grammar` field are.
     static constexpr const char* rejected_fields[] = {
-        "structured_outputs", "guided_json", "guided_regex", "guided_choice", "guided_grammar",
+        "guided_json", "guided_regex", "guided_choice", "guided_grammar",
     };
     for (const char* field : rejected_fields) {
         if (!body.contains(field) || body.at(field).is_null()) { continue; }
         bad_request(std::string(field) +
                         " requests a constrained-decoding spelling that FrInfer does not provide; "
-                        "use grammar with GBNF text or response_format json_schema",
+                        "use grammar with GBNF text, structured_outputs, or response_format",
                     field, "constrained_decoding_not_supported");
     }
 
+    std::optional<ninfer::OutputConstraint> constraint;
+    ConstraintSource source = ConstraintSource::None;
+    const auto set_constraint = [&](ninfer::OutputConstraint value, ConstraintSource origin,
+                                    const std::string& field) {
+        if (constraint) {
+            bad_request("only one output constraint may be specified", field,
+                        "constrained_decoding_conflict");
+        }
+        constraint = std::move(value);
+        source     = origin;
+    };
+
     // llama.cpp-compatible GBNF text; empty means no constraint.
-    std::optional<std::string> grammar;
     if (body.contains("grammar") && !body.at("grammar").is_null()) {
         const Json& value = body.at("grammar");
         if (!value.is_string()) {
@@ -262,14 +272,81 @@ void parse_constraints(const Json& body, GenerationRequest& output) {
                         " bytes",
                     "grammar", "constraint_too_large");
             }
-            grammar = std::move(text);
+            set_constraint(ninfer::OutputConstraint::grammar(std::move(text)),
+                           ConstraintSource::Grammar, "grammar");
+        }
+    }
+
+    // The NInfer structured_outputs extension: exactly one of grammar, regex or choice.
+    if (body.contains("structured_outputs") && !body.at("structured_outputs").is_null()) {
+        const Json& value = body.at("structured_outputs");
+        if (!value.is_object()) {
+            bad_request("structured_outputs must be an object", "structured_outputs",
+                        "structured_outputs_invalid");
+        }
+        std::vector<std::string> present;
+        for (const auto& [key, entry] : value.items()) {
+            if (!entry.is_null()) { present.push_back(key); }
+        }
+        if (present.size() != 1) {
+            bad_request("structured_outputs requires exactly one of grammar, regex or choice",
+                        "structured_outputs", "structured_outputs_invalid");
+        }
+        const std::string kind  = present.front();
+        const std::string field = "structured_outputs." + kind;
+        const Json& entry       = value.at(kind);
+        if (kind == "grammar") {
+            if (!entry.is_string() || entry.get<std::string>().empty()) {
+                bad_request("structured_outputs.grammar must be a nonempty GBNF string", field,
+                            "grammar_invalid");
+            }
+            std::string text = entry.get<std::string>();
+            if (text.size() > ninfer::constraint::kConstraintPayloadLimit) {
+                bad_request("structured_outputs.grammar exceeds " +
+                                std::to_string(ninfer::constraint::kConstraintPayloadLimit) +
+                                " bytes",
+                            field, "constraint_too_large");
+            }
+            set_constraint(ninfer::OutputConstraint::grammar(std::move(text)),
+                           ConstraintSource::Grammar, field);
+        } else if (kind == "regex") {
+            if (!entry.is_string()) {
+                bad_request("structured_outputs.regex must be a string", field, "invalid_regex");
+            }
+            std::string pattern = entry.get<std::string>();
+            if (pattern.size() > ninfer::constraint::kConstraintPayloadLimit) {
+                bad_request("structured_outputs.regex exceeds " +
+                                std::to_string(ninfer::constraint::kConstraintPayloadLimit) +
+                                " bytes",
+                            field, "constraint_too_large");
+            }
+            set_constraint(ninfer::OutputConstraint::regex(std::move(pattern)),
+                           ConstraintSource::Regex, field);
+        } else if (kind == "choice") {
+            if (!entry.is_array() || entry.empty()) {
+                bad_request("structured_outputs.choice requires a nonempty array of strings", field,
+                            "invalid_choice");
+            }
+            std::vector<std::string> choices;
+            choices.reserve(entry.size());
+            for (std::size_t index = 0; index < entry.size(); ++index) {
+                if (!entry.at(index).is_string()) {
+                    bad_request("choice entries must be strings",
+                                field + "/" + std::to_string(index), "invalid_choice");
+                }
+                choices.push_back(entry.at(index).get<std::string>());
+            }
+            set_constraint(ninfer::OutputConstraint::choice(std::move(choices)),
+                           ConstraintSource::Choice, field);
+        } else {
+            bad_request("unknown structured_outputs option: " + kind, field,
+                        "structured_outputs_invalid");
         }
     }
 
     // response_format: text keeps no constraint, json_object constrains to an object, and
     // json_schema validates through the shared schema contract and is compiled by the Engine's
     // XGrammar converter.
-    std::optional<ninfer::OutputConstraint> schema_constraint;
     if (body.contains("response_format") && !body.at("response_format").is_null()) {
         const Json& format = body.at("response_format");
         if (!format.is_object() || !format.contains("type") || !format.at("type").is_string()) {
@@ -278,14 +355,16 @@ void parse_constraints(const Json& body, GenerationRequest& output) {
         }
         const std::string type = format.at("type").get<std::string>();
         if (type == "json_object") {
-            schema_constraint = ninfer::OutputConstraint::json_object();
+            set_constraint(ninfer::OutputConstraint::json_object(), ConstraintSource::JsonSchema,
+                           "response_format");
         } else if (type == "json_schema") {
             if (!format.contains("json_schema") || format.at("json_schema").is_null()) {
                 bad_request("response_format.json_schema is required for type json_schema",
                             "response_format.json_schema", "json_schema_invalid");
             }
-            schema_constraint = ninfer::OutputConstraint::json_schema(
-                schema_to_document(parse_json_schema_wrapper(format)));
+            set_constraint(ninfer::OutputConstraint::json_schema(
+                               schema_to_document(parse_json_schema_wrapper(format))),
+                           ConstraintSource::JsonSchema, "response_format");
         } else if (type != "text") {
             bad_request(
                 "this response_format requires constrained output, which FrInfer cannot guarantee; "
@@ -294,17 +373,9 @@ void parse_constraints(const Json& body, GenerationRequest& output) {
         }
     }
 
-    // Exactly one constraint kind per request (vLLM semantics).
-    if (grammar && schema_constraint) {
-        bad_request("grammar cannot be combined with a constraining response_format",
-                    "response_format", "constrained_decoding_conflict");
-    }
-    if (grammar) {
-        output.constraint        = ninfer::OutputConstraint::grammar(std::move(*grammar));
-        output.constraint_source = ConstraintSource::Grammar;
-    } else if (schema_constraint) {
-        output.constraint        = std::move(schema_constraint);
-        output.constraint_source = ConstraintSource::JsonSchema;
+    if (constraint) {
+        output.constraint        = std::move(constraint);
+        output.constraint_source = source;
     }
     // A `tools` field together with structured output is a fail-closed rejection (design #48):
     // the tool-call parser owns the turn when tools are declared, so even an empty tools array is
@@ -312,8 +383,7 @@ void parse_constraints(const Json& body, GenerationRequest& output) {
     const bool declares_tools = body.contains("tools") && !body.at("tools").is_null();
     if (output.constraint && declares_tools) {
         bad_request("tools with a constrained response is not supported",
-                    output.constraint_source == ConstraintSource::JsonSchema ? "response_format"
-                                                                             : "grammar",
+                    std::string(constraint_source_param(source)),
                     "constrained_decoding_not_supported");
     }
 }

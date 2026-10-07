@@ -187,6 +187,30 @@ int test_structured_output() {
                           both.reasoning_effort == RequestedReasoningEffort::High,
                       "output_config.format composes with output_config.effort");
 
+    // The NInfer structured_outputs extension is available on this route too.
+    Json so_body                  = base_request();
+    so_body["structured_outputs"] = Json{{"choice", Json::array({"positive", "negative"})}};
+    const GenerationRequest so_choice = parse(so_body).generation;
+    failures += check(so_choice.constraint.has_value() &&
+                          so_choice.constraint->kind == ninfer::OutputConstraintKind::Choice &&
+                          so_choice.constraint_source == ConstraintSource::Choice,
+                      "Anthropic structured_outputs.choice converts to a constraint");
+    Json so_regex_body                  = base_request();
+    so_regex_body["structured_outputs"] = Json{{"regex", "[0-9]+"}};
+    const GenerationRequest so_regex    = parse(so_regex_body).generation;
+    failures += check(so_regex.constraint.has_value() &&
+                          so_regex.constraint->kind == ninfer::OutputConstraintKind::Regex &&
+                          so_regex.constraint_source == ConstraintSource::Regex,
+                      "Anthropic structured_outputs.regex converts to a constraint");
+    {
+        Json request                  = base_request();
+        request["output_config"]      = body["output_config"];
+        request["structured_outputs"] = Json{{"grammar", "root ::= \"a\""}};
+        const ApiError error          = api_error([&] { (void)parse(request); });
+        failures += check(error.code == "constrained_decoding_conflict",
+                          "output_config.format and structured_outputs conflict");
+    }
+
     // Malformed wrappers fail closed on the Anthropic field path, not the OpenAI one.
     const std::vector<Json> malformed_formats = {
         Json{{"type", "text"}},
@@ -220,7 +244,7 @@ int test_structured_output() {
         request["output_config"] = Json{{"format",
                                          Json{{"type", "json_schema"},
                                               {"schema", Json{{"type", "string"},
-                                                                   {"pattern", "^[a-z]+$"}}}}}};
+                                                                   {"format", "email"}}}}}};
         const ApiError error     = api_error([&] { (void)parse(request); });
         failures += check(error.code == "json_schema_unsupported" &&
                               error.param == "output_config.format",

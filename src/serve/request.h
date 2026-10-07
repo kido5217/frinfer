@@ -170,9 +170,28 @@ requested_reasoning_effort_name(RequestedReasoningEffort effort) noexcept {
     return {};
 }
 
-// Which request field produced GenerationRequest::grammar; a constrained-decoding failure maps
-// back to that field's contract codes (grammar_invalid / json_schema_invalid).
-enum class ConstraintSource : std::uint8_t { None, Grammar, JsonSchema };
+// Which request field produced GenerationRequest::constraint; a constrained-decoding failure maps
+// back to that field's contract codes.
+enum class ConstraintSource : std::uint8_t { None, Grammar, Choice, Regex, JsonSchema };
+
+// The request field a constraint source is attributed to in error params. `grammar` is the
+// llama.cpp-compatible GBNF field; choice and regex are the NInfer `structured_outputs` members.
+[[nodiscard]] constexpr std::string_view
+constraint_source_param(ConstraintSource source) noexcept {
+    switch (source) {
+    case ConstraintSource::Grammar:
+        return "grammar";
+    case ConstraintSource::Choice:
+        return "structured_outputs.choice";
+    case ConstraintSource::Regex:
+        return "structured_outputs.regex";
+    case ConstraintSource::JsonSchema:
+        return "response_format";
+    case ConstraintSource::None:
+        break;
+    }
+    return "messages";
+}
 
 struct GenerationRequest {
     std::vector<ChatTurn> messages;

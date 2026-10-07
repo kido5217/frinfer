@@ -48,6 +48,21 @@ int main() {
                           thinking_capacity.code == "thinking_budget_capacity_insufficient" &&
                           thinking_capacity.param.empty(),
                       "thinking budget capacity error mapping mismatch");
+    const ninfer::serve::ApiError dead_end = ninfer::serve::request_error_to_api_error(
+        ninfer::RequestError(ninfer::RequestErrorKind::ConstraintDeadEnd,
+                             "constraint admits no legal next token"),
+        ninfer::serve::ConstraintSource::Grammar);
+    failures += check(dead_end.status == 400 && dead_end.code == "constraint_dead_end" &&
+                          dead_end.param == "grammar",
+                      "a constraint dead end did not map to HTTP 400 constraint_dead_end");
+    const ninfer::serve::ApiError dead_end_schema = ninfer::serve::request_error_to_api_error(
+        ninfer::RequestError(ninfer::RequestErrorKind::ConstraintDeadEnd,
+                             "constraint admits no legal next token"),
+        ninfer::serve::ConstraintSource::JsonSchema);
+    failures += check(dead_end_schema.status == 400 &&
+                          dead_end_schema.code == "constraint_dead_end" &&
+                          dead_end_schema.param == "response_format",
+                      "a schema constraint dead end did not map to the response_format field");
     const ninfer::serve::ApiError cancelled =
         ninfer::serve::request_error_to_api_error(ninfer::RequestError(
             ninfer::RequestErrorKind::Cancelled, "request cancelled during preparation"));

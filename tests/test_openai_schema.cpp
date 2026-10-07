@@ -483,14 +483,13 @@ int test_constrained_decoding_extensions() {
     failures += check(huge.param == "grammar" && huge.code == "constraint_too_large",
                       "an oversized grammar is rejected");
 
-    const std::vector<std::pair<const char*, Json>> unsupported = {
-        {"structured_outputs", Json{{"json", Json{{"type", "object"}}}}},
+    const std::vector<std::pair<const char*, Json>> retired_aliases = {
         {"guided_json", Json{{"type", "object"}}},
         {"guided_regex", "[a-z]+"},
         {"guided_choice", Json::array({"yes", "no"})},
         {"guided_grammar", "root ::= \"yes\" | \"no\""},
     };
-    for (const auto& [field, value] : unsupported) {
+    for (const auto& [field, value] : retired_aliases) {
         Json body            = base_request();
         body[field]          = value;
         const ApiError error = api_error([&] { (void)parse(body); });
@@ -498,6 +497,76 @@ int test_constrained_decoding_extensions() {
             check(error.param == field && error.code == "constrained_decoding_not_supported" &&
                       error.message.find(field) != std::string::npos,
                   std::string(field) + " remains an explicit rejection");
+    }
+
+    // The NInfer structured_outputs extension exposes grammar, regex and choice.
+    Json so_grammar                 = base_request();
+    so_grammar["structured_outputs"] = Json{{"grammar", "root ::= \"yes\" | \"no\""}};
+    const OpenAIChatRequest so_grammar_parsed = parse(so_grammar);
+    failures += check(so_grammar_parsed.generation.constraint.has_value() &&
+                          so_grammar_parsed.generation.constraint->kind ==
+                              ninfer::OutputConstraintKind::Grammar &&
+                          so_grammar_parsed.generation.constraint_source ==
+                              ConstraintSource::Grammar,
+                      "structured_outputs.grammar converts to a GBNF constraint");
+
+    Json so_regex                 = base_request();
+    so_regex["structured_outputs"] = Json{{"regex", "(BUG|TASK)-[0-9]{4}"}};
+    const OpenAIChatRequest so_regex_parsed = parse(so_regex);
+    failures += check(so_regex_parsed.generation.constraint.has_value() &&
+                          so_regex_parsed.generation.constraint->kind ==
+                              ninfer::OutputConstraintKind::Regex &&
+                          so_regex_parsed.generation.constraint->source == "(BUG|TASK)-[0-9]{4}" &&
+                          so_regex_parsed.generation.constraint_source == ConstraintSource::Regex,
+                      "structured_outputs.regex converts to a regex constraint");
+    const ninfer::RequestOptions so_regex_options = options(so_regex_parsed.generation);
+    failures += check(so_regex_options.constraint.has_value() &&
+                          so_regex_options.constraint->kind == ninfer::OutputConstraintKind::Regex,
+                      "the regex constraint reaches the Engine constraint contract");
+
+    Json so_choice                 = base_request();
+    so_choice["structured_outputs"] = Json{{"choice", Json::array({"positive", "neutral", "negative"})}};
+    const OpenAIChatRequest so_choice_parsed = parse(so_choice);
+    failures += check(so_choice_parsed.generation.constraint.has_value() &&
+                          so_choice_parsed.generation.constraint->kind ==
+                              ninfer::OutputConstraintKind::Choice &&
+                          so_choice_parsed.generation.constraint->choices ==
+                              std::vector<std::string>({"positive", "neutral", "negative"}) &&
+                          so_choice_parsed.generation.constraint_source == ConstraintSource::Choice,
+                      "structured_outputs.choice converts to a literal-choice constraint");
+
+    // structured_outputs malformed shapes carry the NInfer codes.
+    const std::vector<std::pair<Json, std::string>> structured_malformed = {
+        {Json{{"json", Json{{"type", "object"}}}}, "structured_outputs_invalid"},
+        {Json{{"grammar", "root ::= \"a\""}, {"regex", "a"}}, "structured_outputs_invalid"},
+        {Json{{"choice", Json::array()}}, "invalid_choice"},
+        {Json{{"choice", Json::array({"a", 5})}}, "invalid_choice"},
+        {Json{{"regex", 5}}, "invalid_regex"},
+        {Json{{"grammar", ""}}, "grammar_invalid"},
+    };
+    for (const auto& [value, code] : structured_malformed) {
+        Json body                  = base_request();
+        body["structured_outputs"] = value;
+        const ApiError error       = api_error([&] { (void)parse(body); });
+        failures += check(error.code == code,
+                          "structured_outputs malformed shape: " + value.dump() + " -> " +
+                              error.code);
+    }
+    {
+        Json body                  = base_request();
+        body["structured_outputs"] = 5;
+        const ApiError error       = api_error([&] { (void)parse(body); });
+        failures += check(error.code == "structured_outputs_invalid" &&
+                              error.param == "structured_outputs",
+                          "a non-object structured_outputs is rejected");
+    }
+    {
+        Json body                  = base_request();
+        body["grammar"]            = "root ::= \"a\"";
+        body["structured_outputs"] = Json{{"regex", "a"}};
+        const ApiError error       = api_error([&] { (void)parse(body); });
+        failures += check(error.code == "constrained_decoding_conflict",
+                          "grammar and structured_outputs conflict");
     }
 
     // response_format: text keeps no constraint; json_object and json_schema convert.
@@ -580,15 +649,12 @@ int test_constrained_decoding_extensions() {
                       "an unknown response_format type is rejected");
 
     // Keywords the converter would not genuinely enforce are rejected, not silently loosened:
-    // unknown keywords, patterns (degraded to "any string"), formats it ignores, combinators it
-    // drops, and keywords used in a context where the typed model does not read them.
+    // unknown keywords, formats it ignores, combinators it drops, and keywords used in a context
+    // where the adopted compiler does not read them.
     const std::vector<Json> unenforced_schemas = {
-        Json{{"type", "string"}, {"pattern", "^[a-z]+$"}},
         Json{{"type", "object"}, {"minProperties", 1}},
         Json{{"type", "string"}, {"format", "email"}},
         Json{{"type", "string"}, {"format", "uuid5"}},
-        Json{{"type", "number"}, {"minimum", 5}},
-        Json{{"minimum", 5}},
         Json{{"type", "integer"}, {"minimum", 0}, {"exclusiveMinimum", 5}},
         Json{{"type", "integer"}, {"maximum", 9}, {"exclusiveMaximum", 5}},
         Json{{"type", "string"}, {"maxItems", 3}},
@@ -603,17 +669,10 @@ int test_constrained_decoding_extensions() {
              {"oneOf", Json::array({Json{{"required", Json::array({"a"})}}})}},
         Json{{"type", "array"}, {"items", Json::array({Json{{"type", "string"}}})}, {"minItems", 2}},
         Json{{"type", "array"},
-             {"prefixItems", Json::array({Json{{"type", "string"}}})},
-             {"maxItems", 2}},
-        Json{{"type", "array"},
              {"items", Json::array({Json{{"type", "number"}, {"minimum", 5}}})}},
         Json{{"anyOf", Json::array({Json{{"type", "string"}}})}, {"maxLength", 3}},
         Json{{"enum", Json::array({"a"})}, {"maxLength", 3}},
         Json{{"$ref", "#/$defs/x"}, {"minLength", 3}},
-        Json{{"type", Json::array({"integer", "number"})}, {"minimum", 5}},
-        Json{{"type", "array"},
-             {"prefixItems", Json::array({Json{{"type", "string"}}})},
-             {"items", Json{{"type", "integer"}}}},
     };
     for (const Json& schema : unenforced_schemas) {
         Json body               = base_request();
@@ -645,11 +704,23 @@ int test_constrained_decoding_extensions() {
     // The enforced subset still converts in every genuine context.
     const std::vector<Json> supported_schemas = {
         Json{{"type", "integer"}, {"minimum", 0}, {"maximum", 10}},
+        Json{{"type", "string"}, {"pattern", "^[a-z]+$"}},
+        Json{{"type", "number"}, {"minimum", 5}},
+        Json{{"minimum", 5}},
+        Json{{"type", "number"}, {"exclusiveMinimum", 0.5}, {"exclusiveMaximum", 1.5}},
+        Json{{"type", Json::array({"integer", "number"})}, {"minimum", 5}},
         Json{{"type", "array"},
              {"minItems", 1},
              {"maxItems", 3},
              {"items", Json{{"type", "string"}, {"maxLength", 4}}}},
-        Json{{"type", "string"}, {"format", "date-time"}},
+        Json{{"type", "array"},
+             {"prefixItems", Json::array({Json{{"type", "string"}}})},
+             {"items", Json{{"type", "integer"}}},
+             {"minItems", 1},
+             {"maxItems", 3}},
+        Json{{"type", "array"},
+             {"prefixItems", Json::array({Json{{"type", "string"}}})},
+             {"maxItems", 2}},
         Json{{"anyOf", Json::array({Json{{"type", "string"}},
                                     Json{{"type", "integer"}, {"minimum", 0}}})}},
         Json{{"type", "object"},

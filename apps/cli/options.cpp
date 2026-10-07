@@ -498,8 +498,7 @@ Options parse_options(int argc, char** argv) {
                 "--thinking-budget cannot be combined with a constraint that resolves thinking "
                 "off; pass --reasoning-effort or drop --thinking-budget");
         }
-        options.enable_thinking             = explicitly_enabled;
-        options.constraint.thinking_enabled = explicitly_enabled;
+        options.enable_thinking = explicitly_enabled;
     }
     return options;
 }

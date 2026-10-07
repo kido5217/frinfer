@@ -23,13 +23,10 @@ enum class ConstraintSource : std::uint8_t {
 
 struct ConstraintOptions {
     ConstraintSource source = ConstraintSource::None;
-    // Resolved GBNF: the `--grammar`/`--grammar-file` text, or the GBNF the serve's JSON-Schema
-    // contract produced from `--json-schema`/`--json-schema-file`.
+    // The constraint source text carried to the Engine: the `--grammar`/`--grammar-file` GBNF, or
+    // the validated JSON Schema document the serve contract forwarded from
+    // `--json-schema`/`--json-schema-file`.
     std::string gbnf;
-    // The request's resolved thinking flag under the serve's constrained-request default (issue
-    // #86). The Engine wraps the grammar for the reasoning stream only when this is set and the
-    // rendered prompt starts in reasoning.
-    bool thinking_enabled = false;
 };
 
 struct ModelAcquisitionOptions {

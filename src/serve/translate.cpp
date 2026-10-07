@@ -340,9 +340,7 @@ ninfer::RequestOptions to_request_options(const GenerationRequest& request,
             ApiError error;
             error.status = 400;
             error.type   = "invalid_request_error";
-            error.param  = request.constraint_source == ConstraintSource::JsonSchema
-                               ? "response_format"
-                               : "grammar";
+            error.param  = std::string(constraint_source_param(request.constraint_source));
             error.code   = "constrained_decoding_not_supported";
             error.message = std::string("constrained generation is not supported with the ") +
                             product::speculative_backend_name(backend) +

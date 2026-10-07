@@ -112,7 +112,8 @@ The endpoint supports:
 - the compatible `top_k` (`0..20`) and `min_p` (`0..1`) sampler extensions;
 - up to four non-empty stop strings, applied to both reasoning and answer output;
 - `n:1`, text-only `modalities`, and `response_format: {"type":"text"}`;
-- constrained decoding: a non-empty GBNF `grammar`, or `response_format` `json_object` / `json_schema`
+- constrained decoding: a non-empty GBNF `grammar`, the NInfer `structured_outputs` extension
+  (`grammar`, `regex`, or `choice`), or `response_format` `json_object` / `json_schema`
   (OpenAI wrapper or bare schema), or the Anthropic `output_config.format` `json_schema`; the schema
   is admitted through the shared fail-closed allowlist and compiled by the Engine's XGrammar matcher;
 - non-streaming responses and server-sent event streams;
@@ -132,10 +133,11 @@ behavior. This includes nonzero `logit_bias`, requested log probabilities, audio
 output, `strict:true`, required or named tool choice, `parallel_tool_calls:false` with enabled tools,
 explicit low/high image detail, web search, moderation, low/high verbosity, stored Chat Completions,
 and non-empty legacy `functions`. Each capability rejection identifies the affected field and the
-guarantee NInfer cannot provide. The vLLM `structured_outputs` and `guided_json`/`guided_regex`/
-`guided_choice`/`guided_grammar` constrained-decoding spellings are rejected with
-`constrained_decoding_not_supported`; use `grammar` (GBNF) or `response_format` instead. A `tools`
-field combined with a constraint is rejected because the tool-call parser owns the turn.
+guarantee NInfer cannot provide. The retired vLLM `guided_json`/`guided_regex`/`guided_choice`/
+`guided_grammar` constrained-decoding aliases are rejected with
+`constrained_decoding_not_supported`; use `grammar` (GBNF), `structured_outputs`, or
+`response_format` instead. A `tools` field combined with a constraint is rejected because the
+tool-call parser owns the turn.
 
 Semantically neutral fields do not make an otherwise executable request fail. All-zero
 `logit_bias`, `logprobs:false`, `top_logprobs:0`, `verbosity:"medium"`, empty legacy tool controls,
@@ -338,9 +340,31 @@ body that exceeds `--max-request-mib` before JSON parsing; it is not used for mo
 resource errors.
 
 Constrained-decoding rejections are client errors at HTTP 400: `grammar_invalid` for a malformed
-GBNF `grammar`, `json_schema_invalid` (param `response_format` or `output_config.format`) for a
-malformed or unsupported JSON Schema, and `constraint_dead_end` when a compiled constraint admits
-no legal next token, so the request fails closed instead of emitting unconstrained text.
+GBNF `grammar`, `invalid_choice` for a malformed `structured_outputs.choice`, `invalid_regex` for a
+malformed `structured_outputs.regex`, `structured_outputs_invalid` for a malformed
+`structured_outputs` object, `json_schema_invalid` (param `response_format` or
+`output_config.format`) for a malformed or unsupported JSON Schema, and `constraint_dead_end` when
+a compiled constraint admits no legal next token, so the request fails closed instead of emitting
+unconstrained text.
+
+On Chat Completions and Anthropic Messages, the NInfer `structured_outputs` extension supplies
+exactly one of `grammar` (GBNF text), `regex` (a pattern matched against the complete content), or
+`choice` (a nonempty array of literal strings). Supplying more than one, or combining any with
+`grammar`/`response_format`/`output_config.format`, is a `constrained_decoding_conflict`. Choice
+and regex are compiled by the same Engine matcher as GBNF and JSON output; a malformed choice or
+regex that reaches the matcher is reported as `invalid_choice` or `invalid_regex`.
+
+The `response_format` JSON Schema dialect is a fail-closed allowlist: a document is admitted only
+when every assertion it uses is one the Engine's XGrammar matcher genuinely enforces. The admitted
+assertions are `type` (string or string union), `properties`, `required`, `additionalProperties`,
+`items` and `prefixItems` (positional tuples with a tail `items` schema), `minItems`/`maxItems`,
+`minLength`/`maxLength`, `pattern`, inclusive and exclusive `minimum`/`maximum` bounds on integer
+or number types (and on untyped numeric nodes), `const`, `enum`, `anyOf`, `$ref`, and
+`$defs`/`definitions`, plus the standard annotations. Rejected assertions include `allOf`,
+`oneOf`, `additionalItems`, draft-07 `items` arrays, `format`, `minProperties`, and
+`patternProperties`; an assertion used in a context where the matcher does not read it (for
+example a string keyword on a `number`, or numeric bounds on a `string`) is rejected rather than
+silently dropped.
 
 ## OpenAI prompt caching
 

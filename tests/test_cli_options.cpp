@@ -211,7 +211,7 @@ int main() {
         parse({"ninfer-cli", "model.ninfer", "--prompt", "hello", "--grammar", grammar});
     failures += check(grammar_options.constraint.source == ninfer::cli::ConstraintSource::Grammar &&
                           grammar_options.constraint.gbnf == grammar &&
-                          !grammar_options.constraint.thinking_enabled,
+                          grammar_options.enable_thinking == false,
                       "--grammar did not select an answer-only GBNF constraint");
     for (const char* flag :
          {"--grammar", "--grammar-file", "--json-schema", "--json-schema-file"}) {
@@ -246,8 +246,7 @@ int main() {
     const ninfer::cli::Options thinking_options =
         parse({"ninfer-cli", "model.ninfer", "--prompt", "hello", "--grammar", grammar,
                "--reasoning-effort", "medium"});
-    failures += check(thinking_options.constraint.thinking_enabled &&
-                          thinking_options.enable_thinking.value_or(false),
+    failures += check(thinking_options.enable_thinking.value_or(false),
                       "a constrained request with reasoning effort did not resolve thinking on");
     failures += check(
         std::string(ninfer::cli::constraint_error_code(ninfer::cli::ConstraintSource::Grammar)) ==
@@ -264,7 +263,7 @@ int main() {
         parse({"ninfer-cli", "model.ninfer", "--prompt", "hello", "--grammar", grammar,
                "--reasoning-effort", "medium", "--thinking-budget", "37"});
     failures +=
-        check(thinking_budget.thinking_budget == 37 && thinking_budget.constraint.thinking_enabled,
+        check(thinking_budget.thinking_budget == 37 && thinking_budget.enable_thinking == true,
               "a thinking-on constrained request rejected its --thinking-budget");
 
     constexpr std::string_view kSchema =
@@ -283,7 +282,7 @@ int main() {
                       "a malformed JSON Schema omitted json_schema_invalid");
     const std::string unsupported = rejection_message([&] {
         (void)parse({"ninfer-cli", "model.ninfer", "--prompt", "hello", "--json-schema",
-                     R"({"type":"string","pattern":"x"})"});
+                     R"({"type":"string","format":"email"})"});
     });
     failures += check(unsupported.find("json_schema_unsupported") != std::string::npos,
                       "an unsupported JSON Schema keyword omitted json_schema_unsupported");

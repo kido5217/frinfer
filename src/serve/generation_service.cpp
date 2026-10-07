@@ -61,18 +61,24 @@ ApiError request_error_to_api_error(const ninfer::RequestError& exception, Const
         error.code   = "invalid_media";
         break;
     case ninfer::RequestErrorKind::InvalidConstraint:
+        error.status = 400;
+        error.param  = "grammar";
+        error.code   = "grammar_invalid";
+        break;
     case ninfer::RequestErrorKind::InvalidGrammar:
+        error.status = 400;
+        error.param  = std::string(constraint_source_param(source));
+        error.code   = "grammar_invalid";
+        break;
     case ninfer::RequestErrorKind::InvalidChoice:
+        error.status = 400;
+        error.param  = std::string(constraint_source_param(source));
+        error.code   = "invalid_choice";
+        break;
     case ninfer::RequestErrorKind::InvalidRegex:
         error.status = 400;
-        if (source == ConstraintSource::JsonSchema ||
-            exception.kind() == ninfer::RequestErrorKind::InvalidJsonSchema) {
-            error.param = "response_format";
-            error.code  = "json_schema_invalid";
-        } else {
-            error.param = "grammar";
-            error.code  = "grammar_invalid";
-        }
+        error.param  = std::string(constraint_source_param(source));
+        error.code   = "invalid_regex";
         break;
     case ninfer::RequestErrorKind::InvalidJsonSchema:
     case ninfer::RequestErrorKind::UnsupportedJsonSchema:
@@ -85,7 +91,7 @@ ApiError request_error_to_api_error(const ninfer::RequestError& exception, Const
         // A mask dead end is a fail-closed constraint rejection, reported with the other
         // constraint errors at 400 and attributed to the originating field (upstream parity).
         error.status = 400;
-        error.param  = source == ConstraintSource::JsonSchema ? "response_format" : "grammar";
+        error.param  = std::string(constraint_source_param(source));
         error.code   = "constraint_dead_end";
         break;
     case ninfer::RequestErrorKind::InvalidToolConstraint:
