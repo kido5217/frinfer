@@ -22,6 +22,7 @@
 #include <vector>
 
 #include "grammar_builder.h"
+#include "json_number.h"
 #include "support/utils.h"
 
 namespace xgrammar {
@@ -44,15 +45,13 @@ struct IntegerSpec {
 };
 
 struct NumberSpec {
-  std::optional<double> minimum;
-  std::optional<double> maximum;
-  std::optional<double> exclusive_minimum;
-  std::optional<double> exclusive_maximum;
+  NumberRange range;
 
   std::string ToString() const;
 };
 
 struct StringSpec {
+  std::vector<std::string> extra_patterns;
   std::optional<std::string> pattern;
   std::optional<std::string> format;
   int min_length = 0;
@@ -70,6 +69,7 @@ struct NullSpec {
 };
 
 struct AnySpec {
+  bool allowed = true;
   std::string ToString() const;
 };
 
@@ -503,6 +503,7 @@ class JSONSchemaConverter {
 
   GrammarBuilder builder_;
   IndentManager indent_manager_;
+  std::string comma_separator_;
   int32_t colon_expr_id_;
   bool any_whitespace_;
   std::optional<int> max_whitespace_cnt_;
@@ -534,13 +535,6 @@ class JSONSchemaConverter {
   std::unordered_map<std::string, int32_t> uri_to_rule_id_;  // For circular reference handling
   RefResolver ref_resolver_;  // Resolves $ref URI to SchemaSpecPtr at generate time
 
-  // Trie over property names, for key patterns that exclude specific properties
-  struct TrieNode {
-    bool is_terminal = false;
-    std::map<uint8_t, TrieNode> children;
-  };
-  int32_t BuildTrieBody(const TrieNode& node, const std::string& rule_name);
-
   // Reused grammar expression ids
   std::optional<int32_t> empty_expr_id_;
   std::optional<int32_t> unsatisfiable_expr_id_;
@@ -551,13 +545,6 @@ class JSONSchemaConverter {
   // Helper for integer/number range regex generation
   static std::string GenerateRangeRegex(std::optional<int64_t> start, std::optional<int64_t> end);
   int32_t GenerateIntegerMultipleOfDFA(int64_t multiple_of, const std::string& rule_name);
-  static std::string GenerateFloatRangeRegex(
-      std::optional<double> start,
-      std::optional<double> end,
-      int precision = 6,
-      bool exclusive_start = false,
-      bool exclusive_end = false
-  );
 
  protected:
   // raw_string selects raw XML parameter text instead of JSON string contents.
@@ -567,12 +554,6 @@ class JSONSchemaConverter {
 
   // Expose for testing
   friend std::string GenerateRangeRegex(std::optional<int64_t> start, std::optional<int64_t> end);
-  friend std::string GenerateFloatRangeRegex(
-      std::optional<double> start,
-      std::optional<double> end,
-      bool exclusive_start,
-      bool exclusive_end
-  );
 };
 
 /*!
@@ -669,19 +650,12 @@ std::string JSONSchemaToEBNF(
 );
 
 /*!
- * \brief Generate regex pattern for integer/float range.
+ * \brief Generate regex pattern for integer range.
  * \param start The start of the range (inclusive). If null assume negative infinity.
  * \param end The end of the range (inclusive). If null assume infinity.
- * \returns The regex pattern that matches integers/floats in the given range.
+ * \returns The regex pattern that matches integers in the given range.
  */
 std::string GenerateRangeRegex(std::optional<int64_t> start, std::optional<int64_t> end);
-
-std::string GenerateFloatRangeRegex(
-    std::optional<double> start,
-    std::optional<double> end,
-    bool exclusive_start = false,
-    bool exclusive_end = false
-);
 
 }  // namespace xgrammar
 

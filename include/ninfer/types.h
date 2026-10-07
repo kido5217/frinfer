@@ -279,6 +279,41 @@ struct GrammarConstraint {
     bool thinking_enabled = false;
 };
 
+// Upstream XGrammar constraint surface adopted by ticket #245. It coexists with GrammarConstraint
+// until the constrained-decoding port switches the request/serve/CLI consumers and retires the
+// fork type.
+enum class OutputConstraintKind : std::uint8_t { Grammar, JsonObject, JsonSchema, Choice, Regex };
+
+// Constrains generated content; Chat reasoning retains the model's framing. Source is owning GBNF,
+// JSON Schema or regex text. Choice owns literal alternatives; JsonObject has no payload.
+struct OutputConstraint {
+    OutputConstraintKind kind = OutputConstraintKind::Grammar;
+    std::string source;
+    std::vector<std::string> choices;
+
+    [[nodiscard]] static OutputConstraint grammar(std::string source) {
+        return {OutputConstraintKind::Grammar, std::move(source), {}};
+    }
+
+    [[nodiscard]] static OutputConstraint json_object() {
+        return {OutputConstraintKind::JsonObject, {}, {}};
+    }
+
+    [[nodiscard]] static OutputConstraint json_schema(std::string source) {
+        return {OutputConstraintKind::JsonSchema, std::move(source), {}};
+    }
+
+    [[nodiscard]] static OutputConstraint choice(std::vector<std::string> values) {
+        return {OutputConstraintKind::Choice, {}, std::move(values)};
+    }
+
+    [[nodiscard]] static OutputConstraint regex(std::string pattern) {
+        return {OutputConstraintKind::Regex, std::move(pattern), {}};
+    }
+
+    bool operator==(const OutputConstraint&) const = default;
+};
+
 struct RequestOptions {
     ExecutionOptions execution;
     StopPolicy stop;
@@ -520,6 +555,16 @@ struct PromptInput {
 };
 
 enum class RequestErrorKind : std::uint8_t {
+    // Upstream constraint kinds (ticket #245). InvalidConstraint remains for the fork constraint
+    // path until that path is retired.
+    InvalidToolConstraint,
+    InvalidGrammar,
+    InvalidChoice,
+    InvalidRegex,
+    InvalidJsonSchema,
+    UnsupportedJsonSchema,
+    UnsatisfiableJsonSchema,
+    ConstraintDeadEnd,
     ContextLengthExceeded,
     ThinkingBudgetCapacityInsufficient,
     MediaBudgetExceeded,
@@ -531,15 +576,23 @@ enum class RequestErrorKind : std::uint8_t {
     Unavailable,
 };
 
+enum class RequestErrorSource : std::uint8_t { OutputConstraint, Tools };
+
 class RequestError final : public std::invalid_argument {
 public:
-    RequestError(RequestErrorKind kind, std::string message)
-        : std::invalid_argument(std::move(message)), kind_(kind) {}
+    RequestError(RequestErrorKind kind, std::string message, std::string pointer = {},
+                 RequestErrorSource source = RequestErrorSource::OutputConstraint)
+        : std::invalid_argument(std::move(message)), kind_(kind), pointer_(std::move(pointer)),
+          source_(source) {}
 
     [[nodiscard]] RequestErrorKind kind() const noexcept { return kind_; }
+    [[nodiscard]] RequestErrorSource source() const noexcept { return source_; }
+    [[nodiscard]] const std::string& pointer() const noexcept { return pointer_; }
 
 private:
     RequestErrorKind kind_;
+    std::string pointer_;
+    RequestErrorSource source_;
 };
 
 struct PromptSummary {
@@ -840,6 +893,26 @@ struct ThinkingBudgetStats {
     // Complete tokenizer-derived target-control suffix committed by Engine.
     std::uint32_t injected_tokens = 0;
     bool applied                  = false;
+};
+
+// Upstream constraint diagnostics adopted by ticket #245.
+enum class ConstraintCacheAccess : std::uint8_t { Hit, Built, Waited };
+enum class ConstraintOutputBranch : std::uint8_t { Undecided, Content, Tools };
+
+// State describes the committed output language, including an assistant continuation prefix.
+// Work includes speculative lookahead that was subsequently rolled back. Times are subintervals
+// of existing request timings, not extra latency to add to them.
+struct ConstraintObservation {
+    ConstraintOutputBranch branch   = ConstraintOutputBranch::Undecided;
+    bool complete                   = false;
+    bool terminated                 = false;
+    ConstraintCacheAccess cache     = ConstraintCacheAccess::Hit;
+    bool timings_collected          = false;
+    double prepare_seconds          = 0.0;
+    double mask_seconds             = 0.0;
+    double matcher_seconds          = 0.0;
+    std::uint64_t mask_positions    = 0;
+    std::uint64_t mask_upload_bytes = 0;
 };
 
 enum class PrefixReusePath : std::uint8_t {

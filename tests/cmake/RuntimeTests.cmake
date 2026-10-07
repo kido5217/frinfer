@@ -18,7 +18,15 @@ ninfer_add_test(ninfer_sampling_defaults_test
   SOURCES "${CMAKE_CURRENT_LIST_DIR}/../runtime/test_sampling_defaults.cpp"
   LIBRARIES ninfer_engine ninfer_core)
 
-# Upstream XGrammar grammar core adopted as a self-contained module (ticket #245).
+# Upstream XGrammar constraint core adopted as a self-contained module (ticket #245).
 ninfer_add_test(ninfer_text_grammar_test
   SOURCES "${CMAKE_CURRENT_LIST_DIR}/../test_grammar.cpp"
   LIBRARIES ninfer_text_grammar)
+
+ninfer_add_test(ninfer_regex_choice_test
+  SOURCES "${CMAKE_CURRENT_LIST_DIR}/../text/test_regex_choice.cpp"
+  LIBRARIES ninfer_text_grammar ninfer::json)
+
+ninfer_add_test(ninfer_json_schema_test
+  SOURCES "${CMAKE_CURRENT_LIST_DIR}/../text/test_json_schema.cpp"
+  LIBRARIES ninfer_text_grammar ninfer::json)
