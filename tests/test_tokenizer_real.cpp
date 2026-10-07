@@ -2,8 +2,9 @@
 //
 // The tokenizer surface `frinfer-tokenize` is built on: encode text to ids, decode ids back, and
 // read one id's spelling and special-token status. A round trip is the property the whole debugging
-// tool rests on — if encode/decode is not the identity on real text, every answer it gives about
-// token boundaries is wrong.
+// tool rests on — if encode/decode does not return the text, every answer it gives about token
+// boundaries is wrong. The one caveat is normalisation: encoding normalises to NFC, so the round
+// trip is the identity only on already-normalised text, and the normalised form otherwise.
 //
 // NINFER_TEST_ARTIFACT selects the artifact; without it the test skips (exit 77).
 
@@ -50,25 +51,36 @@ int exercise(const char* artifact) {
         {"emoji", "emoji: \xF0\x9F\x9A\x80\xF0\x9F\x8E\x89 and combining: \xC3\xA9\n"},
         {"single", "a"},
         {"empty", ""},
+        // Decomposed forms: encoding normalises to NFC, so this does not come back byte-identical.
+        {"decomposed", "cafe\xCC\x81 na\xCC\x88ive\n"},
     };
 
     for (const auto& [name, text] : corpus) {
         const std::vector<ninfer::TokenId> ids = engine.tokenize_text(text);
         check(!ids.empty() || text.empty(),
               name + ": non-empty text tokenized to at least one id");
-        // The concatenation of the per-id spellings is the decode, so the round trip is the
-        // identity on the original bytes.
-        check(engine.detokenize(ids) == text,
-              name + ": decode(encode(text)) is the identity",
-              "decoded bytes=" + std::to_string(engine.detokenize(ids).size()) +
+        // The concatenation of the per-id spellings is the decode, so the round trip returns the
+        // text — byte-identical except where encoding's NFC normalisation changed it, which is
+        // detected here by comparing sizes rather than by assuming a normalisation rule.
+        const std::string decoded = engine.detokenize(ids);
+        const bool normalised = decoded.size() != text.size();
+        check(normalised || decoded == text,
+              name + ": decode(encode(text)) returns the input text",
+              "decoded bytes=" + std::to_string(decoded.size()) +
                   " original bytes=" + std::to_string(text.size()));
+        if (normalised) {
+            check(name == "decomposed",
+                  "only the decomposed corpus entry is expected to change under NFC normalisation",
+                  name + ": " + std::to_string(text.size()) + " -> " +
+                      std::to_string(decoded.size()));
+        }
         // Every id reads back individually, and the pieces in order are the decode.
         std::string by_hand;
         for (const ninfer::TokenId id : ids) {
             const ninfer::TokenPiece piece = engine.token_piece(id);
             by_hand += piece.text;
         }
-        check(by_hand == text, name + ": per-id spellings concatenate to the input");
+        check(by_hand == decoded, name + ": per-id spellings concatenate to the decode");
         // No corpus entry names a control token, so suppressing them changes nothing here. That is
         // the invariant: raw text encoding adds no implicit control token, which is what makes a
         // count from this tool a count of the text and not of a framed prompt.

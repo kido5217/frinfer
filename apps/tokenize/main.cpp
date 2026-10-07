@@ -78,7 +78,10 @@ std::string usage_text() {
            "--pieces adds one 'id -> piece' line per token, --count prints the token count to\n"
            "stderr, and --ids-only makes stdout a bare Python-parseable id list.\n"
            "--decode-text is the inverse direction: give ids, receive text on stdout. Ids may be\n"
-           "separated by whitespace, commas, or newlines, so a copy of --pieces output parses.\n"
+           "separated by whitespace, commas, or newlines, so the output of --ids-only parses\n"
+           "directly as its input.\n"
+           "Encoding normalises text to NFC, so a decode reproduces the normalised form rather than\n"
+           "the exact input bytes when the input was not already normalised.\n"
            "--skip-special-tokens suppresses control-token spellings when decoding; the spelling\n"
            "of a special token is otherwise shown verbatim so framing is auditable.\n"
            "Startup milestones and diagnostics go to stderr; only the result goes to stdout.\n";
@@ -87,6 +90,17 @@ std::string usage_text() {
 std::string require_value(int argc, char** argv, int& index, std::string_view flag) {
     if (++index >= argc) { throw std::invalid_argument(std::string(flag) + " needs a value"); }
     return argv[index];
+}
+
+// A range-checked integer. std::stoi would throw std::out_of_range, which is not an
+// std::invalid_argument and so would escape the option diagnostics and abort the process.
+int parse_integer(std::string_view text, std::string_view label) {
+    int value              = 0;
+    const auto [end, error] = std::from_chars(text.data(), text.data() + text.size(), value);
+    if (error != std::errc{} || end != text.data() + text.size()) {
+        throw std::invalid_argument("invalid " + std::string(label) + ": " + std::string(text));
+    }
+    return value;
 }
 
 std::string read_file(const std::filesystem::path& path, std::string_view what) {
@@ -125,7 +139,7 @@ std::vector<ninfer::TokenId> parse_ids(std::string_view text) {
         }
         if (position >= text.size()) { break; }
         const std::size_t start = position;
-        if (text[position] == '-' || text[position] == '+') { ++position; }
+        if (text[position] == '-') { ++position; }
         while (position < text.size() && text[position] >= '0' && text[position] <= '9') {
             ++position;
         }
@@ -133,10 +147,12 @@ std::vector<ninfer::TokenId> parse_ids(std::string_view text) {
             throw std::invalid_argument("token id list contains a non-numeric entry at offset " +
                                         std::to_string(start));
         }
-        int value             = 0;
-        const char* first     = text.data() + start;
-        const char* last      = text.data() + position;
-        const auto parsed     = std::from_chars(first, last, value);
+        int value         = 0;
+        const char* first = text.data() + start;
+        const char* last  = text.data() + position;
+        // A leading '+' is rejected above rather than scanned past, so this is only ever a genuine
+        // range failure and the message says so.
+        const auto parsed = std::from_chars(first, last, value);
         if (parsed.ec != std::errc{} || parsed.ptr != last) {
             throw std::invalid_argument("token id out of range: " + std::string(first, last));
         }
@@ -187,7 +203,7 @@ Options parse_options(int argc, char** argv) {
         } else if (arg == "--skip-special-tokens") {
             options.skip_special_tokens = true;
         } else if (arg == "--device") {
-            options.device = std::stoi(require_value(argc, argv, i, "--device"));
+            options.device = parse_integer(require_value(argc, argv, i, "--device"), "--device");
         } else if (arg == "--log-level") {
             const std::string level = require_value(argc, argv, i, "--log-level");
             if (level == "trace") {
@@ -224,6 +240,17 @@ Options parse_options(int argc, char** argv) {
     if (!options.decode_text && !text_set) {
         throw std::invalid_argument(
             "pass exactly one text input (--text, --file or --stdin), or --decode-text with ids");
+    }
+    // Direction and output shape are checked against each other here rather than letting the
+    // handler drop a flag: a silently ignored --pieces or --text is how a caller ends up reading
+    // the wrong output and trusting it.
+    if (options.decode_text && text_set) {
+        throw std::invalid_argument(
+            "--decode-text reads ids, not text: --text, --file and --stdin do not apply");
+    }
+    if (options.decode_text && (options.show_pieces || options.ids_only)) {
+        throw std::invalid_argument("--pieces and --ids-only describe an encoded prompt, so they "
+                                    "do not apply to --decode-text");
     }
     if (options.artifact.extension() != ".ninfer") {
         throw std::invalid_argument("model artifact must be a .ninfer file");
@@ -346,7 +373,7 @@ int main(int argc, char** argv) {
             }
             if (!ids.empty()) { std::cout << '\n'; }
         } else {
-            std::cout << engine.detokenize(ids) << '\n';
+            std::cout << engine.detokenize(ids, options.skip_special_tokens) << '\n';
         }
         if (options.show_count) { std::cerr << "tokens: " << ids.size() << '\n'; }
         return 0;

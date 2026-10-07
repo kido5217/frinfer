@@ -18,7 +18,6 @@ debugging primitive for prompt framing, chat-template drift, and token-budget qu
 ```
 
 ```
-# HELP …  no; the piece view is one line per token:
 727 -> 'def'
 281 -> ' f'
 2007 -> '(x'
@@ -26,9 +25,10 @@ debugging primitive for prompt framing, chat-template drift, and token-budget qu
 198 -> '\n'
 ```
 
-`--ids-only` makes stdout a bare id list, `--text` takes a string, `--stdin` reads a pipe. Pieces are
-quoted and control bytes are escaped (`\n`, `\t`, `\xNN`) so one token is always one line and a
-boundary is visible in the output rather than invisible in the terminal.
+`--text` takes a string, `--stdin` reads a pipe, `--ids-only` makes stdout a bare id list, and
+`--count` prints the token count to stderr. Pieces are quoted and control bytes escaped (`\n`,
+`\t`, `\xNN`), so one token is always one line and a boundary is visible in the output rather than
+invisible in the terminal.
 
 Decoding runs the other way:
 
@@ -37,25 +37,31 @@ Decoding runs the other way:
   --decode-text --ids-file ids.txt
 ```
 
-Ids may be separated by whitespace, commas, or newlines, so the output of `--pieces` parses directly.
+Ids may be separated by whitespace, commas, or newlines, so the output of `--ids-only` is valid
+input here. `--pieces` output is not: its lines carry the spelling after the id.
 
 ### Special tokens
 
-Encoding applies no chat template and adds no implicit control token, so a count here is a count of
-the text you passed — not of a request's framed prompt. A chat turn's count is larger, by the
-template's own tokens.
+Encoding applies no chat template and adds no implicit control token, so a count here counts the text
+you passed, not a framed prompt — a chat turn's count is larger, by the template's own tokens. That
+difference is not a constant: the tokenizer merges across the boundary between the template's last
+token and your first character, so the overhead depends on your text.
 
-A control token you name explicitly is still recognised, and it is one id flagged special:
+A control token you name explicitly is still recognised, as one id flagged special, and `--pieces`
+shows its spelling so prompt framing can be audited verbatim. Generated content is published without
+the terminal marker, so to drop it from a decode pass `--skip-special-tokens`; the flag applies to
+both directions and without it the decode is faithful, ending with the marker's spelling.
 
-- `--pieces` shows its spelling, so prompt framing can be audited verbatim. The checkpoint's framing
-  markers (`<|im_start|>`, `<|im_end|>`) are ordinary ids from a tokenizer's point of view and are
-  reported this way.
-- Generated content is published without the terminal marker. To reproduce a request's published
-  text from its ids, decode with `--skip-special-tokens`; without it the decode is faithful and ends
-  with the marker's spelling.
+Reproducing a *request's published text* from its ids goes further than that, and only holds under
+the default stop policy: the publish path also rolls back a stop token's contribution and cuts at a
+stop string, which a plain decode does not. For a request stopped by a non-special token id or by a
+stop string, the decoded text carries content the client never received.
+
+Encoding normalises its input to NFC, so decoding reproduces the normalised form rather than the
+exact bytes when the input was not already normalised — a decomposed `café` comes back composed.
 
 An id outside the checkpoint vocabulary is rejected by name (`token is outside the checkpoint
-vocabulary`), not silently decoded.
+vocabulary`), and a malformed id list is rejected before the model loads.
 
 The tool loads the artifact through the same public Engine route as `frinfer` and
 `frinfer-perplexity`, so it pays for a weight load. There is no tokenizer-only load path.

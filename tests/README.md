@@ -134,6 +134,15 @@ NINFER_TEST_ARTIFACT=$PWD/out/qwen3_6_27b.ninfer \
   ctest --test-dir build -R ninfer_qwen3_5_prefix_real_test --output-on-failure
 ```
 
+- `ninfer_tokenizer_real_test` — encode/decode round-trip and per-id spelling on a real
+  artifact:
+
+  ```bash
+  NINFER_TEST_ARTIFACT=$HOME/.cache/frinfer/hf/neroued-Qwen3.8-27B-nvfp4-NInfer/main/qwen3_8_27b_nvfp4.ninfer \
+    ctest --preset dev -R ninfer_tokenizer_real_test --output-on-failure
+  ```
+
+
 The causal-scoring integration test uses the same artifact variable and checks a full 1,024-column
 score tile, overlapping target suffixes, and repeated-window State/KV isolation:
 

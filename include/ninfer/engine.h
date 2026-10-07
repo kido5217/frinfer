@@ -109,7 +109,9 @@ public:
     // Artifact-tokenizer raw-text encoding. No chat template or implicit special token is added.
     [[nodiscard]] std::vector<TokenId> tokenize_text(std::string_view text) const;
 
-    // Artifact-tokenizer decoding, the inverse of tokenize_text. `skip_special_tokens` drops
+    // Artifact-tokenizer decoding, the inverse of tokenize_text, up to the normalisation
+    // tokenize_text applies: encoding normalises to NFC, so a decode of a non-normalised text
+    // reproduces the normalised form rather than the input bytes. `skip_special_tokens` drops
     // control-token spellings, which is what a caller rendering generated text wants and what a
     // caller auditing a prompt's framing does not.
     [[nodiscard]] std::string detokenize(std::span<const TokenId> ids,
