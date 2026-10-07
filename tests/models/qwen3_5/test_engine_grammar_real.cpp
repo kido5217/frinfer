@@ -22,7 +22,8 @@ ninfer::PromptInput prompt(bool thinking = false) {
 
 ninfer::RequestOptions literal(const std::string& answer, float temperature = 0.0f) {
     ninfer::RequestOptions request;
-    request.grammar                           = "root ::= " + nlohmann::json(answer).dump();
+    request.constraint =
+        ninfer::GrammarConstraint{.gbnf = "root ::= " + nlohmann::json(answer).dump()};
     request.execution.requested_output_tokens = 160;
     request.execution.sampling.temperature    = temperature;
     request.execution.sampling.top_k          = 20;
@@ -148,7 +149,7 @@ int main(int argc, char** argv) {
         }
 
         auto truncated                              = literal(std::string(1024, 'a'));
-        truncated.grammar                           = "root ::= \"a\"{1024}";
+        truncated.constraint->gbnf                   = "root ::= \"a\"{1024}";
         truncated.execution.requested_output_tokens = 2;
         auto partial = engine.generate(engine.prepare(prompt()), truncated);
         require(partial.finish_reason == ninfer::FinishReason::OutputLimit &&
@@ -184,7 +185,7 @@ int main(int argc, char** argv) {
         }
 
         auto invalid    = literal("yes");
-        invalid.grammar = "root ::= missing";
+        invalid.constraint->gbnf = "root ::= missing";
         bool rejected   = false;
         try {
             (void)engine.submit(engine.prepare(prompt()), invalid);

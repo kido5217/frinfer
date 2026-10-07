@@ -36,6 +36,13 @@ struct ChatParseOptions {
     // Thinking enabled: the generation prompt already opened the reasoning block, so the turn
     // starts in the reasoning channel (R1).
     bool thinking_enabled = true;
+    // Constrained/exact framing (ticket #247): the grammar owns the byte stream, including the
+    // canonical reasoning close. The parser then drops exactly the close framing bytes and holds
+    // back nothing else, so grammar-required leading whitespace in the answer survives.
+    bool exact_framing = false;
+    // The bytes after the thinking close marker that belong to the framing (the tail of the
+    // canonical close serialization). Only meaningful when exact_framing is set.
+    std::string_view close_framing = {};
     // Presentation bound on emitted function names (B3).
     std::size_t tool_name_max_length = 128;
 };

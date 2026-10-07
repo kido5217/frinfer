@@ -5,6 +5,7 @@
 #include "models/qwen3_5/frontend/tokenizer.h"
 #include "models/qwen3_5/frontend/tool_call_parser.h"
 #include "text/unicode.h"
+
 #include <algorithm>
 #include <array>
 #include <iterator>
@@ -19,6 +20,14 @@ namespace ninfer::models::qwen3_5 {
 namespace {
 namespace fi                                = frontend;
 constexpr std::string_view kUtf8Replacement = "\xef\xbf\xbd";
+
+// Bytes of the canonical reasoning close that follow the thinking close marker; the exact-framing
+// parser drops exactly these and nothing else (ticket #247).
+constexpr std::string_view kReasoningCloseMarker = "</think>";
+constexpr std::string_view kReasoningCloseFraming =
+    fi::kCanonicalReasoningCloseSerialization.substr(
+        fi::kCanonicalReasoningCloseSerialization.find(kReasoningCloseMarker) +
+        kReasoningCloseMarker.size());
 
 std::size_t channel_index(OutputChannel channel) noexcept {
     return channel == OutputChannel::Reasoning ? 0 : 1;
@@ -289,6 +298,8 @@ public:
           raw_presentation(output.raw), split_reasoning(starts_in_reasoning && !output.raw),
           core(output.raw ? nullptr : std::move(tool_call_output_),
                fi::ChatParseOptions{.thinking_enabled     = starts_in_reasoning,
+                                    .exact_framing        = grammar_ != nullptr,
+                                    .close_framing        = kReasoningCloseFraming,
                                     .tool_name_max_length = output.tool_name_max_length}) {
         if (thinking_.budget && *thinking_.budget == 0) {
             throw std::invalid_argument("thinking budget must be positive");
