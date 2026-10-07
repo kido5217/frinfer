@@ -109,6 +109,16 @@ public:
     // Artifact-tokenizer raw-text encoding. No chat template or implicit special token is added.
     [[nodiscard]] std::vector<TokenId> tokenize_text(std::string_view text) const;
 
+    // Artifact-tokenizer decoding, the inverse of tokenize_text. `skip_special_tokens` drops
+    // control-token spellings, which is what a caller rendering generated text wants and what a
+    // caller auditing a prompt's framing does not.
+    [[nodiscard]] std::string detokenize(std::span<const TokenId> ids,
+                                         bool skip_special_tokens = false) const;
+
+    // One id's vocabulary spelling and whether it is a special token. The id must be in the
+    // checkpoint vocabulary.
+    [[nodiscard]] TokenPiece token_piece(TokenId id) const;
+
     // Returns log p(tokens[i] | tokens[0..i)) for i in [first_target,tokens.size()).
     [[nodiscard]] std::vector<float> score_tokens(std::vector<TokenId> tokens,
                                                   std::uint32_t first_target);

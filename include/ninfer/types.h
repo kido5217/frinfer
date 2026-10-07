@@ -18,6 +18,13 @@ namespace ninfer {
 
 using TokenId = std::int32_t;
 
+// One token id's vocabulary spelling. `special` marks a control token whose spelling is normally
+// suppressed when rendering text, so a caller can show prompt framing verbatim or filter it.
+struct TokenPiece {
+    std::string text;
+    bool special = false;
+};
+
 inline constexpr std::uint32_t kMaximumConcurrency               = 8;
 inline constexpr std::size_t kMaximumContextCacheSessionKeyBytes = 256;
 inline constexpr std::size_t kMaximumExplicitPromptCacheMarkers  = 4;

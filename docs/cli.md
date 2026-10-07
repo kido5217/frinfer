@@ -5,6 +5,61 @@ download an artifact using the [project README](../README.md) before following t
 
 The examples use Qwen3.8-27B NVFP4 with FP8 KV storage.
 
+## Tokenizer
+
+`build/apps/frinfer-tokenize` answers "how does this text tokenize?" on the artifact's own tokenizer:
+it encodes text to token ids, decodes ids back to text, and reports each id's spelling. This is the
+debugging primitive for prompt framing, chat-template drift, and token-budget questions.
+
+```bash
+# How many tokens is this, and where do the boundaries fall?
+./build/apps/frinfer-tokenize models/qwen3_8_27b_nvfp4.ninfer \
+  --file prompt.md --pieces --count
+```
+
+```
+# HELP …  no; the piece view is one line per token:
+727 -> 'def'
+281 -> ' f'
+2007 -> '(x'
+1590 -> '):'
+198 -> '\n'
+```
+
+`--ids-only` makes stdout a bare id list, `--text` takes a string, `--stdin` reads a pipe. Pieces are
+quoted and control bytes are escaped (`\n`, `\t`, `\xNN`) so one token is always one line and a
+boundary is visible in the output rather than invisible in the terminal.
+
+Decoding runs the other way:
+
+```bash
+./build/apps/frinfer-tokenize models/qwen3_8_27b_nvfp4.ninfer \
+  --decode-text --ids-file ids.txt
+```
+
+Ids may be separated by whitespace, commas, or newlines, so the output of `--pieces` parses directly.
+
+### Special tokens
+
+Encoding applies no chat template and adds no implicit control token, so a count here is a count of
+the text you passed — not of a request's framed prompt. A chat turn's count is larger, by the
+template's own tokens.
+
+A control token you name explicitly is still recognised, and it is one id flagged special:
+
+- `--pieces` shows its spelling, so prompt framing can be audited verbatim. The checkpoint's framing
+  markers (`<|im_start|>`, `<|im_end|>`) are ordinary ids from a tokenizer's point of view and are
+  reported this way.
+- Generated content is published without the terminal marker. To reproduce a request's published
+  text from its ids, decode with `--skip-special-tokens`; without it the decode is faithful and ends
+  with the marker's spelling.
+
+An id outside the checkpoint vocabulary is rejected by name (`token is outside the checkpoint
+vocabulary`), not silently decoded.
+
+The tool loads the artifact through the same public Engine route as `frinfer` and
+`frinfer-perplexity`, so it pays for a weight load. There is no tokenizer-only load path.
+
 ## Text input
 
 ```bash
