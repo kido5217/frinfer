@@ -310,10 +310,10 @@ int main(int argc, char** argv) {
     try {
 
         ninfer::PromptInput input =
-            cli.messages_path.empty()
-                ? ninfer::product::prompt_from_text(cli.prompt, cli.enable_thinking)
-                : ninfer::product::prompt_from_messages(cli.messages_path, cli.enable_thinking,
-                                                        cli.enable_vision);
+            cli.prompt_source == ninfer::cli::Options::PromptSource::Messages
+                ? ninfer::product::prompt_from_messages(cli.messages_path, cli.enable_thinking,
+                                                        cli.enable_vision)
+                : ninfer::product::prompt_from_text(cli.prompt, cli.enable_thinking);
         input.options.reasoning_effort = cli.reasoning_effort;
 
         ninfer::RequestOptions request;

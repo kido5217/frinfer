@@ -17,8 +17,28 @@ The examples use Qwen3.8-27B NVFP4 with FP8 KV storage.
   --lm-head-draft
 ```
 
-Exactly one of `--prompt` and `--messages` is required. The CLI normally omits `--kv-capacity`, so
-the shared Main Text KV pool follows the example's 32,768-token `--max-context`.
+Exactly one prompt source is required: `--prompt <text>`, `--prompt-file <file>`, `--prompt-stdin`, or
+`--messages <messages.json>`. Naming two is an error that reports both flags, rather than one
+silently winning:
+
+```bash
+./build/apps/frinfer models/qwen3_8_27b_nvfp4.ninfer \
+  --prompt-file tools/prompts/review.md --max-context 32768 --max-new 8192
+
+git show HEAD:src/models/qwen3_5/qwen3_5.py | ./build/apps/frinfer \
+  models/qwen3_8_27b_nvfp4.ninfer --prompt-stdin --max-context 32768 --max-new 8192
+```
+
+`--prompt-file` and `--prompt-stdin` read the plain-text body verbatim: no escape processing, no
+trailing-newline trimming, no re-encoding. The same bytes produce the same prompt and the same token
+count as `--prompt` with those bytes, which is the property that makes a file or a pipe usable for a
+long, awkward prompt (code, tabs, newlines, CJK) without shell quoting. An empty file or empty stdin
+is still a supplied prompt; the request fails on an empty context rather than silently becoming a
+bare completion. `--messages` remains the route for structured multi-turn input and applies the
+chat template; the two text sources do not.
+
+The CLI normally omits `--kv-capacity`, so the shared Main Text KV pool follows the example's
+32,768-token `--max-context`.
 
 Answer content is streamed to stdout. Human-readable startup milestones and runtime errors are
 written to stderr without service timestamps. Reasoning and the CLI result report (timings,

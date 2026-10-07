@@ -46,6 +46,78 @@ int check(bool condition, const char* message) {
     return 1;
 }
 
+// --prompt-file and --prompt-stdin must produce the identical prompt the inline flag produces for
+// the identical bytes: that equivalence is the whole point of the flags, so it is asserted on the
+// bytes themselves rather than on "it parsed".
+int test_prompt_sources() {
+    int failures                                   = 0;
+    using ninfer::cli::Options;
+    const std::string awkward = "line one\ttab\nline two \\backslash\\ \"quoted\" 'single' 日本語\n";
+    const std::filesystem::path file = write_temp("ninfer-prompt-equivalence.txt", awkward);
+
+    const Options inline_prompt =
+        parse({"ninfer-cli", "model.ninfer", "--prompt", awkward});
+    const Options file_prompt =
+        parse({"ninfer-cli", "model.ninfer", "--prompt-file", file.string()});
+    failures += check(inline_prompt.prompt_source == Options::PromptSource::Inline &&
+                          file_prompt.prompt_source == Options::PromptSource::File,
+                      "the prompt source was not recorded");
+    failures += check(inline_prompt.prompt == file_prompt.prompt,
+                      "--prompt-file did not reproduce the inline prompt byte for byte");
+    failures += check(file_prompt.prompt == awkward,
+                      "--prompt-file did not read the file verbatim");
+    // Verbatim means verbatim: a trailing newline is content, and a backslash is a backslash.
+    const std::filesystem::path trailing = write_temp("ninfer-prompt-trailing.txt", "hello\n");
+    failures += check(parse({"ninfer-cli", "model.ninfer", "--prompt-file", trailing.string()})
+                              .prompt == "hello\n",
+                      "--prompt-file stripped or kept a trailing newline incorrectly");
+    const std::filesystem::path empty = write_temp("ninfer-prompt-empty.txt", "");
+    failures += check(
+        parse({"ninfer-cli", "model.ninfer", "--prompt-file", empty.string()}).prompt_source ==
+            Options::PromptSource::File,
+        "an empty --prompt-file was treated as no prompt at all");
+
+    // Precedence: exactly one source, and naming two names both rather than silently picking one.
+    failures += check(rejection_message([] {
+                          (void)parse({"ninfer-cli", "model.ninfer"});
+                      }) == "pass exactly one prompt source: --prompt, --prompt-file, "
+                             "--prompt-stdin or --messages",
+                      "a command with no prompt source must name every accepted source");
+    failures += check(rejection_message([&] {
+                          (void)parse({"ninfer-cli", "model.ninfer", "--prompt", "x",
+                                       "--prompt-file", file.string()});
+                      }).find("--prompt conflicts with --prompt-file") != std::string::npos,
+                      "--prompt with --prompt-file must name both sources in order");
+    failures += check(rejection_message([] {
+                          (void)parse({"ninfer-cli", "model.ninfer", "--prompt-stdin",
+                                       "--messages", "m.json"});
+                      }).find("--prompt-stdin conflicts with --messages") != std::string::npos,
+                      "--prompt-stdin with --messages must name both sources in order");
+    failures += check(rejects([] {
+                          (void)parse({"ninfer-cli", "model.ninfer", "--prompt-file",
+                                       "missing-file.txt"});
+                      }),
+                      "a missing --prompt-file was accepted");
+    failures += check(rejects([] {
+                          (void)parse({"ninfer-cli", "model.ninfer", "--prompt-stdin",
+                                       "--prompt", "x"});
+                      }),
+                      "a repeated prompt source was accepted");
+
+    const std::string cli_help = ninfer::cli::usage_text("ninfer-cli");
+    failures += check(cli_help.find("--prompt-file") != std::string::npos &&
+                          cli_help.find("--prompt-stdin") != std::string::npos,
+                      "CLI help omits a prompt-from-file or prompt-from-stdin flag");
+    // --cache-list exits before a prompt is required, so the source rule must not break it.
+    failures += check(parse({"ninfer-cli", "--cache-list"}).acquisition.cache_list,
+                      "--cache-list stopped requiring a prompt source");
+    std::error_code ignored;
+    std::filesystem::remove(file, ignored);
+    std::filesystem::remove(trailing, ignored);
+    std::filesystem::remove(empty, ignored);
+    return failures;
+}
+
 } // namespace
 
 int main() {
@@ -284,5 +356,6 @@ int main() {
     std::error_code ignored;
     std::filesystem::remove(grammar_path, ignored);
     std::filesystem::remove(schema_path, ignored);
+    failures += test_prompt_sources();
     return failures == 0 ? 0 : 1;
 }

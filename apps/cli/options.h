@@ -7,6 +7,7 @@
 #include <filesystem>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace ninfer::cli {
@@ -46,10 +47,23 @@ struct Options {
     bool help_requested    = false;
     bool version_requested = false;
 
+    // Which flag supplied the prompt. Exactly one source is admitted; an empty --prompt-file or an
+    // empty --prompt-stdin is still a supplied source, which an empty --prompt string is not.
+    enum class PromptSource : std::uint8_t {
+        None,
+        Inline,
+        File,
+        Stdin,
+        Messages,
+    };
+
     std::filesystem::path artifact_path;
     ModelAcquisitionOptions acquisition;
     std::filesystem::path chat_template_path;
+    PromptSource prompt_source = PromptSource::None;
+    // The resolved prompt text for Inline, File and Stdin; empty for Messages.
     std::string prompt;
+    std::filesystem::path prompt_file_path;
     std::filesystem::path messages_path;
 
     std::uint32_t max_new        = 128;
@@ -88,5 +102,8 @@ struct Options {
 // requested it (grammar_invalid for --grammar/--grammar-file, json_schema_invalid for
 // --json-schema/--json-schema-file).
 [[nodiscard]] const char* constraint_error_code(ConstraintSource source) noexcept;
+
+// Human-readable flag name for a prompt source, for the exactly-one diagnostic.
+[[nodiscard]] std::string_view prompt_source_flag(Options::PromptSource source) noexcept;
 
 } // namespace ninfer::cli
