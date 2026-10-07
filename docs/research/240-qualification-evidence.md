@@ -13,7 +13,7 @@ state (clean worktrees), not a scratch tree.
 | `tmp/240-qual` HEAD | `8c4757c7` | merge recording upstream `81c8ce09` ancestry (`-s ours`) |
 | `tmp/240-qual-c` cherry-pick tips | `4ed5750c` (rope), `9169d808` (norm+moe), `ba3c9963` (attention) | upstream commits applied |
 | `tmp/240-qual-c` reconciliation | `96701fde` | fork YaRN/NVFP4 re-applied onto `DeviceExecutionView` |
-| `tmp/240-qual-c` HEAD | `66e12d3e` | merge recording upstream `81c8ce09` ancestry (`-s ours`) |
+| `tmp/240-qual-c` ancestry merge | `66e12d3e` | merge recording upstream `81c8ce09` ancestry (`-s ours`); branch tip is the commit that introduces *this* evidence file |
 
 `git merge-base --is-ancestor` holds for `a667efdd`, `417eb3d6`, `e621c7d6` on `tmp/240-qual-c`,
 and for `cf91c818` on `tmp/240-qual`. `git diff upstream/master -- src/ops/linear` is empty on
@@ -23,6 +23,10 @@ The ancestry is recorded with `git merge --no-ff -s ours 81c8ce09`: the tree kee
 targeted commits (the other upstream groups are deferred), while the upstream commit objects become
 real ancestors. This is why the upstream SHAs verify with `--is-ancestor` even though the applied
 changes were produced by cherry-pick.
+
+Branch tips at push: `tmp/240-qual` = `8c4757c7` (exact, no later commits); `tmp/240-qual-c` = the
+commit containing this file (the merged ancestry tip `66e12d3e` plus this doc commit) —
+`git rev-parse origin/tmp/240-qual-c`.
 
 Environment: RTX 5090, `sm_count=170`, cc 12.0 (`sm_120a`); driver 595.91.07, CUDA 13.1 devShell.
 SM count probe (`cudaGetDeviceProperties`): `name=NVIDIA GeForce RTX 5090 sm_count=170 cc=12.0`.
