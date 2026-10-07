@@ -12,6 +12,7 @@ add_library(ninfer_serve STATIC
   anthropic_messages_response.cpp
   anthropic_messages_http.cpp
   openai_responses_store.cpp
+  prometheus_metrics.cpp
   reasoning_control.cpp
   translate.cpp
   generation_service.cpp

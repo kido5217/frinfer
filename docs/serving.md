@@ -64,6 +64,7 @@ selected for this process.
 | Method and path | Behavior |
 |---|---|
 | `GET /health` | Engine readiness |
+| `GET /metrics` | Prometheus exposition of the live counters (`--metrics`) |
 | `GET /v1/models` | configured OpenAI model alias and effective `max_model_len` |
 | `GET /v1/models/{id}` | lookup of the configured alias and effective `max_model_len` |
 | `POST /v1/chat/completions` | OpenAI-style chat generation |
@@ -82,6 +83,50 @@ saturation does not make the Engine unavailable. The endpoint remains unauthenti
 
 Every OpenAI-compatible response carries a unique `x-request-id` header, including streaming and
 error responses. Anthropic endpoints use their separate `request-id` contract.
+
+### Prometheus metrics
+
+`--metrics` publishes `GET /metrics` in Prometheus text exposition format 0.0.4. Without the flag
+the endpoint is absent and answers 404 with a message naming the flag, so a deployment that never
+asked for a scrape surface never publishes one. The route is authenticated like every other endpoint
+except `/health`.
+
+A scrape renders one snapshot of the same Engine state the `--request-log-jsonl` `throughput` event
+carries, so a counter can be reconciled against the JSONL record stream instead of being a second,
+independent accounting.
+
+| Metric | Type | Meaning |
+|---|---|---|
+| `frinfer_prompt_tokens_total` | counter | prompt tokens evaluated by prefill, excluding reused checkpoint prefixes |
+| `frinfer_prompt_tokens_reused_total` | counter | prompt tokens served from an existing context-cache checkpoint |
+| `frinfer_generation_tokens_total` | counter | generation tokens committed by decode rounds |
+| `frinfer_prefill_units_total`, `frinfer_control_units_total` | counter | prefill units executed, thinking-control units committed |
+| `frinfer_decode_rounds_total`, `frinfer_decode_row_rounds_total` | counter | compact decode batches, and the decode rows summed over them |
+| `frinfer_requests_started_total` | counter | generation requests a protocol route has begun since startup |
+| `frinfer_main_kv_pages_transferred_{d2h,h2d,d2d}_total` | counter | Main KV pages copied between device and host |
+| `frinfer_host_kv_pressure_{searches,checkpoints_dropped}_total` | counter | context-cache checkpoints examined, and dropped, under KV pressure |
+| `frinfer_requests_{running,prefilling,decode_ready,waiting,materializing,capture_pending,terminal_pending}` | gauge | admitted requests by Engine state |
+| `frinfer_decode_batch_average_rows` | gauge | mean decode rows per compact batch |
+| `frinfer_prompt_tokens_per_second`, `frinfer_generation_tokens_per_second` | gauge | mean throughput over Engine prefill/decode host time |
+| `frinfer_context_capacity_tokens`, `frinfer_main_kv_capacity_pages`, `frinfer_main_kv_occupied_pages`, `frinfer_device_backend_kv_occupied_pages` | gauge | context and device KV sizing and occupancy |
+| `frinfer_host_kv_{capacity,occupied}_bytes`, `frinfer_{device,host}_state_occupied_slots` | gauge | host KV budget and checkpoint occupancy |
+
+Counter and gauge semantics follow Prometheus: counters are cumulative since process start and only
+ever rise, so a rate over them — including the two `*_per_second` gauges — is a mean since startup
+rather than an interval rate. Use the JSONL `throughput` event for interval rates. Metric names are
+`frinfer_`-namespaced: this is the Prometheus *format*, not a name-compatible llama.cpp replica.
+
+The token counters describe Engine work, which is not the same as request work, and reconciling a
+scrape against the JSONL record stream has to account for two exact differences:
+
+- Startup runs a warmup request, so a fresh server already reports non-zero token counters with no
+  `request_start` record behind them. Reconcile a window's delta, not an absolute.
+- `request_done.completion_tokens` counts the first token a request emits from prefill, and
+  `frinfer_generation_tokens_total` counts only decode rounds. One token per request is the
+  difference.
+
+With those accounted for, a window's counter delta equals its `request_done` records exactly, and
+`frinfer_requests_started_total` equals the JSONL `request_start` count exactly.
 
 All three generation SSE endpoints emit the standard `: keep-alive` comment after five seconds
 without a protocol event. The comment is transport-only: SSE clients ignore it, and it does not
@@ -984,6 +1029,7 @@ The table lists executable defaults. The startup example selects a long-context 
 | `--pending-timeout-ms N` | maximum preparation-plus-admission wait | `30000` |
 | `--prefill-chunk N` | text-prefill chunk | `1024` |
 | `--log-stats-interval-ms N` | aggregate throughput report interval; `0` disables it | `5000` |
+| `--metrics` | publish Prometheus metrics on `GET /metrics` | off |
 | `--log-level trace\|debug\|info\|warning\|error\|critical\|off` | pretty stderr verbosity | `info` |
 | `--device N` | CUDA device index | `0` |
 | `--context-cost-presets FILE` | optional runtime context-cost preset registry | generic + compiled defaults |

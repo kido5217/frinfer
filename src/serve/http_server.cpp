@@ -432,6 +432,11 @@ void HttpServer::register_routes() {
         res.set_content(nlohmann::json{{"status", available ? "ok" : "unavailable"}}.dump(),
                         "application/json");
     });
+    // Registered unconditionally so an un-enabled scrape gets an explicit 404 naming --metrics;
+    // handle_metrics() carries the gate.
+    server_.Get("/metrics", [this](const httplib::Request& req, httplib::Response& res) {
+        handle_metrics(req, res);
+    });
     server_.Get("/v1/models", [this](const httplib::Request& req, httplib::Response& res) {
         handle_models(req, res);
     });
@@ -501,6 +506,33 @@ void HttpServer::handle_chat_control(const httplib::Request& req, httplib::Respo
     operational_log_.reasoning_control(++request_seq_, control.id, outcome);
     res.set_content(make_chat_control_response(outcome.success, outcome.message),
                     "application/json");
+}
+
+// Prometheus scrape. Opt-in: without --metrics the route reports that it was never enabled, so a
+// deployment that never asked for a scrape surface never publishes one.
+void HttpServer::handle_metrics(const httplib::Request& req, httplib::Response& res) const {
+    if (!options_.enable_metrics) {
+        ApiError error;
+        error.status  = 404;
+        error.type    = "invalid_request_error";
+        error.code    = "not_found";
+        error.message = "metrics are not enabled; start the server with --metrics";
+        write_openai_error(res, error);
+        return;
+    }
+    if (service_ == nullptr) {
+        ApiError error;
+        error.status  = 503;
+        error.type    = "server_error";
+        error.code    = "service_unavailable";
+        error.message = "the inference engine is not ready";
+        write_openai_error(res, error);
+        return;
+    }
+    const PrometheusSnapshot snapshot{.runtime         = service_->runtime_stats(),
+                                     .memory           = service_->memory_summary(),
+                                     .requests_started = request_seq_.load()};
+    res.set_content(render_prometheus_metrics(snapshot), "text/plain; version=0.0.4; charset=utf-8");
 }
 
 void HttpServer::handle_models(const httplib::Request&, httplib::Response& res) const {
