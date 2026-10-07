@@ -5,6 +5,67 @@ download an artifact using the [project README](../README.md) before following t
 
 The examples use Qwen3.8-27B NVFP4 with FP8 KV storage.
 
+## Tokenizer
+
+`build/apps/frinfer-tokenize` answers "how does this text tokenize?" on the artifact's own tokenizer:
+it encodes text to token ids, decodes ids back to text, and reports each id's spelling. This is the
+debugging primitive for prompt framing, chat-template drift, and token-budget questions.
+
+```bash
+# How many tokens is this, and where do the boundaries fall?
+./build/apps/frinfer-tokenize models/qwen3_8_27b_nvfp4.ninfer \
+  --file prompt.md --pieces --count
+```
+
+```
+727 -> 'def'
+281 -> ' f'
+2007 -> '(x'
+1590 -> '):'
+198 -> '\n'
+```
+
+`--text` takes a string, `--stdin` reads a pipe, `--ids-only` makes stdout a bare id list, and
+`--count` prints the token count to stderr. Pieces are quoted and control bytes escaped (`\n`,
+`\t`, `\xNN`), so one token is always one line and a boundary is visible in the output rather than
+invisible in the terminal.
+
+Decoding runs the other way:
+
+```bash
+./build/apps/frinfer-tokenize models/qwen3_8_27b_nvfp4.ninfer \
+  --decode-text --ids-file ids.txt
+```
+
+Ids may be separated by whitespace, commas, or newlines, so the output of `--ids-only` is valid
+input here. `--pieces` output is not: its lines carry the spelling after the id.
+
+### Special tokens
+
+Encoding applies no chat template and adds no implicit control token, so a count here counts the text
+you passed, not a framed prompt — a chat turn's count is larger, by the template's own tokens. That
+difference is not a constant: the tokenizer merges across the boundary between the template's last
+token and your first character, so the overhead depends on your text.
+
+A control token you name explicitly is still recognised, as one id flagged special, and `--pieces`
+shows its spelling so prompt framing can be audited verbatim. Generated content is published without
+the terminal marker, so to drop it from a decode pass `--skip-special-tokens`; the flag applies to
+both directions and without it the decode is faithful, ending with the marker's spelling.
+
+Reproducing a *request's published text* from its ids goes further than that, and only holds under
+the default stop policy: the publish path also rolls back a stop token's contribution and cuts at a
+stop string, which a plain decode does not. For a request stopped by a non-special token id or by a
+stop string, the decoded text carries content the client never received.
+
+Encoding normalises its input to NFC, so decoding reproduces the normalised form rather than the
+exact bytes when the input was not already normalised — a decomposed `café` comes back composed.
+
+An id outside the checkpoint vocabulary is rejected by name (`token is outside the checkpoint
+vocabulary`), and a malformed id list is rejected before the model loads.
+
+The tool loads the artifact through the same public Engine route as `frinfer` and
+`frinfer-perplexity`, so it pays for a weight load. There is no tokenizer-only load path.
+
 ## Text input
 
 ```bash

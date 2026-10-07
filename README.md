@@ -25,7 +25,7 @@ the `frinfer` product binaries. The rest of this README describes the combined p
 ### Changes from upstream
 
 Maintained: add or update a row whenever a fork feature changes or its status changes.
-Last updated 2026-10-07 (`feat/prometheus-metrics-188`).
+Last updated 2026-10-07 (`feat/yarn-tokenize-192`).
 
 | What | Why | How | Status | Source |
 |---|---|---|---|---|
@@ -48,6 +48,7 @@ Last updated 2026-10-07 (`feat/prometheus-metrics-188`).
 | Artifact integrity manifest (`inspect.py --hash` / `--check`) | Downloaded and v2→v3-upgraded artifacts (upgrades write a new output path) need a verifiable integrity story beyond the random `artifact_id` minted at conversion | Stdlib-only sha256 streaming over the reader's object ranges — one manifest line per object plus a whole-payload digest; `--check` re-streams and localizes any mismatch to its object | shipped | FrInfer |
 | Rendered-prompt dump — CLI `--show-prompt` | Chat-template debugging is the project's recurring pain (G1 demotions, chat-drift, froggeric pinning); no rendered-prompt dump existed even at `--log-level debug` | `PreparedPrompt::rendered_text()` retains the exact rendered prompt (media placeholders already expanded) and `--show-prompt` prints it to stderr before generation, leaving stdout the answer channel | shipped | llama.cpp (C5, adopted) |
 | Model-acquisition flags — `--hf-repo`/`--hf-file`, `--model-url`, `--cache-dir`, `--offline`, `--cache-list` on `frinfer` + `frinfer-serve` | The quick start was a two-tool dance (external `hf` CLI + ninfer) while artifacts live on Hugging Face | libcurl streaming download into `~/.cache/frinfer` with resume, offline cache reuse, cache listing, and fail-closed `hf_not_found`/`offline_not_cached` codes | shipped | llama.cpp (the `-hf`/`--hf-repo`, `--offline`, `--cache-list` pattern, adopted) |
+| Tokenizer CLI — `frinfer-tokenize` (encode / decode / per-id spelling) | No surface answers "how does this text tokenize?", which is the daily debugging primitive for prompt framing, template drift and token budgets | `Engine::detokenize` and `Engine::token_piece` alongside the existing `tokenize_text`, plus a small app; encode/decode round-trip tested against the artifact | shipped | FrInfer (decode direction; llama.cpp's `llama-tokenize` is encode-only) |
 
 ### Bug reporting
 

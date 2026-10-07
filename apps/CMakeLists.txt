@@ -23,3 +23,11 @@ add_executable(frinfer-perplexity
 ninfer_internal_includes(frinfer-perplexity)
 target_link_libraries(frinfer-perplexity PRIVATE
   ninfer_engine ninfer_product_logging ninfer_build_info ninfer::json)
+
+# Tokenizer surface on the artifact's own tokenizer: encode text to ids, decode ids to text, and
+# report each id's spelling. Shares the one Engine load route rather than a second, tokenizer-only
+# artifact load path.
+add_executable(frinfer-tokenize tokenize/main.cpp)
+ninfer_internal_includes(frinfer-tokenize)
+target_link_libraries(frinfer-tokenize PRIVATE
+  ninfer_engine ninfer_product_logging ninfer_build_info)

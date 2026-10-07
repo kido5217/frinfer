@@ -83,6 +83,14 @@ public:
     [[nodiscard]] PreparedPrompt prepare_tokens(std::vector<TokenId> token_ids,
                                                 bool allow_prefix_identity = true) const;
     [[nodiscard]] std::vector<TokenId> tokenize_text(std::string_view text) const;
+    // Artifact-tokenizer decoding, the inverse of tokenize_text up to the NFC normalisation
+    // tokenize_text applies. `skip_special_tokens` drops control-token spellings, which is what a
+    // caller rendering generated text wants and what a caller auditing a prompt's framing does not.
+    [[nodiscard]] std::string detokenize(std::span<const TokenId> ids,
+                                         bool skip_special_tokens = false) const;
+    // One id's vocabulary spelling and whether it is a special token. The token must be in the
+    // checkpoint vocabulary.
+    [[nodiscard]] TokenPiece token_piece(TokenId id) const;
     [[nodiscard]] MediaCacheSummary media_cache_summary() const;
     [[nodiscard]] OutputSession
     make_output_session(const PreparedPrompt& prompt, const StopPolicy& caller_stop,

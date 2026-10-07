@@ -924,6 +924,21 @@ std::vector<TokenId> Frontend::tokenize_text(std::string_view text) const {
     return impl_->tokenizer->encode(text);
 }
 
+std::string Frontend::detokenize(std::span<const TokenId> ids, bool skip_special_tokens) const {
+    if (impl_ == nullptr) { throw std::logic_error("frontend is empty"); }
+    return impl_->tokenizer->decode(ids, fi::DecodeOptions{.skip_special_tokens = skip_special_tokens});
+}
+
+TokenPiece Frontend::token_piece(TokenId id) const {
+    if (impl_ == nullptr) { throw std::logic_error("frontend is empty"); }
+    if (!impl_->tokenizer->is_valid_token(id)) {
+        throw std::out_of_range("token is outside the checkpoint vocabulary: " +
+                                std::to_string(id));
+    }
+    const fi::DecodedTokenView piece = impl_->tokenizer->decoded_token(id);
+    return TokenPiece{.text = std::string(piece.bytes), .special = piece.special};
+}
+
 OutputSession Frontend::make_output_session(const PreparedPrompt& prompt,
                                             const StopPolicy& caller_stop,
                                             const OutputOptions& output,
