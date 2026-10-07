@@ -332,7 +332,7 @@ ninfer::RequestOptions to_request_options(const GenerationRequest& request,
     }
     options.execution.sampling             = resolve_sampling_overrides(request.sampling, server);
     options.execution.logprobs             = request.logprobs;
-    if (request.grammar) {
+    if (request.constraint) {
         // The serve contract rejects a constrained request up front when the configured
         // speculative backend cannot carry one (design #48), naming the backend.
         const SpeculativeBackend backend = server.speculative.backend;
@@ -349,9 +349,7 @@ ninfer::RequestOptions to_request_options(const GenerationRequest& request,
                             " speculative backend; use the ordinary or MTP backend";
             throw ApiException(std::move(error));
         }
-        options.constraint.emplace(ninfer::GrammarConstraint{
-            .gbnf = *request.grammar,
-            .thinking_enabled = semantics.enable_thinking.value_or(false)});
+        options.constraint = request.constraint;
     }
     options.output.raw                     = false;
     options.output.preserve_special_tokens = request.uses_tools() || request.has_tool_history();

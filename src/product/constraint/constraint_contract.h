@@ -2,9 +2,9 @@
 
 // Protocol-neutral JSON Schema constrained-decoding contract shared by every product gateway
 // (CLI and HTTP serving; wayfinder #52, design #48). A schema is admitted only when every keyword
-// it uses is one the vendored converter genuinely enforces; violations raise the contract's
-// fail-closed errors. The admitted document converts to GBNF with the same vendored converter the
-// Engine compiles.
+// it uses is one FrInfer enforces; violations raise the contract's fail-closed errors. The
+// admitted document is forwarded as an OutputConstraint::json_schema source and compiled by the
+// Engine's XGrammar converter (src/text/json_schema.*), not by this gateway.
 
 #include <nlohmann/json.hpp>
 
@@ -37,9 +37,9 @@ private:
     std::string code_;
 };
 
-// Validates `schema` against the v1 allowlist and converts it to GBNF for the Engine constraint
-// contract. Throws ConstraintError with `json_schema_unsupported`, `json_schema_invalid`, or
-// `constraint_too_large` when the document cannot be enforced exactly.
-[[nodiscard]] std::string json_schema_constraint_grammar(const nlohmann::ordered_json& schema);
+// Validates `schema` against the v1 allowlist and returns the document text carried to the Engine
+// as a JSON-schema constraint. Throws ConstraintError with `json_schema_unsupported`,
+// `json_schema_invalid`, or `constraint_too_large` when the document cannot be enforced exactly.
+[[nodiscard]] std::string json_schema_constraint_source(const nlohmann::ordered_json& schema);
 
 } // namespace ninfer::constraint

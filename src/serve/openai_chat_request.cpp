@@ -221,11 +221,12 @@ const Json& parse_json_schema_wrapper(const Json& format) {
     return wrapper;
 }
 
-// Converts an admitted JSON Schema document through the shared protocol-neutral constraint
-// contract, re-throwing its fail-closed error as this gateway's ApiException.
-std::string schema_to_grammar(const Json& schema) {
+// Validates an admitted JSON Schema document through the shared protocol-neutral constraint
+// contract and returns the document text the Engine's XGrammar converter compiles. The contract's
+// fail-closed error is re-thrown as this gateway's ApiException.
+std::string schema_to_document(const Json& schema) {
     try {
-        return ninfer::constraint::json_schema_constraint_grammar(schema);
+        return ninfer::constraint::json_schema_constraint_source(schema);
     } catch (const ninfer::constraint::ConstraintError& error) {
         bad_request(error.what(), error.param(), error.code());
     }
@@ -266,8 +267,9 @@ void parse_constraints(const Json& body, GenerationRequest& output) {
     }
 
     // response_format: text keeps no constraint, json_object constrains to an object, and
-    // json_schema converts through the v1 schema contract.
-    std::optional<std::string> schema_grammar;
+    // json_schema validates through the shared schema contract and is compiled by the Engine's
+    // XGrammar converter.
+    std::optional<ninfer::OutputConstraint> schema_constraint;
     if (body.contains("response_format") && !body.at("response_format").is_null()) {
         const Json& format = body.at("response_format");
         if (!format.is_object() || !format.contains("type") || !format.at("type").is_string()) {
@@ -276,13 +278,14 @@ void parse_constraints(const Json& body, GenerationRequest& output) {
         }
         const std::string type = format.at("type").get<std::string>();
         if (type == "json_object") {
-            schema_grammar = schema_to_grammar(Json{{"type", "object"}});
+            schema_constraint = ninfer::OutputConstraint::json_object();
         } else if (type == "json_schema") {
             if (!format.contains("json_schema") || format.at("json_schema").is_null()) {
                 bad_request("response_format.json_schema is required for type json_schema",
                             "response_format.json_schema", "json_schema_invalid");
             }
-            schema_grammar = schema_to_grammar(parse_json_schema_wrapper(format));
+            schema_constraint = ninfer::OutputConstraint::json_schema(
+                schema_to_document(parse_json_schema_wrapper(format)));
         } else if (type != "text") {
             bad_request(
                 "this response_format requires constrained output, which FrInfer cannot guarantee; "
@@ -292,22 +295,22 @@ void parse_constraints(const Json& body, GenerationRequest& output) {
     }
 
     // Exactly one constraint kind per request (vLLM semantics).
-    if (grammar && schema_grammar) {
+    if (grammar && schema_constraint) {
         bad_request("grammar cannot be combined with a constraining response_format",
                     "response_format", "constrained_decoding_conflict");
     }
     if (grammar) {
-        output.grammar           = std::move(*grammar);
+        output.constraint        = ninfer::OutputConstraint::grammar(std::move(*grammar));
         output.constraint_source = ConstraintSource::Grammar;
-    } else if (schema_grammar) {
-        output.grammar           = std::move(*schema_grammar);
+    } else if (schema_constraint) {
+        output.constraint        = std::move(schema_constraint);
         output.constraint_source = ConstraintSource::JsonSchema;
     }
     // A `tools` field together with structured output is a fail-closed rejection (design #48):
     // the tool-call parser owns the turn when tools are declared, so even an empty tools array is
     // rejected rather than interpreted.
     const bool declares_tools = body.contains("tools") && !body.at("tools").is_null();
-    if (output.grammar && declares_tools) {
+    if (output.constraint && declares_tools) {
         bad_request("tools with a constrained response is not supported",
                     output.constraint_source == ConstraintSource::JsonSchema ? "response_format"
                                                                              : "grammar",

@@ -75,7 +75,7 @@ ninfer::RequestOptions benchmark_request(const ninfer::bench::BenchTest& test,
     options.output.raw                        = true;
     options.output.preserve_special_tokens    = true;
     if (!grammar.empty()) {
-        options.constraint.emplace(ninfer::GrammarConstraint{grammar});
+        options.constraint.emplace(ninfer::OutputConstraint::grammar(grammar));
     }
     return options;
 }

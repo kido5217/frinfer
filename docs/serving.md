@@ -112,6 +112,9 @@ The endpoint supports:
 - the compatible `top_k` (`0..20`) and `min_p` (`0..1`) sampler extensions;
 - up to four non-empty stop strings, applied to both reasoning and answer output;
 - `n:1`, text-only `modalities`, and `response_format: {"type":"text"}`;
+- constrained decoding: a non-empty GBNF `grammar`, or `response_format` `json_object` / `json_schema`
+  (OpenAI wrapper or bare schema), or the Anthropic `output_config.format` `json_schema`; the schema
+  is admitted through the shared fail-closed allowlist and compiled by the Engine's XGrammar matcher;
 - non-streaming responses and server-sent event streams;
 - `stream_options.include_usage`;
 - llama.cpp-compatible terminal `timings`, plus opt-in `timings_per_token` and
@@ -125,14 +128,14 @@ The endpoint supports:
 - Assistant `reasoning_content` and `reasoning` history aliases.
 
 Options whose observable behavior the Engine cannot provide are rejected when they request that
-behavior. This includes JSON constrained output, nonzero `logit_bias`, requested log probabilities,
-audio/file input or audio output, `strict:true`, required or named tool choice,
-`parallel_tool_calls:false` with enabled tools, explicit low/high image detail, web search,
-moderation, low/high verbosity, stored Chat Completions, and non-empty legacy `functions`.
-Each capability rejection identifies the affected field and the guarantee NInfer cannot provide.
-Known constrained-decoding aliases (`grammar`, `structured_outputs`, `guided_json`, `guided_regex`,
-`guided_choice`, and `guided_grammar`) receive the same explicit rejection instead of being treated
-as unknown hints.
+behavior. This includes nonzero `logit_bias`, requested log probabilities, audio/file input or audio
+output, `strict:true`, required or named tool choice, `parallel_tool_calls:false` with enabled tools,
+explicit low/high image detail, web search, moderation, low/high verbosity, stored Chat Completions,
+and non-empty legacy `functions`. Each capability rejection identifies the affected field and the
+guarantee NInfer cannot provide. The vLLM `structured_outputs` and `guided_json`/`guided_regex`/
+`guided_choice`/`guided_grammar` constrained-decoding spellings are rejected with
+`constrained_decoding_not_supported`; use `grammar` (GBNF) or `response_format` instead. A `tools`
+field combined with a constraint is rejected because the tool-call parser owns the turn.
 
 Semantically neutral fields do not make an otherwise executable request fail. All-zero
 `logit_bias`, `logprobs:false`, `top_logprobs:0`, `verbosity:"medium"`, empty legacy tool controls,
@@ -333,6 +336,11 @@ the prepared token count and configured context ceiling. A media preprocessing r
 returns HTTP 400 `media_budget_exceeded`. HTTP 413 `request_too_large` is reserved for a raw request
 body that exceeds `--max-request-mib` before JSON parsing; it is not used for model-context or media
 resource errors.
+
+Constrained-decoding rejections are client errors at HTTP 400: `grammar_invalid` for a malformed
+GBNF `grammar`, `json_schema_invalid` (param `response_format` or `output_config.format`) for a
+malformed or unsupported JSON Schema, and `constraint_dead_end` when a compiled constraint admits
+no legal next token, so the request fails closed instead of emitting unconstrained text.
 
 ## OpenAI prompt caching
 

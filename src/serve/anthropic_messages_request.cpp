@@ -919,14 +919,14 @@ const Json& parse_output_format(const Json& format) {
     return format.at("schema");
 }
 
-// Converts an admitted JSON Schema document through the shared protocol-neutral constraint
+// Validates an admitted JSON Schema document through the shared protocol-neutral constraint
 // contract and renders its fail-closed error on this route's field path. The contract's own
 // `param` is OpenAI-rooted, so the Anthropic adapter reports `output_config.format` while
 // preserving the contract's message and code (`json_schema_invalid`, `json_schema_unsupported`,
-// `constraint_too_large`).
-std::string schema_to_grammar(const Json& schema) {
+// `constraint_too_large`). The document text is compiled by the Engine's XGrammar converter.
+std::string schema_to_document(const Json& schema) {
     try {
-        return ninfer::constraint::json_schema_constraint_grammar(schema);
+        return ninfer::constraint::json_schema_constraint_source(schema);
     } catch (const ninfer::constraint::ConstraintError& error) {
         bad_request(error.what(), "output_config.format", error.code());
     }
@@ -948,7 +948,8 @@ void parse_output_config(const Json& body, GenerationRequest& request, ParsePurp
             bad_request("output_config.format cannot be combined with output_format",
                         "output_config.format", "constrained_decoding_conflict");
         }
-        request.grammar = schema_to_grammar(parse_output_format(config.at("format")));
+        request.constraint = ninfer::OutputConstraint::json_schema(
+            schema_to_document(parse_output_format(config.at("format"))));
         request.constraint_source = ConstraintSource::JsonSchema;
         // The tool-call parser owns the turn when tools are declared, so a constrained answer and
         // a `tools` field cannot share it (even an empty array), mirroring the OpenAI route.

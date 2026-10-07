@@ -267,23 +267,11 @@ struct OutputOptions {
     std::uint32_t tool_name_max_length = 128;
 };
 
-// Grammar-constrained generation: GBNF text whose root symbol is "root". The protocol adapter
-// converts JSON Schema documents before submitting; the engine compiles, validates and applies
-// the text itself.
-//
-// `thinking_enabled` is the request's resolved thinking flag (the protocol adapter's #86 rule
-// included). Combined with a rendered prompt that starts in reasoning, the engine wraps the
-// grammar in the full-stream thinking wrapper so the constraint carries the reasoning stream and
-// hands off to the answer grammar at the wire-format close; otherwise the grammar governs the
-// answer stream as before.
-struct GrammarConstraint {
-    std::string gbnf;
-    bool thinking_enabled = false;
-};
-
-// Upstream XGrammar constraint surface adopted by ticket #245. It coexists with GrammarConstraint
-// until the constrained-decoding port switches the request/serve/CLI consumers and retires the
-// fork type.
+// Constrained-decoding surface adopted from upstream's XGrammar stack (ticket #245, #239 verdict
+// C). The protocol adapter validates and forwards the client's constraint; the engine compiles it
+// on the request-owned matcher. Reasoning framing is carried by the rendered prompt: when the
+// prompt starts in reasoning the engine wraps the constraint with the thinking wrapper and hands
+// off at the wire-format close.
 enum class OutputConstraintKind : std::uint8_t { Grammar, JsonObject, JsonSchema, Choice, Regex };
 
 // Constrains generated content; Chat reasoning retains the model's framing. Source is owning GBNF,
@@ -320,7 +308,7 @@ struct RequestOptions {
     ExecutionOptions execution;
     StopPolicy stop;
     OutputOptions output;
-    std::optional<GrammarConstraint> constraint;
+    std::optional<OutputConstraint> constraint;
 };
 
 enum class MediaKind : std::uint8_t {

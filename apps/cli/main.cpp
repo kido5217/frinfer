@@ -323,11 +323,10 @@ int main(int argc, char** argv) {
         request.stop.token_ids                    = cli.stop_token_ids;
         request.stop.strings                      = cli.stop_strings;
         request.output.raw                        = cli.raw_output;
-        if (cli.constraint.source != ninfer::cli::ConstraintSource::None) {
-            request.constraint = ninfer::GrammarConstraint{
-                .gbnf             = cli.constraint.gbnf,
-                .thinking_enabled = cli.constraint.thinking_enabled,
-            };
+        if (cli.constraint.source == ninfer::cli::ConstraintSource::Grammar) {
+            request.constraint = ninfer::OutputConstraint::grammar(cli.constraint.gbnf);
+        } else if (cli.constraint.source == ninfer::cli::ConstraintSource::JsonSchema) {
+            request.constraint = ninfer::OutputConstraint::json_schema(cli.constraint.gbnf);
         }
 
         ninfer::EngineOptions engine_options;

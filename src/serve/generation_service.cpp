@@ -82,8 +82,10 @@ ApiError request_error_to_api_error(const ninfer::RequestError& exception, Const
         error.code   = "json_schema_invalid";
         break;
     case ninfer::RequestErrorKind::ConstraintDeadEnd:
-        error.param.clear();
-        error.status = 409;
+        // A mask dead end is a fail-closed constraint rejection, reported with the other
+        // constraint errors at 400 and attributed to the originating field (upstream parity).
+        error.status = 400;
+        error.param  = source == ConstraintSource::JsonSchema ? "response_format" : "grammar";
         error.code   = "constraint_dead_end";
         break;
     case ninfer::RequestErrorKind::InvalidToolConstraint:

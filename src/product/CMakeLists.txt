@@ -17,7 +17,7 @@ add_library(ninfer_constraint STATIC
   constraint/constraint_contract.cpp
 )
 ninfer_internal_includes(ninfer_constraint)
-target_link_libraries(ninfer_constraint PUBLIC ninfer::json PRIVATE ninfer_llama_chat)
+target_link_libraries(ninfer_constraint PUBLIC ninfer::json)
 
 add_library(ninfer_model_acquire STATIC
   model_acquire/model_acquire.cpp

@@ -20,7 +20,6 @@ struct RuntimeTypes {
     using ExecutionUnitKind = qwen3_5::ExecutionUnitKind;
     using ContextProgress   = qwen3_5::ContextProgress;
     using PendingBatch      = qwen3_5::PendingBatch;
-    using CompiledGrammar   = qwen3_5::frontend::CompiledGrammar;
     using PrefillProgress   = qwen3_5::PrefillProgress;
     using ReplayProgress    = qwen3_5::ReplayProgress;
     using CommitResult      = qwen3_5::CommitResult;

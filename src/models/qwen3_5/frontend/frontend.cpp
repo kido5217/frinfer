@@ -9,8 +9,6 @@
 #include "models/qwen3_5/frontend/processor.h"
 #include "models/qwen3_5/frontend/test_access.h"
 #include "models/qwen3_5/frontend/tokenizer.h"
-#include "models/qwen3_5/frontend/grammar/thinking_wrapper.h"
-#include "models/qwen3_5/frontend/grammar/tokenizer_vocabulary.h"
 #include "models/qwen3_5/frontend/tool_call_parser.h"
 #include "text/unicode.h"
 #include "text/grammar.h"
@@ -616,12 +614,7 @@ public:
     StopPolicy defaults;
     ModelSamplingDefaults sampling;
     std::shared_ptr<const std::vector<TokenId>> thinking_control_tokens;
-    // Fork grammar vocabulary/cache (retired with the in-tree trie stack) and the adopted
-    // upstream XGrammar compiler.
-    static constexpr std::size_t kGrammarCacheKeys = 64;
-    mutable std::mutex grammar_mutex;
-    mutable std::shared_ptr<const fi::GrammarVocabulary> grammar_vocabulary;
-    mutable std::unordered_map<std::string, std::weak_ptr<const fi::CompiledGrammar>> grammar_cache;
+    // Adopted upstream XGrammar constraint compiler (ticket #245).
     bool vision_enabled             = true;
     std::uint32_t max_context       = 0;
     std::size_t grammar_cache_bytes = 0;
@@ -934,87 +927,36 @@ OutputSession Frontend::make_output_session(const PreparedPrompt& prompt,
                                             const StopPolicy& caller_stop,
                                             const OutputOptions& output,
                                             const ThinkingControlOptions& thinking,
-                                            const std::optional<std::string>& grammar) const {
+                                            const std::optional<OutputConstraint>& constraint) const {
     if (prompt.data_ == nullptr) { throw std::invalid_argument("prepared prompt is empty"); }
     StopPolicy policy = merge_stop_policy(*impl_->tokenizer, caller_stop);
     if (output.raw) { policy.publish_stop_token = true; }
-    std::unique_ptr<text::GrammarSession> constraint;
-    if (grammar) {
-        if (grammar->empty() || impl_->defaults.token_ids.empty() ||
-            prompt.data_->has_active_tools || !caller_stop.token_ids.empty() ||
-            !caller_stop.strings.empty() || !caller_stop.include_model_defaults ||
-            caller_stop.publish_stop_token || output.raw || output.preserve_special_tokens) {
-            throw RequestError(RequestErrorKind::InvalidGrammar,
-                               "grammar requires nonempty GBNF, default EOS, text output and no "
-                               "active tools or custom stops");
+    std::unique_ptr<text::GrammarSession> matcher;
+    if (constraint) {
+        const RequestErrorKind error_kind = text::constraint_error_kind(constraint->kind);
+        if (impl_->defaults.token_ids.empty() || prompt.data_->has_active_tools ||
+            !caller_stop.token_ids.empty() || !caller_stop.strings.empty() ||
+            !caller_stop.include_model_defaults || caller_stop.publish_stop_token || output.raw ||
+            output.preserve_special_tokens) {
+            throw RequestError(error_kind,
+                               "constraints require default EOS, text output, no active tools "
+                               "and no custom stops");
         }
         try {
-            constraint = impl_->grammars().compile(
-                ninfer::OutputConstraint::grammar(*grammar),
+            matcher = impl_->grammars().compile(
+                *constraint,
                 prompt.data_->starts_in_reasoning ? fi::kCanonicalReasoningCloseSerialization
                                                   : std::string_view{},
                 prompt.data_->continuation_content);
         } catch (const std::invalid_argument& error) {
-            throw RequestError(RequestErrorKind::InvalidGrammar, error.what());
+            throw RequestError(error_kind, error.what());
         }
     }
     return OutputSession(
         impl_->tokenizer, std::move(policy), output, prompt.data_->starts_in_reasoning, thinking,
-        impl_->thinking_control_tokens, prompt.data_->tool_call_output, std::move(constraint));
+        impl_->thinking_control_tokens, prompt.data_->tool_call_output, std::move(matcher));
 }
 
 const StopPolicy& Frontend::default_stop_policy() const noexcept { return impl_->defaults; }
-
-std::shared_ptr<const frontend::GrammarVocabulary> Frontend::grammar_vocabulary() const {
-    std::lock_guard lock(impl_->grammar_mutex);
-    if (impl_->grammar_vocabulary == nullptr) {
-        impl_->grammar_vocabulary = std::make_shared<const frontend::TokenizerVocabulary>(
-            impl_->tokenizer);
-    }
-    return impl_->grammar_vocabulary;
-}
-
-std::shared_ptr<const frontend::CompiledGrammar>
-Frontend::compile_grammar(std::string_view gbnf, ConstraintScope scope, std::string* error) const {
-    if (error != nullptr) { error->clear(); }
-    std::string wrapped;
-    if (scope == ConstraintScope::Thinking) {
-        const std::string_view close_marker =
-            frontend::ChatParseWireFormat::qwen3_5().thinking_close;
-        const std::optional<std::string> text =
-            frontend::wrap_thinking_constraint_grammar(gbnf, close_marker, error);
-        if (!text) { return nullptr; }
-        wrapped = std::move(*text);
-        gbnf    = wrapped;
-    }
-    const std::shared_ptr<const frontend::GrammarVocabulary> vocabulary = grammar_vocabulary();
-    const std::string key(gbnf);
-    std::lock_guard lock(impl_->grammar_mutex);
-    if (const auto found = impl_->grammar_cache.find(key); found != impl_->grammar_cache.end()) {
-        if (std::shared_ptr<const frontend::CompiledGrammar> cached = found->second.lock()) {
-            return cached;
-        }
-    }
-    std::string diagnostic;
-    std::shared_ptr<const frontend::CompiledGrammar> grammar =
-        frontend::CompiledGrammar::compile(gbnf, vocabulary, &diagnostic);
-    if (grammar == nullptr) {
-        if (error != nullptr) { *error = std::move(diagnostic); }
-        return nullptr;
-    }
-    if (impl_->grammar_cache.size() >= Impl::kGrammarCacheKeys) {
-        for (auto entry = impl_->grammar_cache.begin(); entry != impl_->grammar_cache.end();) {
-            entry = entry->second.expired() ? impl_->grammar_cache.erase(entry)
-                                            : std::next(entry);
-        }
-    }
-    if (impl_->grammar_cache.size() >= Impl::kGrammarCacheKeys) {
-        // Every key is still live: the table is retired rather than grown without bound. A
-        // recompile on the next request is cheap relative to retaining their row caches.
-        impl_->grammar_cache.clear();
-    }
-    impl_->grammar_cache[key] = grammar;
-    return grammar;
-}
 
 } // namespace ninfer::models::qwen3_5

@@ -19,11 +19,13 @@ struct ResolvedExecutionOptions {
 };
 
 struct ResolvedRequestOptions {
+    // Retained fork carrier: the resolved request options hold the compiled constraint below; this
+    // string slot is not written or read on any live path (ticket #248 keeps it deliberately).
     std::optional<std::string> grammar;
     ResolvedExecutionOptions execution;
     StopPolicy stop;
     OutputOptions output;
-    std::optional<GrammarConstraint> constraint;
+    std::optional<OutputConstraint> constraint;
 };
 
 enum class ContinuationAction : std::uint8_t {

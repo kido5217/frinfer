@@ -12,9 +12,8 @@ target_include_directories(ninfer_jinja PRIVATE ${PROJECT_SOURCE_DIR}/third_part
 target_link_libraries(ninfer_jinja PRIVATE ninfer_text ninfer::json)
 
 # Upstream XGrammar-backed text constraint core (ticket #245): GBNF, JSON object/schema, choice
-# and regex compilation on the request-owned GrammarSession/GrammarCompiler, replacing the fork's
-# in-tree trie stack. Named ninfer_text_grammar while the fork's models-level ninfer_grammar target
-# still exists; the name collapses to upstream's ninfer_grammar when the fork stack is retired.
+# and regex compilation on the request-owned GrammarSession/GrammarCompiler. It is the sole
+# constraint compiler; the fork's in-tree trie stack and GBNF runtime are retired with ticket #248.
 add_library(ninfer_text_grammar STATIC
   grammar.cpp
   json_schema.cpp

@@ -204,22 +204,20 @@ public:
 
         std::shared_ptr<Request> request;
         try {
-            // The fork carries the constraint as GrammarConstraint (text + resolved thinking);
-            // upstream builds the request-owned matcher from the GBNF text and applies the
-            // reasoning wrapper exactly when the rendered prompt starts in reasoning (ADR-0001
-            // amendment). An unsupported speculative backend keeps the fork's fail-closed
-            // rejection.
-            std::optional<std::string> grammar_text;
+            // The engine builds the request-owned matcher from the protocol's OutputConstraint
+            // and applies the reasoning wrapper exactly when the rendered prompt starts in
+            // reasoning (ADR-0001 amendment). An unsupported speculative backend keeps the
+            // fork's fail-closed rejection.
             if (options.constraint) {
                 const SpeculativeBackend backend = instance_.program->speculative_backend();
                 if (backend != SpeculativeBackend::None && backend != SpeculativeBackend::Mtp) {
                     throw RequestError(RequestErrorKind::InvalidConstraint,
                                        "grammar constraints need the ordinary or MTP backend");
                 }
-                grammar_text = options.constraint->gbnf;
             }
             auto output = instance_.frontend.make_output_session(
-                prompt, options.stop, options.output, options.execution.thinking, grammar_text);
+                prompt, options.stop, options.output, options.execution.thinking,
+                options.constraint);
             if (Clock::now() >= pending_deadline) {
                 throw RequestError(RequestErrorKind::QueueTimeout,
                                    "inference request expired during grammar preparation");

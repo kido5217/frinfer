@@ -38,7 +38,7 @@ ninfer::RequestOptions greedy_request(std::uint32_t max_tokens,
     request.execution.requested_output_tokens = max_tokens;
     request.execution.sampling.temperature    = 0.0F;
     if (!grammar.empty()) {
-        request.constraint.emplace(ninfer::GrammarConstraint{std::move(grammar)});
+        request.constraint.emplace(ninfer::OutputConstraint::grammar(std::move(grammar)));
     }
     return request;
 }

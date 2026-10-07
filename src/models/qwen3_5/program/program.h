@@ -21,10 +21,6 @@ namespace execution {
 class Parameters;
 }
 
-namespace frontend {
-class CompiledGrammar;
-}
-
 namespace detail {
 struct SequencePlanImpl;
 struct SequencePlannerImpl;

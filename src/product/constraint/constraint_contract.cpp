@@ -1,8 +1,5 @@
 #include "product/constraint/constraint_contract.h"
 
-#include "json-schema-to-grammar.h"
-#include "json.h"
-
 #include <cstddef>
 #include <exception>
 #include <initializer_list>
@@ -256,6 +253,12 @@ void validate_schema_node(const Json& schema, int depth, const std::string& path
         if (schema.contains("const") || schema.contains("enum")) {
             validate_const_enum_values(schema, path);
         }
+        if (schema.contains("enum")) {
+            const Json& values = schema.at("enum");
+            if (!values.is_array() || values.empty()) {
+                invalid("JSON Schema enum must be a non-empty array", "enum");
+            }
+        }
     } else {
         // Context gates: a keyword is admitted only where the converter's typed model enforces
         // it. A `type` union enforces the keyword in the matching alternative (correct JSON
@@ -359,7 +362,7 @@ void validate_schema_node(const Json& schema, int depth, const std::string& path
 
 } // namespace
 
-std::string json_schema_constraint_grammar(const Json& schema) {
+std::string json_schema_constraint_source(const Json& schema) {
     const std::string serialized = schema.dump();
     if (serialized.size() > kConstraintPayloadLimit) {
         too_large("JSON Schema payload exceeds " + std::to_string(kConstraintPayloadLimit) +
@@ -367,12 +370,7 @@ std::string json_schema_constraint_grammar(const Json& schema) {
                   "response_format");
     }
     validate_schema_node(schema, 0, "");
-    try {
-        return json_schema_to_grammar(common_json::parse(serialized), /*force_gbnf=*/true);
-    } catch (const std::exception& error) {
-        throw ConstraintError(std::string("JSON Schema conversion failed: ") + error.what(),
-                              "response_format.json_schema", "json_schema_invalid");
-    }
+    return serialized;
 }
 
 } // namespace ninfer::constraint

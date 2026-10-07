@@ -449,13 +449,16 @@ int test_constrained_decoding_extensions() {
     Json grammar_body       = base_request();
     grammar_body["grammar"] = "root ::= \"yes\" | \"no\"";
     const OpenAIChatRequest constrained = parse(grammar_body);
-    failures += check(constrained.generation.grammar.has_value() &&
-                          *constrained.generation.grammar == "root ::= \"yes\" | \"no\"" &&
+    failures += check(constrained.generation.constraint.has_value() &&
+                          constrained.generation.constraint->kind ==
+                              ninfer::OutputConstraintKind::Grammar &&
+                          constrained.generation.constraint->source ==
+                              "root ::= \"yes\" | \"no\"" &&
                           constrained.generation.constraint_source == ConstraintSource::Grammar,
                       "grammar GBNF text is parsed into the request");
     const ninfer::RequestOptions constrained_options = options(constrained.generation);
     failures += check(constrained_options.constraint.has_value() &&
-                          constrained_options.constraint->gbnf == "root ::= \"yes\" | \"no\"",
+                          constrained_options.constraint->source == "root ::= \"yes\" | \"no\"",
                       "grammar GBNF text reaches the Engine constraint contract");
 
     Json neutral                  = base_request();
@@ -463,7 +466,7 @@ int test_constrained_decoding_extensions() {
     neutral["structured_outputs"] = nullptr;
     neutral["guided_json"]        = nullptr;
     const OpenAIChatRequest plain = parse(neutral);
-    failures += check(!plain.generation.grammar.has_value() &&
+    failures += check(!plain.generation.constraint.has_value() &&
                           !options(plain.generation).constraint.has_value(),
                       "an empty grammar constrains nothing");
 
@@ -501,21 +504,22 @@ int test_constrained_decoding_extensions() {
     Json text_format                  = base_request();
     text_format["response_format"]    = Json{{"type", "text"}};
     const OpenAIChatRequest text_only = parse(text_format);
-    failures += check(!text_only.generation.grammar.has_value(),
+    failures += check(!text_only.generation.constraint.has_value(),
                       "response_format text constrains nothing");
 
     Json object_format               = base_request();
     object_format["response_format"] = Json{{"type", "json_object"}};
     const OpenAIChatRequest object_json = parse(object_format);
-    failures += check(object_json.generation.grammar.has_value() &&
-                          object_json.generation.constraint_source == ConstraintSource::JsonSchema &&
-                          object_json.generation.grammar->find("root") != std::string::npos,
+    failures += check(object_json.generation.constraint.has_value() &&
+                          object_json.generation.constraint->kind ==
+                              ninfer::OutputConstraintKind::JsonObject &&
+                          object_json.generation.constraint_source == ConstraintSource::JsonSchema,
                       "response_format json_object converts to a constraint");
     // The llama.cpp quirk of reading an extra `schema` member under json_object is not adopted.
     Json quirk_format               = base_request();
     quirk_format["response_format"] = Json{{"type", "json_object"},
                                            {"schema", Json{{"type", "array"}}}};
-    failures += check(parse(quirk_format).generation.grammar == object_json.generation.grammar,
+    failures += check(parse(quirk_format).generation.constraint == object_json.generation.constraint,
                       "json_object ignores an extra schema member");
 
     const Json diary_schema = Json{
@@ -533,17 +537,20 @@ int test_constrained_decoding_extensions() {
         {"type", "json_schema"},
         {"json_schema", Json{{"name", "diary"}, {"strict", true}, {"schema", diary_schema}}}};
     const OpenAIChatRequest wrapper = parse(wrapper_body);
-    failures += check(wrapper.generation.grammar.has_value() &&
+    failures += check(wrapper.generation.constraint.has_value() &&
+                          wrapper.generation.constraint->kind ==
+                              ninfer::OutputConstraintKind::JsonSchema &&
                           wrapper.generation.constraint_source == ConstraintSource::JsonSchema,
                       "response_format json_schema wrapper converts");
     const ninfer::RequestOptions wrapper_options = options(wrapper.generation);
     failures += check(wrapper_options.constraint.has_value() &&
-                          wrapper_options.constraint->gbnf == *wrapper.generation.grammar,
+                          wrapper_options.constraint->source ==
+                              wrapper.generation.constraint->source,
                       "the converted schema reaches the Engine constraint contract");
 
     Json bare_body               = base_request();
     bare_body["response_format"] = Json{{"type", "json_schema"}, {"json_schema", diary_schema}};
-    failures += check(parse(bare_body).generation.grammar.has_value(),
+    failures += check(parse(bare_body).generation.constraint.has_value(),
                       "a bare schema under json_schema converts");
 
     const std::vector<Json> malformed_formats = {
@@ -705,7 +712,8 @@ int test_constrained_decoding_extensions() {
     text_pair_body["grammar"]         = "root ::= \"x\"";
     text_pair_body["response_format"] = Json{{"type", "text"}};
     const GenerationRequest text_pair = parse(text_pair_body).generation;
-    failures += check(text_pair.grammar.has_value() && *text_pair.grammar == "root ::= \"x\"",
+    failures += check(text_pair.constraint.has_value() &&
+                          text_pair.constraint->source == "root ::= \"x\"",
                       "grammar with response_format text is allowed");
 
     // Tools with structured output stay fail-closed.

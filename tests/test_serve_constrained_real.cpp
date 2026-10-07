@@ -134,27 +134,33 @@ int exercise(const char* artifact) {
               mapped.code + " " + mapped.message);
     }
 
-    // 4. An invalid grammar is rejected at submit and maps back to grammar_invalid.
-    //     a diagnostic instead of crashing the serving engine mid-generation.
-    Json pathological_body       = base_request();
-    pathological_body["grammar"] = "root ::= ([ab]{0,5}){0,64}";
+    // 4. Nested bounded repetition that the retired fork guard rejected is now compiled by the
+    //    adopted XGrammar parser and executes; the output stays within the grammar's alphabet.
+    Json nested_body       = base_request();
+    nested_body["grammar"] = "root ::= ([ab]{0,5}){0,64}";
     try {
-        (void)run_route(engine, server, pathological_body);
-        check(false, "a pathological grammar was accepted");
+        const ninfer::GenerationResult nested = run_route(engine, server, nested_body);
+        bool in_alphabet                      = true;
+        for (const char byte : nested.content) {
+            if (byte != 'a' && byte != 'b') { in_alphabet = false; }
+        }
+        check(in_alphabet, "a nested bounded-repetition grammar stays within its alphabet",
+              nested.content);
     } catch (const ninfer::RequestError& error) {
-        check(error.kind() == ninfer::RequestErrorKind::InvalidConstraint,
-              "a pathological grammar fails closed as an invalid constraint", error.what());
+        check(false, "a nested bounded-repetition grammar was rejected", error.what());
     }
 
-    // 5. A grammar whose initial mask admits nothing is rejected before generation.
-    Json unsatisfiable_body       = base_request();
-    unsatisfiable_body["grammar"] = "root ::= \"\\x00\"";
+    // 5. The adopted parser compiles the GBNF `"\x00"` literal, so there is no submit-time
+    //    unsatisfiable surface as in the retired fork. If such a constraint ever admits no legal
+    //    next token, generation fails closed as ConstraintDeadEnd (HTTP 400 constraint_dead_end).
+    Json null_body       = base_request();
+    null_body["grammar"] = "root ::= \"\\x00\"";
     try {
-        (void)run_route(engine, server, unsatisfiable_body);
-        check(false, "an unsatisfiable grammar was accepted");
+        (void)run_route(engine, server, null_body);
+        std::cout << "note: the NUL-literal grammar is accepted by the adopted parser\n";
     } catch (const ninfer::RequestError& error) {
-        check(error.kind() == ninfer::RequestErrorKind::InvalidConstraint,
-              "an unsatisfiable grammar fails closed as an invalid constraint");
+        check(error.kind() == ninfer::RequestErrorKind::ConstraintDeadEnd,
+              "a NUL-literal grammar only fails closed as a generation dead end", error.what());
     }
 
     // 6. Serve-level backend policy: DFlash rejects a constrained request naming the backend;

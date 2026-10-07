@@ -11,6 +11,15 @@ ninfer_add_test(ninfer_qwen3_5_frontend_test
   NEEDS_SOURCE_DIR
   LIBRARIES ninfer_engine ninfer_core ninfer::json)
 
+ninfer_add_test(ninfer_qwen3_5_chat_parsing_corpus_test
+  SOURCES "${CMAKE_CURRENT_LIST_DIR}/test_chat_parsing_corpus.cpp"
+  NEEDS_SOURCE_DIR
+  LIBRARIES ninfer_engine ninfer_core ninfer::json)
+
+ninfer_add_test(ninfer_qwen3_5_chat_parse_normalization_test
+  SOURCES "${CMAKE_CURRENT_LIST_DIR}/test_chat_parse_normalization.cpp"
+  LIBRARIES ninfer_engine ninfer_core ninfer::json)
+
 ninfer_add_test(ninfer_qwen3_5_runtime_mechanisms_test
   SOURCES "${CMAKE_CURRENT_LIST_DIR}/test_runtime_mechanisms.cpp"
   LIBRARIES ninfer_engine ninfer_core)
@@ -100,17 +109,7 @@ set_tests_properties(
   ninfer_qwen3_5_visual_scatter_test
   PROPERTIES SKIP_RETURN_CODE 77 LABELS "gpu")
 
-# Fork grammar stack: compiled-grammar runtime, token-trie mask producer, per-lane constraint state,
-# and the end-to-end constrained generation routes (re-homed onto the upstream runtime).
-ninfer_add_test(ninfer_grammar_test
-  SOURCES "${CMAKE_CURRENT_LIST_DIR}/test_grammar.cpp"
-  LIBRARIES ninfer_grammar ninfer_llama_grammar ninfer_llama_chat ninfer_model_loading ninfer::json)
-
-ninfer_add_test(ninfer_grammar_producer_test
-  SOURCES "${CMAKE_CURRENT_LIST_DIR}/test_grammar_producer.cpp"
-  NEEDS_SOURCE_DIR
-  LIBRARIES ninfer_grammar ninfer_llama_grammar ninfer_llama_chat ninfer_model_loading ninfer::json)
-
+# End-to-end constrained generation routes on the adopted upstream XGrammar runtime.
 ninfer_add_test(ninfer_qwen3_5_constrained_real_test
   SOURCES "${CMAKE_CURRENT_LIST_DIR}/test_engine_constrained_real.cpp"
   LIBRARIES ninfer_engine)

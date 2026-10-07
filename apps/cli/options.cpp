@@ -93,9 +93,10 @@ std::string read_constraint_file(const char* path, std::string_view flag) {
     return buffer.str();
 }
 
-// Converts a JSON Schema document through the shared protocol-neutral constraint contract, so the
+// Validates a JSON Schema document through the shared protocol-neutral constraint contract, so the
 // CLI and the serve route admit exactly the same documents and report the same fail-closed codes
-// (`json_schema_invalid`, `json_schema_unsupported`, `constraint_too_large`).
+// (`json_schema_invalid`, `json_schema_unsupported`, `constraint_too_large`). The returned text is
+// the schema document the Engine's XGrammar converter compiles.
 std::string convert_json_schema(const std::string& text, std::string_view flag) {
     nlohmann::ordered_json schema;
     try {
@@ -105,7 +106,7 @@ std::string convert_json_schema(const std::string& text, std::string_view flag) 
                                     "JSON Schema is not valid JSON: " + error.what());
     }
     try {
-        return ninfer::constraint::json_schema_constraint_grammar(schema);
+        return ninfer::constraint::json_schema_constraint_source(schema);
     } catch (const ninfer::constraint::ConstraintError& error) {
         throw std::invalid_argument(std::string(flag) + ": " + error.code() + ": " + error.what());
     }
