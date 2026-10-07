@@ -71,9 +71,14 @@ Main KV 页为 64 token；每种 KV 的物理字节数由其层数、几何和�
 | `context_cache.host_capacity_bytes` | StateImage、Main/backend KV、暂停快照及传输目的共用的 pinned Host 字节容量 |
 
 Main KV 容量曲线的页数下界为 `max(ceil(max_context / 64), C)`，上界为
-`C × ceil(max_context / 64)`。下界分别满足单请求独占最大上下文和 C 个最小页的几何要求。Native 同时
-计算所选后端、state、workspace 和 Graph 的布局；显式或自动容量都要落在这条曲线内并满足可用
-显存。容量并不平均切给每个 lane。
+`C × ceil(max_context / 64)`。下界只描述几何上可实现的最小布局，不是可启动配置。本 fork 固定不
+抢占 resident 请求，最坏情况下 C 个 lane 会同时占满各自的 `ceil(max_context / 64)` 页，因此实际
+Main KV 池必须取到上界 `C × ceil(max_context / 64)`：显式 `kv_capacity` 按页舍入后低于该上界时启动
+失败，错误同时给出所需的页数与 token 数以及提供的值；自动容量因显存预算不足解析到上界以下时
+同样启动失败。所选 backend 的 KV 池以 Main 池为基础另行加上每 lane 的 draft 窗口余量，每个 lane 的
+backend frontier 同样以 `max_context` 为界，所以 Main 池满足上界即覆盖全部 typed pool，Native 抢
+占路径“最老 resident 无法取得合法单元”的容量合同错误分支不可达。容量按页在 lane 间共享，不平均
+切分。
 
 Host 缺省容量为 `8 GiB + 8 × 当前模型 Host StateImage 大小`。它是一个共享 backing，State 与
 KV 的分项占用用于观测，不能再次相加成额外配额。传输目标从预留时就计费，发布只改变其状态，

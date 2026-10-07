@@ -216,6 +216,8 @@ std::string usage_text(const char* argv0) {
            "--kv-capacity auto leaves " +
            std::to_string(kDefaultKvCapacityHeadroomBytes / (1024ULL * 1024ULL)) +
            " MiB of sizing headroom.\n"
+           "--kv-capacity omitted follows --max-context; the CLI runs one execution lane, so an "
+           "explicit value must round to that same single-lane pool.\n"
            "--max-context above the model's native position capacity activates the YaRN context "
            "extension (spec defaults); the DFlash draft backend rejects it.\n"
            "Sampling defaults come from the loaded model and thinking mode; flags override "

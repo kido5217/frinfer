@@ -140,8 +140,13 @@ ConstructedModel construct_model(EngineOptions& options, DeviceContext& device) 
             .prefill_signature = signature},
         options.context_cost.preset_path);
     auto planner    = models::qwen3_5::make_sequence_planner(instance->parameters, device, options);
-    auto resolution = resolve_kv_capacity(options.kv_capacity, planner.capacity_curve(),
+    const auto& capacity_curve = planner.capacity_curve();
+    auto resolution = resolve_kv_capacity(options.kv_capacity, capacity_curve,
                                           current_free_device_bytes());
+    // Fork contract: explicit capacity is rejected up front by the target validator; an Automatic
+    // resolution is only known once the memory budget is applied, so require the full resident pool
+    // here (maximum_main_page_groups is exactly max_concurrency * page_count(max_context)).
+    require_full_resident_capacity(capacity_curve, resolution.main_page_groups);
     auto sequence   = std::move(planner).finalize(resolution.main_page_groups);
     if (sequence.device_reservation_bytes() != resolution.runtime_reservation_bytes ||
         sequence.kv_capacity() != resolution.resolved_tokens) {

@@ -113,7 +113,9 @@ M_{max}=C\,L
 M=\left\lceil K_{main}/P\right\rceil
 \]
 
-并要求 \(K_{main}\ge S\) 且 \(M\in[M_{min},M_{max}]\)。
+并要求 \(K_{main}\ge S\) 且 \(M=M_{max}\)：\(M_{min}\) 只是几何下界，本 fork 固定不抢占
+resident 请求，池必须覆盖 C 个 lane 各自的满上下文，低于 \(M_{max}\) 的显式容量和解析不到
+\(M_{max}\) 的 automatic 容量都在启动时被拒绝。
 
 ### 3.3 Automatic capacity
 

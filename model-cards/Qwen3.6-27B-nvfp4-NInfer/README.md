@@ -144,7 +144,7 @@ For images, videos, and structured chat history, see the
 ./build/apps/frinfer-serve models/qwen3_6_27b_nvfp4.ninfer \
   --host 127.0.0.1 \
   --port 8080 \
-  --max-context 240000 \
+  --max-context 120000 \
   --kv-capacity 240000 \
   --max-concurrency 2 \
   --kv-dtype fp8 \
@@ -154,9 +154,10 @@ For images, videos, and structured chat history, see the
   --preserve-thinking
 ```
 
-Each request has a 240,000-token logical ceiling. The shared 240,000-token Device KV pool grows
-with resident execution; resource pressure can pause a request for later Snapshot or Replay
-recovery. Either request may use the full pool while running alone. Two extra Device StateImages
+Each request has a 120,000-token logical ceiling. The shared 240,000-token Device KV pool covers
+both lanes, so either may reach its full 120,000-token context while the other is resident. The
+pool grows with resident execution; resource pressure can pause a request for later Snapshot or
+Replay recovery. Two extra Device StateImages
 and the default shared pinned Host budget (8 GiB plus eight model StateImages) retain state, KV
 and pause snapshots.
 
