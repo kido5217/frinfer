@@ -416,7 +416,7 @@ void ProgramImpl::install_binding(ContextTransaction& tx) {
         state.tail_hidden_valid       = tx.source_tail_hidden;
         request.lifecycle             = Lifecycle::Prefilling;
         request.publish_continuation  = tx.base->summary.publish_continuation;
-        install_sampling(state, request, tx.base->sampling);
+        install_sampling(state, request, tx.base->sampling, tx.base->logprobs);
     }
     refresh_state_views(state);
     request.permit   = tx.first_unit;

@@ -1,13 +1,15 @@
 # NInfer Engine 架构
 
 本文定义模型实例、执行所有权、请求生命周期及跨模块提交关系。
-[资源调度与上下文缓存](resource-scheduling-and-context-cache.md)定义缓存与抢占策略；
+[资源调度与上下文缓存](resource-scheduling-and-context-cache.md)定义缓存与资源压力策略；
 [Paged KV Context Store](paged-kv-cache.md)定义物理页、replica、地址空间与 consumer 合同。
 
 ## 1. 产品执行模型
 
 Generation Engine 使用一张 GPU、一个常驻模型和启动时确定的 `max_concurrency=1..8`。
-有界等待队列按提交顺序组织；resident 请求按有限执行单元增量取得资源，资源压力下可以暂停与恢复。
+有界等待队列按提交顺序组织；resident 请求按有限执行单元增量取得资源。
+本 fork 固定**不抢占已激活请求**：上游运行时的 pause/reclaim/replay 原语在本 fork 中被 pin 掉，
+资源不足时新请求等待容量而不是暂停 resident 请求（见 `engine_core.h` 的 `pause_resident`）。
 每轮将具备执行许可的 decode-ready 请求组成一个紧凑批次，prefill 与 Replay 分块穿插执行。
 
 Text、Vision、prefix reuse、MTP、DFlash/DFlash2、CLI 和 HTTP serving 都通过公共 `ninfer::Engine`。

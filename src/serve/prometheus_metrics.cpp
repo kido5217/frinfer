@@ -95,12 +95,15 @@ std::string render_prometheus_metrics(const PrometheusSnapshot& snapshot) {
     out.counter("main_kv_pages_transferred_d2d_total",
                 "Main KV pages copied device to device.",
                 static_cast<double>(runtime.main_kv_d2d_pages));
-    out.counter("host_kv_pressure_checkpoints_dropped_total",
-                "Context-cache checkpoints dropped under KV pressure.",
-                static_cast<double>(runtime.pressure_checkpoints_dropped));
-    out.counter("host_kv_pressure_searches_total",
-                "Context-cache checkpoints examined under KV pressure.",
-                static_cast<double>(runtime.pressure_searches));
+    out.counter("context_preemptions_total",
+                "Resident requests preempted under resource pressure (pinned off in this fork).",
+                static_cast<double>(runtime.preemptions));
+    out.counter("context_snapshot_restores_total",
+                "Requests resumed from a retained snapshot.",
+                static_cast<double>(runtime.snapshot_restores));
+    out.counter("context_replay_restores_total",
+                "Requests resumed by replay.",
+                static_cast<double>(runtime.replay_restores));
 
     // Queue depth by request state, straight from the Engine's scheduler snapshot.
     out.gauge("requests_running", "Requests currently executing model work.",
@@ -138,7 +141,7 @@ std::string render_prometheus_metrics(const PrometheusSnapshot& snapshot) {
     out.gauge("main_kv_occupied_pages", "Main KV pages currently resident on the device.",
               static_cast<double>(runtime.device_main_kv_occupied_pages));
     out.gauge("host_kv_capacity_bytes", "Host KV budget in bytes.",
-              static_cast<double>(memory.host_kv_capacity_bytes));
+              static_cast<double>(memory.host_context_capacity_bytes));
     out.gauge("host_kv_occupied_bytes", "Host KV bytes currently retained.",
               static_cast<double>(runtime.host_kv_occupied_bytes));
     out.gauge("device_state_occupied_slots", "Device StateImage slots currently occupied.",

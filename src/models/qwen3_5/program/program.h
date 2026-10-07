@@ -21,6 +21,10 @@ namespace execution {
 class Parameters;
 }
 
+namespace frontend {
+class CompiledGrammar;
+}
+
 namespace detail {
 struct SequencePlanImpl;
 struct SequencePlannerImpl;
@@ -267,9 +271,11 @@ public:
         : owner_(std::exchange(other.owner_, nullptr)),
           transaction_(std::exchange(other.transaction_, 0)), rows_(other.rows_),
           row_count_(std::exchange(other.row_count_, 0)), tokens_(other.tokens_),
-          row_counts_(other.row_counts_), row_stride_(other.row_stride_), timing_(other.timing_) {
+          row_counts_(other.row_counts_), logprobs_(other.logprobs_),
+          row_stride_(other.row_stride_), timing_(other.timing_) {
         other.tokens_     = {};
         other.row_counts_ = {};
+        other.logprobs_   = {};
         other.row_stride_ = 0;
         other.timing_     = {};
     }
@@ -284,6 +290,10 @@ public:
 
     [[nodiscard]] std::span<const std::int32_t> row_counts() const noexcept { return row_counts_; }
 
+    [[nodiscard]] std::span<const runtime::RawTokenLogprob> logprobs() const noexcept {
+        return logprobs_;
+    }
+
     [[nodiscard]] std::uint32_t row_stride() const noexcept { return row_stride_; }
 
     [[nodiscard]] runtime::ExecutionTiming execution_timing() const noexcept { return timing_; }
@@ -295,6 +305,7 @@ private:
     std::size_t row_count_ = 0;
     std::span<const TokenId> tokens_;
     std::span<const std::int32_t> row_counts_;
+    std::span<const runtime::RawTokenLogprob> logprobs_;
     std::uint32_t row_stride_ = 0;
     runtime::ExecutionTiming timing_;
 
@@ -314,6 +325,14 @@ struct CommitRowResult {
     runtime::CommitDisposition disposition = runtime::CommitDisposition::Active;
     GenerationTimings timings;
     SpeculativeStats speculative;
+
+    // Fixed-size cumulative observation, including active rows without copying per-position data.
+    struct SpeculativeCounters {
+        std::uint64_t rounds          = 0;
+        std::uint64_t drafted_tokens  = 0;
+        std::uint64_t accepted_tokens = 0;
+        std::uint64_t fallback_steps  = 0;
+    } speculative_counters;
 };
 
 struct CommitResult {
@@ -471,6 +490,14 @@ public:
     [[nodiscard]] DiscardResult abort_pending(PendingBatch&& pending) noexcept;
     [[nodiscard]] FinishResult finish(SequenceHandle sequence) noexcept;
     [[nodiscard]] AbortResult abort(SequenceHandle sequence) noexcept;
+    // Attaches (or, with a null grammar, clears) the sequence's grammar constraint. Called once
+    // when the sequence starts; the Program owns the per-request mask state until the lane is
+    // recycled. `carries_reasoning` marks the full-stream thinking wrapper: forced
+    // thinking-control tokens then advance the grammar state as answer tokens.
+    void set_constraint(SequenceHandle sequence,
+                        std::shared_ptr<const frontend::CompiledGrammar> grammar,
+                        bool carries_reasoning);
+    [[nodiscard]] SpeculativeBackend speculative_backend() const noexcept;
     void fail_all_cleanup() noexcept;
     [[nodiscard]] PhysicalUsageSnapshot physical_usage() const noexcept;
     [[nodiscard]] MemorySummary memory_summary() const noexcept;

@@ -414,7 +414,7 @@ int main() {
                                .host_to_device_bytes = 2097152,
     };
     outcome.thinking = ninfer::ThinkingBudgetStats{.configured_budget     = 256,
-                                                   .model_thinking_tokens = 256,
+                                                   .budget_thinking_tokens = 256,
                                                    .injected_tokens       = 19,
                                                    .applied               = true};
 
@@ -456,7 +456,7 @@ int main() {
     failures += check(done.at("result").at("prefix_reuse_path") == "checkpoint",
                       "prefix reuse path missing");
     failures += check(done.at("result").at("thinking_budget") == 256 &&
-                          done.at("result").at("model_thinking_tokens") == 256 &&
+                          done.at("result").at("budget_thinking_tokens") == 256 &&
                           done.at("result").at("thinking_control_tokens") == 19 &&
                           done.at("result").at("thinking_control_applied") == true,
                       "thinking-control result accounting missing");

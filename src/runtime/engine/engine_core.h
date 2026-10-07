@@ -7,6 +7,7 @@
 #include "ninfer/types.h"
 #include "runtime/contract/execution.h"
 #include "runtime/contract/resources.h"
+#include "runtime/engine/constraint_selection.h"
 #include "runtime/engine/request_record.h"
 #include "runtime/engine/context_cache/resource_manager.h"
 #include "runtime/engine/scheduler.h"
@@ -46,6 +47,9 @@ public:
     using Checkpoint         = typename ModelContract::CheckpointHandle;
     using SequenceHandle     = typename ModelContract::SequenceHandle;
     using PendingBatch       = typename ModelContract::PendingBatch;
+    using Frontend           = typename ModelContract::Frontend;
+    using CompiledGrammar    = typename ModelContract::CompiledGrammar;
+    using ConstraintScope    = typename Frontend::ConstraintScope;
     using PreparedPrompt     = typename ModelContract::PreparedPrompt;
     using PublishedOutput    = typename ModelContract::PublishedOutput;
     using Request            = RequestRecord<ModelContract>;
@@ -134,6 +138,10 @@ public:
             return owner->wait_for_request(std::exchange(request_, nullptr), sink, cancellation);
         }
 
+        [[nodiscard]] std::shared_ptr<std::atomic<bool>> reasoning_end_flag() const noexcept {
+            return request_ != nullptr ? request_->reasoning_end : nullptr;
+        }
+
     private:
         Submission(EngineCore& owner, std::shared_ptr<Request> request) noexcept
             : owner_(&owner), request_(std::move(request)) {}
@@ -162,6 +170,30 @@ public:
         if (submitted >= pending_deadline) {
             throw RequestError(RequestErrorKind::QueueTimeout,
                                "inference request expired before submission");
+        }
+
+        std::shared_ptr<const CompiledGrammar> grammar;
+        bool grammar_carries_reasoning = false;
+        if (options.constraint) {
+            const SpeculativeBackend backend = instance_.program->speculative_backend();
+            if (backend != SpeculativeBackend::None && backend != SpeculativeBackend::Mtp) {
+                throw RequestError(RequestErrorKind::InvalidConstraint,
+                                   "grammar constraints need the ordinary or MTP backend");
+            }
+            // A constrained request that resolves thinking enabled and whose rendered prompt
+            // starts in reasoning gets the full-stream thinking wrapper: the constraint then
+            // carries the reasoning stream and hands off to the answer grammar at the close.
+            grammar_carries_reasoning =
+                constraint_carries_reasoning(options.constraint, prompt_summary.starts_in_reasoning);
+            std::string diagnostic;
+            grammar = instance_.frontend.compile_grammar(
+                options.constraint->gbnf,
+                grammar_carries_reasoning ? ConstraintScope::Thinking : ConstraintScope::Answer,
+                &diagnostic);
+            if (grammar == nullptr) {
+                throw RequestError(RequestErrorKind::InvalidConstraint,
+                                   "grammar constraint rejected: " + diagnostic);
+            }
         }
 
         std::uint64_t request_id        = 0;
@@ -200,6 +232,8 @@ public:
                 request_id, publication_order, std::move(prompt), std::move(output), prompt_summary,
                 prepare_seconds, std::move(options), consumer_mode, std::move(observation),
                 pending_deadline, submitted);
+            request->grammar                   = std::move(grammar);
+            request->grammar_carries_reasoning = grammar_carries_reasoning;
         } catch (...) {
             release_reserved_capacity();
             throw;
@@ -546,6 +580,25 @@ private:
         };
     }
 
+    // Attaches fresh content logprob records to the deltas published this commit: the existing
+    // content delta when present, otherwise a logprobs-only content delta.
+    static void attach_streaming_logprobs(PublishedOutput& output,
+                                          std::span<const TokenLogprob> records) {
+        if (records.empty()) { return; }
+        for (OutputDelta& delta : output) {
+            if (delta.channel == OutputChannel::Content) {
+                delta.logprobs.assign(records.begin(), records.end());
+                return;
+            }
+        }
+        if (output.size() < 2) {
+            OutputDelta delta;
+            delta.channel = OutputChannel::Content;
+            delta.logprobs.assign(records.begin(), records.end());
+            output.push_back(std::move(delta));
+        }
+    }
+
     void record_first_output(const std::shared_ptr<Request>& request);
     static void record_execution_work(GenerationWorkTiming& work, ExecutionTiming timing) noexcept;
 
@@ -738,6 +791,7 @@ private:
         result.scheduling.host_to_device_bytes = request->host_to_device_bytes;
         result.prompt                          = request->prompt_summary;
         result.generated_token_ids             = std::move(request->generated);
+        result.content_logprobs                = std::move(request->content_logprobs);
         result.content                         = std::move(request->content);
         result.reasoning                       = std::move(request->reasoning);
         result.tool_calls                      = request->output.take_tool_calls();
@@ -988,8 +1042,21 @@ private:
                     finish_reasons[row] = FinishReason::Cancelled;
                     continue;
                 }
+                std::span<const runtime::RawTokenLogprob> row_logprobs{};
+                if (!pending.logprobs().empty()) {
+                    row_logprobs = pending.logprobs().subspan(
+                        static_cast<std::size_t>(row) * pending.row_stride(), count);
+                }
+                // Real-time reasoning control: a close requested while the request was generating is
+                // consumed at this boundary, so the round that admits it publishes the canonical
+                // early-close guidance exactly as a budget boundary does.
+                if (request->reasoning_end->load(std::memory_order_acquire)) {
+                    request->reasoning_end->store(false, std::memory_order_release);
+                    request->output.request_reasoning_close();
+                }
                 const OutputDecision decision = request->output.preview_model(
-                    row_tokens, request->budget->remaining(), request->budget->limit_reason());
+                    row_tokens, request->budget->remaining(), request->budget->limit_reason(),
+                    row_logprobs);
                 if (decision.accepted_tokens == 0 || decision.accepted_tokens > count ||
                     (!decision.finished() && decision.accepted_tokens != count) ||
                     (decision.finished() && decision.continuation != ContinuationAction::Decode) ||
@@ -1108,7 +1175,18 @@ private:
                 if (!cancelled[row]) { request->budget->commit(accepted); }
                 update_recovery(request, cancelled[row]);
                 auto published = request->output.commit_preview();
-                auto timing    = record_committed_output(request, accepted);
+                const std::span<const TokenLogprob> session_logprobs =
+                    request->output.content_logprobs();
+                const std::size_t already = request->content_logprobs.size();
+                if (session_logprobs.size() > already) {
+                    const std::span<const TokenLogprob> fresh = session_logprobs.subspan(already);
+                    if (request->consumer_mode == OutputConsumerMode::Streaming) {
+                        attach_streaming_logprobs(published, fresh);
+                    }
+                    request->content_logprobs.insert(request->content_logprobs.end(), fresh.begin(),
+                                                     fresh.end());
+                }
+                auto timing = record_committed_output(request, accepted);
                 append_output(request, std::move(published), std::move(timing), &phase);
                 if (decisions[row].terminal) {
                     if (cancelled[row]) {
@@ -1376,6 +1454,10 @@ private:
             if (!request->sequence) {
                 throw std::logic_error("binding completed without a native sequence");
             }
+            // Attach (or clear, for an unconstrained request) the lane's grammar constraint so a
+            // recycled lane can never keep an earlier request's mask state.
+            instance_.program->set_constraint(*request->sequence, request->grammar,
+                                              request->grammar_carries_reasoning);
             request->model_state = progress.replaying ? EngineRequestState::Replay
                                    : control.resumed  ? request->resume_phase
                                                       : EngineRequestState::Prefill;
@@ -1514,6 +1596,17 @@ private:
     }
 
     bool pause_resident(std::uint32_t lane) {
+        // Fork product contract: one GPU, one resident model, startup-fixed concurrency of one to
+        // eight requests, bounded FIFO ingress, and NO active-request preemption (one compact
+        // decode batch per round). Upstream's scheduler may select a resident victim under
+        // resource pressure; the fork never pauses a resident request, so admission waits for
+        // capacity instead of reclaiming an active request. Inactive cache/snapshot reclaim
+        // remains enabled above this point. See docs/maintainer/engine-architecture.md section 1.
+        (void)lane;
+        return false;
+    }
+
+    bool pause_resident_unreachable(std::uint32_t lane) {
         if (instance_.program->has_context_transaction()) { return false; }
         auto request       = slots_[lane];
         bool save_snapshot = false;
@@ -1953,6 +2046,11 @@ private:
                     // Only the oldest required unit can displace younger residents. Other
                     // failed rows wait or yield their own lane; they cannot block ready rows.
                     // The same shortage has already exhausted cache and paused snapshots.
+                    // Fork contract: active-request preemption is pinned off. The fork expects
+                    // --kv-capacity to cover every resident lane at full context (its historical
+                    // admission guaranteed the complete execution resources before Active), so a
+                    // resident that cannot obtain its legal unit under that contract is an
+                    // invariant violation and fails closed instead of preempting a younger row.
                     if (pause_reclaim_victim(request->id)) { break; }
                     throw std::logic_error("oldest resident cannot obtain its legal unit");
                 }

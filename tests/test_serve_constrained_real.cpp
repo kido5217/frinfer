@@ -56,8 +56,7 @@ ninfer::EngineOptions engine_options(const char* artifact) {
     options.max_concurrency                      = 1;
     options.max_pending_requests                 = 1;
     options.context_cache.device_state_slots     = 1;
-    options.context_cache.host_state_slots       = 2;
-    options.context_cache.host_kv_capacity_bytes = 512ULL << 20;
+    options.context_cache.host_capacity_bytes    = 1ULL << 30;
     return options;
 }
 

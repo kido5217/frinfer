@@ -234,12 +234,18 @@ PersistentLayout persistent_layout(const SequencePlanImpl& plan) {
     }
 
     out.round = qwen3_5::begin_round_state_layout(
-        builder, qwen3_5::RoundStateSpec{.hidden         = dimension(config.hidden_size),
-                                         .output_rows    = dimension(config.vocab_size),
-                                         .batch_capacity = plan.max_concurrency,
-                                         .draft_window   = plan.draft_window,
-                                         .backend        = plan.speculative_backend,
-                                         .causal_scoring = plan.causal_scoring});
+        builder, qwen3_5::RoundStateSpec{
+                     .hidden         = dimension(config.hidden_size),
+                     .output_rows    = dimension(config.vocab_size),
+                     .batch_capacity = plan.max_concurrency,
+                     .draft_window   = plan.draft_window,
+                     .backend        = plan.speculative_backend,
+                     .causal_scoring = plan.causal_scoring,
+                     // Grammar masks cover the public token domain on every generation program.
+                     .mask_token_domain =
+                         plan.causal_scoring
+                             ? 0
+                             : dimension(parameters.model.resources().public_token_count)});
     out.prefill_hidden =
         add_tensor(builder, DType::BF16, {dimension(config.hidden_size), effective_prefill_chunk},
                    "step prefill hidden");
@@ -268,7 +274,6 @@ PersistentLayout persistent_layout(const SequencePlanImpl& plan) {
 }
 
 WorkspacePlan build_workspace_plan(const SequencePlanImpl& plan) {
-    const DeviceExecutionView device_execution{nullptr, plan.multiprocessor_count};
     const auto& parameters = *plan.parameters;
     const auto& config     = parameters.model.config().text;
 
@@ -324,8 +329,7 @@ WorkspacePlan build_workspace_plan(const SequencePlanImpl& plan) {
                                         {dimension(config.attention->head_dim),
                                          dimension(config.attention->num_attention_heads),
                                          dimension(config.attention->num_key_value_heads)},
-                                        plan.kv_storage, envelope, batch_size, min_width, max_width,
-                                        device_execution));
+                                        plan.kv_storage, envelope, batch_size, min_width, max_width));
                     add_scratch(layout, attention->output, first, last);
                 } else {
                     const auto& gdn = std::get<execution::GdnParameters>(block.mixer);
@@ -393,7 +397,7 @@ WorkspacePlan build_workspace_plan(const SequencePlanImpl& plan) {
                             {dimension(config.attention->head_dim),
                              dimension(config.attention->num_attention_heads),
                              dimension(config.attention->num_key_value_heads)},
-                            plan.kv_storage, envelope, 1, tokens, tokens, device_execution));
+                            plan.kv_storage, envelope, 1, tokens, tokens));
         (void)workspace::mtp_post_attention(layout, config, tokens);
         mtp_post_mixer(layout, tokens, tokens);
     };
@@ -433,7 +437,7 @@ WorkspacePlan build_workspace_plan(const SequencePlanImpl& plan) {
                             {dimension(config.attention->head_dim),
                              dimension(config.attention->num_attention_heads),
                              dimension(config.attention->num_key_value_heads)},
-                            plan.kv_storage, text_envelope, 1, 1, 1, device_execution));
+                            plan.kv_storage, text_envelope, 1, 1, 1));
         matrix(layout, DType::BF16, dimension(config.hidden_size), 1);
         matrix(layout, DType::BF16, dimension(config.hidden_size), 1);
         mtp_post_mixer(layout, 1, 1);
@@ -527,7 +531,7 @@ WorkspacePlan build_workspace_plan(const SequencePlanImpl& plan) {
                             {dimension(config.attention->head_dim),
                              dimension(config.attention->num_attention_heads),
                              dimension(config.attention->num_key_value_heads)},
-                            plan.kv_storage, text_envelope, batch, width, width, device_execution));
+                            plan.kv_storage, text_envelope, batch, width, width));
                 (void)workspace::mtp_post_attention(layout, config, tokens);
                 mtp_post_mixer(layout, tokens, tokens);
             };

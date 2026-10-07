@@ -1937,7 +1937,7 @@ int test_thinking_budget_control(const Frontend& frontend) {
                           channel_text(control_output, ninfer::OutputChannel::Content).empty(),
                       "thinking control was truncated by caller stops or published to content");
     const ninfer::ThinkingBudgetStats stats = session.thinking_stats();
-    failures += check(stats.configured_budget == 2 && stats.model_thinking_tokens == 2 &&
+    failures += check(stats.configured_budget == 2 && stats.budget_thinking_tokens == 2 &&
                           stats.injected_tokens == control.size() && stats.applied &&
                           session.pending_control_tokens().empty() &&
                           session.model_token_budget_remaining(17) == 17,

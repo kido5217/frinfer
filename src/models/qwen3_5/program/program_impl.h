@@ -19,6 +19,9 @@
 #include "models/qwen3_5/execution/text.h"
 #include "models/qwen3_5/execution/vision.h"
 #include "models/qwen3_5/program/vision_prefill.h"
+#include "models/qwen3_5/program/constraint_state.h"
+#include "models/qwen3_5/program/mask_transport.h"
+#include "models/qwen3_5/program/logprob_assembly.h"
 
 #include <algorithm>
 #include <cstdint>
@@ -60,6 +63,8 @@ struct RequestBasePlanImpl {
     runtime::RequestPlanSummary summary;
     qwen3_5::PreparedContextCache context_cache;
     ops::SamplingConfig sampling;
+    // Request opted into per-token log probabilities.
+    bool logprobs = false;
     std::shared_ptr<const VisionControlPlan> vision_control_plan;
     std::vector<CaptureGroup> capture_groups;
     std::shared_ptr<const PreparedCaptureBacking> capture_backing;
@@ -174,6 +179,8 @@ struct RequestControl {
     Lifecycle lifecycle = Lifecycle::Empty;
     PendingCandidate pending;
     ops::SamplingConfig sampling_host;
+    // Request opted into per-token log probabilities (set with the sampling config).
+    bool logprobs = false;
     GenerationTimings timings;
     SpeculativeStats speculative_stats;
     std::shared_ptr<const RequestBasePlanImpl> base;
@@ -187,6 +194,10 @@ struct RequestControl {
     std::vector<CaptureGroup> capture_groups;
     std::size_t next_capture = 0;
     bool capture_pending     = false;
+
+    // Grammar constraint state: the compiled grammar, its committed runtime and the round's mask
+    // plan live behind one owner (constraint_state.h).
+    ConstraintState constraint;
 
     struct Prefill {
         PreparedPromptData prompt;
@@ -365,6 +376,13 @@ public:
     std::array<SequenceState, kMaximumConcurrency> sequences;
     std::array<RequestControl, kMaximumConcurrency> requests;
     std::array<std::uint64_t, kMaximumConcurrency> lane_epochs{};
+    // Grammar mask transport, bound to the round's mask rows once at startup.
+    MaskTransport mask_transport_;
+    // Stable storage for the round's per-(row,column) logprob records. The returned
+    // BatchedGeneratedRound spans point here, so it must outlive PendingBatch consumption.
+    std::array<runtime::RawTokenLogprob,
+               kMaximumConcurrency * kDFlashDecodeMaximumWidth>
+        pending_logprobs_{};
     std::vector<CheckpointSlot> checkpoints;
 
     DecodeGraphFamily ordinary_graphs;
@@ -499,6 +517,15 @@ public:
     void initialize_captures(std::uint32_t lane, std::uint32_t from, std::uint32_t through);
     [[nodiscard]] SequenceHandle sequence_handle(std::uint32_t lane) const noexcept;
     void invalidate_lane(std::uint32_t lane) noexcept;
+    void set_constraint(std::uint32_t lane,
+                        std::shared_ptr<const frontend::CompiledGrammar> grammar,
+                        bool carries_reasoning);
+    void refresh_mask_rows(std::span<const std::uint32_t> lanes);
+    void refresh_prefill_mask_row(std::uint32_t lane);
+    void advance_grammar_state(std::span<const std::uint32_t> bases,
+                               std::span<const std::uint32_t> lanes,
+                               std::span<const runtime::CommitDecision> decisions,
+                               std::span<const std::uint32_t> accepted);
     [[nodiscard]] SequenceState& active_sequence(std::uint32_t lane);
     [[nodiscard]] const SequenceState& active_sequence(std::uint32_t lane) const;
     void clear_lane(SequenceState&, RequestControl&) noexcept;
@@ -539,7 +566,7 @@ public:
                                                             runtime::ExecutionTiming*);
     void prepare_graphs();
     void install_sampling(SequenceState& sequence, RequestControl& request,
-                          const ops::SamplingConfig& config);
+                          const ops::SamplingConfig& config, bool logprobs);
     void set_device_i32(Tensor& tensor, std::int32_t value);
     void copy_tail(SequenceState& sequence, const Tensor& source);
     void copy_round_token();

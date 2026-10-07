@@ -4,6 +4,8 @@
 #include "models/qwen3_5/execution/linear.h"
 #include "core/device.h"
 #include "ninfer/ops/gdn_replay.h"
+#include "ninfer/ops/apply_mask.h"
+#include "ninfer/ops/logprob_topk.h"
 #include "ninfer/ops/sampling.h"
 #include "ninfer/ops/scalar.h"
 #include "ninfer/ops/scatter.h"
@@ -162,12 +164,24 @@ void sample_from_hidden(PrefillContext& state, const Tensor& hidden, std::int32_
     Tensor logits = state.execution.io.logits.slice(1, 0, 1);
     project(hidden, state.execution.parameters.text.output_head, logits, state.execution.work,
             state.execution.device.stream);
+    const std::int32_t token_domain =
+        dimension(state.execution.parameters.model.resources().public_token_count);
+    if (state.execution.io.mask_rows.data != nullptr) {
+        // Prefill samples its single row from the shared step logits, so it reads mask row 0.
+        ops::apply_mask(logits, /*columns=*/1, /*batch=*/1, state.execution.io.mask_rows,
+                        state.execution.io.mask_active, token_domain,
+                        static_cast<std::int32_t>(MaskTransport::lane_stride()),
+                        state.execution.device.stream);
+    }
+    ops::logprob_topk(logits, state.sampling, token_domain, state.execution.io.logprob_ids,
+                      state.execution.io.logprob_values, state.execution.io.logprob_lse,
+                      state.execution.io.logprob_active, state.execution.work,
+                      state.execution.device.stream);
     CUDA_CHECK(cudaMemcpyAsync(state.execution.io.pos.data, &absolute_position,
                                sizeof(absolute_position), cudaMemcpyHostToDevice,
                                state.execution.device.stream));
-    ops::sample(logits, state.execution.io.token,
-                dimension(state.execution.parameters.model.resources().public_token_count),
-                state.sampling, state.execution.io.pos, purpose, state.execution.work,
+    ops::sample(logits, state.execution.io.token, token_domain, state.sampling,
+                state.execution.io.pos, purpose, state.execution.work,
                 state.execution.device.stream);
     state.execution.work.reset();
 }
@@ -207,6 +221,7 @@ PrefillProgress ProgramImpl::advance_prefill(SequenceHandle handle,
         set_device_i32(io.backend_kv_table_row,
                        backend_kv_addresses->bound_row(*state.kv->backend));
     }
+    refresh_prefill_mask_row(lane);
     auto progress = wrap_prefill(lane, advance_prefill_raw(lane, timing));
     if (!progress.complete) { settle_unit(lane); }
     return progress;

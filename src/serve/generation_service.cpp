@@ -38,7 +38,7 @@ struct RequestLifetime {
     std::chrono::steady_clock::time_point deadline;
 };
 
-ApiError request_error_to_api_error(const ninfer::RequestError& exception) {
+ApiError request_error_to_api_error(const ninfer::RequestError& exception, ConstraintSource source) {
     ApiError error;
     error.param   = "messages";
     error.message = exception.what();
@@ -59,6 +59,16 @@ ApiError request_error_to_api_error(const ninfer::RequestError& exception) {
     case ninfer::RequestErrorKind::InvalidMedia:
         error.status = 400;
         error.code   = "invalid_media";
+        break;
+    case ninfer::RequestErrorKind::InvalidConstraint:
+        error.status = 400;
+        if (source == ConstraintSource::JsonSchema) {
+            error.param = "response_format";
+            error.code  = "json_schema_invalid";
+        } else {
+            error.param = "grammar";
+            error.code  = "grammar_invalid";
+        }
         break;
     case ninfer::RequestErrorKind::Overloaded:
         error.param.clear();
@@ -186,8 +196,9 @@ ninfer::OwnedMedia acquire_media(const ContentPart& part, Clock::time_point dead
     return media;
 }
 
-[[noreturn]] void throw_request_error(const ninfer::RequestError& exception) {
-    throw ApiException(request_error_to_api_error(exception));
+[[noreturn]] void throw_request_error(const ninfer::RequestError& exception,
+                                      ConstraintSource source = ConstraintSource::None) {
+    throw ApiException(request_error_to_api_error(exception, source));
 }
 
 void check_preparation_control(Clock::time_point deadline,
@@ -222,13 +233,22 @@ public:
     }
 
     void publish(ninfer::OutputDelta delta) override {
-        if (delta.text.empty()) { return; }
+        if (delta.text.empty() && delta.logprobs.empty() && !delta.demotion) { return; }
         deliver([&] {
-            if (delta.channel == ninfer::OutputChannel::Reasoning) {
-                if (sink_->on_reasoning) { sink_->on_reasoning(delta.text); }
-            } else {
-                if (sink_->on_content) { sink_->on_content(delta.text); }
+            if (delta.demotion && sink_->on_tool_call_demoted) {
+                const ninfer::ToolCallDemotion demotion = *delta.demotion;
+                if (demotion.text_offset > 0 && sink_->on_content) {
+                    sink_->on_content(delta.text.substr(0, demotion.text_offset), {});
+                }
+                sink_->on_tool_call_demoted(delta.text.substr(demotion.text_offset), demotion);
+                return;
             }
+            if (delta.channel == ninfer::OutputChannel::Reasoning) {
+                if (!delta.text.empty() && sink_->on_reasoning) { sink_->on_reasoning(delta.text); }
+                return;
+            }
+            if (delta.text.empty() && delta.logprobs.empty()) { return; }
+            if (sink_->on_content) { sink_->on_content(delta.text, std::move(delta.logprobs)); }
         });
     }
 
@@ -305,10 +325,11 @@ PreparedRequest GenerationService::prepare(const GenerationRequest& request,
                                            ninfer::GenerationObservationOptions observation,
                                            std::function<bool()> is_cancelled,
                                            ContextCacheHints context_cache) const {
-    return prepare_impl(
-        request, consumer_mode, observation, std::move(is_cancelled), std::move(context_cache),
-        options_.allow_prefix_reuse ? CacheParticipation::ReadWrite : CacheParticipation::Disabled,
-        DeadlinePolicy::ClientPendingTimeout);
+    return prepare_impl(request, consumer_mode, std::move(observation), std::move(is_cancelled),
+                        std::move(context_cache),
+                        options_.allow_prefix_reuse ? CacheParticipation::ReadWrite
+                                                    : CacheParticipation::Disabled,
+                        DeadlinePolicy::ClientPendingTimeout);
 }
 
 PreparedRequest GenerationService::prepare_impl(const GenerationRequest& request,
@@ -369,14 +390,22 @@ PreparedRequest GenerationService::prepare_impl(const GenerationRequest& request
         prepared.preparation   = prompt.preparation_stats();
         prepared.prepare_seconds =
             std::chrono::duration<double>(Clock::now() - prepared.lifetime->started).count();
+        if (observation.first_token) {
+            observation.first_token = [callback = std::move(observation.first_token),
+                                       seconds  = prepared.prepare_seconds](
+                                          ninfer::GenerationFirstTokenObservation first) {
+                first.prepare_seconds = seconds;
+                callback(first);
+            };
+        }
         prepared.generation = engine_->submit(std::move(prompt), std::move(request_options),
                                               consumer_mode == GenerationConsumerMode::Streaming
                                                   ? ninfer::OutputConsumerMode::Streaming
                                                   : ninfer::OutputConsumerMode::Aggregate,
-                                              observation, prepared.lifetime->deadline);
+                                              std::move(observation), prepared.lifetime->deadline);
         prepared.sampling   = prepared.generation.resolved_sampling();
     } catch (const ApiException&) { throw; } catch (const ninfer::RequestError& exception) {
-        throw_request_error(exception);
+        throw_request_error(exception, request.constraint_source);
     } catch (const std::invalid_argument& exception) {
         throw_invalid_input(exception, "invalid_prompt");
     }
@@ -437,6 +466,7 @@ GenerationOutcome GenerationService::run(PreparedRequest& prepared, const Stream
     GenerationOutcome outcome;
     outcome.text                = std::move(result.content);
     outcome.reasoning           = std::move(result.reasoning);
+    outcome.content_logprobs    = std::move(result.content_logprobs);
     outcome.prompt_tokens       = static_cast<int>(result.prompt.prompt_tokens);
     outcome.completion_tokens   = static_cast<int>(result.generated_token_ids.size());
     outcome.generated_token_ids = std::move(result.generated_token_ids);

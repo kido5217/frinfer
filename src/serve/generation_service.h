@@ -52,6 +52,8 @@ struct GenerationMetrics {
 struct GenerationOutcome {
     std::string text;
     std::string reasoning;
+    // Per-content-token logprob records when the request opted in; empty otherwise.
+    std::vector<ninfer::TokenLogprob> content_logprobs;
     std::vector<ninfer::TokenId> generated_token_ids;
     std::vector<ninfer::GeneratedToolCall> tool_calls;
     ninfer::ToolCallParseDiagnostics tool_call_parse;
@@ -75,8 +77,16 @@ struct StreamSink {
     std::function<void(const ninfer::GenerationStart& start)> on_start;
     std::function<void(const ninfer::PromptProgress& progress)> on_progress;
     std::function<void(const ninfer::GenerationTimingObservation& timing)> on_timing;
-    std::function<void(const std::string& delta_text)> on_content;
+    // Content delta with the logprob records that arrived in the same output delta (token order).
+    // Passed together so a route can emit one event carrying both the text and its logprobs; the
+    // records are empty when logprobs are not requested for this delta.
+    std::function<void(const std::string& delta_text, std::vector<ninfer::TokenLogprob> logprobs)>
+        on_content;
     std::function<void(const std::string& delta_text)> on_reasoning;
+    // ADR-0002: a demoted tool-call region (`text` holds only the region bytes). The route either
+    // signals the class (call loss) or republishes the bytes as ordinary content (benign).
+    std::function<void(const std::string& text, const ninfer::ToolCallDemotion& demotion)>
+        on_tool_call_demoted;
     std::function<bool()> is_cancelled;
 };
 
@@ -86,7 +96,10 @@ enum class GenerationConsumerMode : std::uint8_t {
 };
 
 // Translate Engine request failures into the shared protocol-neutral HTTP error contract.
-ApiError request_error_to_api_error(const ninfer::RequestError& exception);
+// `source` selects the contract code for a rejected constraint (grammar_invalid vs
+// json_schema_invalid); other kinds ignore it.
+ApiError request_error_to_api_error(const ninfer::RequestError& exception,
+                                    ConstraintSource source = ConstraintSource::None);
 
 // Preparation ends by synchronously submitting the owning prompt to the Engine FIFO. The returned
 // request keeps its ingress/response lifetime reservation until the HTTP response is released and

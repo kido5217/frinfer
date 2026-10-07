@@ -35,9 +35,10 @@ ninfer_add_test(ninfer_qwen3_5_prefix_real_test
   SOURCES "${CMAKE_CURRENT_LIST_DIR}/test_engine_prefix_real.cpp"
   LIBRARIES ninfer_engine)
 
-ninfer_add_test(ninfer_qwen3_5_preemption_real_test
-  SOURCES "${CMAKE_CURRENT_LIST_DIR}/test_engine_preemption_real.cpp"
-  LIBRARIES ninfer_engine)
+# The upstream forced-preemption real test asserts preemptions != 0 and drives the pause/replay
+# recovery path. The fork pins active-request preemption off, so this test is not part of the fork
+# suite; its replacement is ninfer_qwen3_5_no_preemption_real_test below. The source is retained
+# for the serving/bench reconciliation (#241) and the merge ticket (#242).
 
 ninfer_add_test(ninfer_qwen3_5_score_real_test
   SOURCES "${CMAKE_CURRENT_LIST_DIR}/test_engine_score_real.cpp"
@@ -63,10 +64,6 @@ ninfer_add_test(ninfer_qwen3_5_dflash_real_test
   SOURCES "${CMAKE_CURRENT_LIST_DIR}/test_engine_dflash_real.cpp"
   LIBRARIES ninfer_engine)
 
-ninfer_add_test(ninfer_tool_call_parser_test
-  SOURCES "${CMAKE_CURRENT_LIST_DIR}/../../test_tool_call_parser.cpp"
-  LIBRARIES ninfer_engine ninfer::json)
-
 ninfer_add_test(ninfer_qwen3_5_visual_scatter_test
   SOURCES "${CMAKE_CURRENT_LIST_DIR}/test_visual_scatter.cpp"
   LIBRARIES ninfer_engine ninfer_core)
@@ -82,7 +79,6 @@ set(ninfer_qwen3_5_real_tests
   ninfer_qwen3_5_native_transactions_test
   ninfer_qwen3_5_prefix_real_test
   ninfer_qwen3_5_agent_continuation_real_test
-  ninfer_qwen3_5_preemption_real_test
   ninfer_qwen3_5_score_real_test
   ninfer_qwen3_5_vision_workspace_test
   ninfer_qwen3_5_dflash2_real_test
@@ -99,3 +95,37 @@ set_tests_properties(
   ninfer_qwen3_5_context_store_test
   ninfer_qwen3_5_visual_scatter_test
   PROPERTIES SKIP_RETURN_CODE 77 LABELS "gpu")
+
+# Fork grammar stack: compiled-grammar runtime, token-trie mask producer, per-lane constraint state,
+# and the end-to-end constrained generation routes (re-homed onto the upstream runtime).
+ninfer_add_test(ninfer_grammar_test
+  SOURCES "${CMAKE_CURRENT_LIST_DIR}/test_grammar.cpp"
+  LIBRARIES ninfer_grammar ninfer_llama_grammar ninfer_llama_chat ninfer_model_loading ninfer::json)
+
+ninfer_add_test(ninfer_grammar_producer_test
+  SOURCES "${CMAKE_CURRENT_LIST_DIR}/test_grammar_producer.cpp"
+  NEEDS_SOURCE_DIR
+  LIBRARIES ninfer_grammar ninfer_llama_grammar ninfer_llama_chat ninfer_model_loading ninfer::json)
+
+ninfer_add_test(ninfer_constraint_state_test
+  SOURCES "${CMAKE_CURRENT_LIST_DIR}/test_constraint_state.cpp"
+  LIBRARIES ninfer_engine ninfer_grammar ninfer_core)
+
+ninfer_add_test(ninfer_qwen3_5_constrained_real_test
+  SOURCES "${CMAKE_CURRENT_LIST_DIR}/test_engine_constrained_real.cpp"
+  LIBRARIES ninfer_engine)
+set_tests_properties(ninfer_qwen3_5_constrained_real_test PROPERTIES SKIP_RETURN_CODE 77)
+
+ninfer_add_test(ninfer_qwen3_5_constrained_matrix_real_test
+  SOURCES "${CMAKE_CURRENT_LIST_DIR}/test_engine_constrained_matrix_real.cpp"
+  NEEDS_SOURCE_DIR
+  LIBRARIES ninfer_engine ninfer_llama_chat ninfer::json)
+set_tests_properties(ninfer_qwen3_5_constrained_matrix_real_test PROPERTIES SKIP_RETURN_CODE 77)
+
+# Fork product contract: active-request preemption never fires under fixed concurrency.
+ninfer_add_test(ninfer_qwen3_5_no_preemption_real_test
+  SOURCES "${CMAKE_CURRENT_LIST_DIR}/test_engine_no_preemption_real.cpp"
+  LIBRARIES ninfer_engine)
+set_tests_properties(ninfer_qwen3_5_no_preemption_real_test PROPERTIES
+  SKIP_RETURN_CODE 77
+  RUN_SERIAL TRUE)

@@ -33,7 +33,8 @@ struct ContractAccess {
     [[nodiscard]] static PendingBatch
     make_pending(const void* owner, std::uint64_t transaction, std::span<const SequenceHandle> rows,
                  std::span<const TokenId> tokens, std::span<const std::int32_t> row_counts,
-                 std::uint32_t row_stride, runtime::ExecutionTiming timing) {
+                 std::span<const runtime::RawTokenLogprob> logprobs, std::uint32_t row_stride,
+                 runtime::ExecutionTiming timing) {
         PendingBatch out;
         out.owner_       = owner;
         out.transaction_ = transaction;
@@ -41,6 +42,7 @@ struct ContractAccess {
         for (std::size_t i = 0; i < rows.size(); ++i) { out.rows_[i] = rows[i]; }
         out.tokens_     = tokens;
         out.row_counts_ = row_counts;
+        out.logprobs_   = logprobs;
         out.row_stride_ = row_stride;
         out.timing_     = timing;
         return out;

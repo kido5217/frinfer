@@ -4,6 +4,7 @@
 #include "serve/openai_common.h"
 #include "serve/openai_responses.h"
 #include "serve/request_validation.h"
+#include "serve/tool_call_signal.h"
 
 #include <nlohmann/json.hpp>
 
@@ -274,7 +275,8 @@ void HttpServer::handle_responses(const httplib::Request& req, httplib::Response
         prepared = service_->prepare(
             resolved.generation,
             request.stream ? GenerationConsumerMode::Streaming : GenerationConsumerMode::Aggregate,
-            {}, [&req] { return client_disconnected(req); }, std::move(resolved.cache_hints));
+            {},
+            [&req] { return client_disconnected(req); }, std::move(resolved.cache_hints));
     } catch (const ApiException& exception) {
         const ApiError error = responses_error(exception.error());
         record_request_rejected(make_request_rejection_log_context(
@@ -310,6 +312,13 @@ void HttpServer::handle_responses(const httplib::Request& req, httplib::Response
             return;
         }
         lifecycle->done(outcome);
+        if (tool_call_demotion_signals(outcome.tool_call_parse.fallback_reason,
+                                       outcome.tool_call_parse.call_attempted)) {
+            res.set_header("x-should-retry", "true");
+            write_openai_error(res, responses_error(tool_call_demotion_error(
+                                       outcome.tool_call_parse.fallback_reason)));
+            return;
+        }
 
         std::optional<BuiltOpenAIResponse> response;
         try {
@@ -351,7 +360,7 @@ void HttpServer::handle_responses(const httplib::Request& req, httplib::Response
         }
 
         try {
-            set_owned_json_content(res, response->body.dump(), prepared.lifetime);
+            set_owned_json_content(res, dump_openai_json(response->body), prepared.lifetime);
         } catch (const std::exception& exception) {
             lifecycle->response_failure(make_internal_request_failure(
                 RequestFailurePhase::ResponseRender, exception.what()));
@@ -411,15 +420,30 @@ void HttpServer::handle_responses(const httplib::Request& req, httplib::Response
                 }
 
                 GenerationOutcome outcome;
+                std::optional<ApiError> demotion_signal;
                 try {
                     StreamSink output;
+                    output.on_tool_call_demoted = [&](const std::string& text,
+                                                      const ninfer::ToolCallDemotion& demotion) {
+                        if (tool_call_demotion_signals(demotion.fallback_reason,
+                                                       demotion.call_attempted)) {
+                            // ADR-0002: the lost call is signaled in-band; the region bytes are
+                            // withheld from the stream (the Engine aggregate keeps them).
+                            demotion_signal = tool_call_demotion_error(demotion.fallback_reason);
+                            return;
+                        }
+                        render_and_write(transport,
+                                         [&] { return stream->encoder->content_delta(text); });
+                    };
                     output.on_reasoning = [&](const std::string& text) {
                         render_and_write(transport,
                                          [&] { return stream->encoder->reasoning_delta(text); });
                     };
-                    output.on_content = [&](const std::string& text) {
-                        render_and_write(transport,
-                                         [&] { return stream->encoder->content_delta(text); });
+                    output.on_content = [&](const std::string& text,
+                                            std::vector<ninfer::TokenLogprob> records) {
+                        render_and_write(transport, [&] {
+                            return stream->encoder->content_delta(text, std::move(records));
+                        });
                     };
                     output.is_cancelled = [&] { return transport.poll(); };
 
@@ -445,6 +469,7 @@ void HttpServer::handle_responses(const httplib::Request& req, httplib::Response
                 }
 
                 lifecycle->done(outcome);
+                if (demotion_signal) { return send_failed(responses_error(*demotion_signal)); }
                 if (outcome.finish_reason == ninfer::FinishReason::Cancelled ||
                     stream->cancelled.load(std::memory_order_acquire)) {
                     lifecycle->response_failure(
@@ -552,7 +577,7 @@ void HttpServer::handle_response_get(const httplib::Request& req, httplib::Respo
         write_openai_error(res, response_not_found(id));
         return;
     }
-    res.set_content(stored->response.dump(), "application/json");
+    res.set_content(dump_openai_json(stored->response), "application/json");
 }
 
 void HttpServer::handle_response_delete(const httplib::Request& req, httplib::Response& res) {
@@ -587,7 +612,7 @@ void HttpServer::handle_response_cancel(const httplib::Request& req, httplib::Re
     error.status  = 400;
     error.type    = "invalid_request_error";
     error.code    = "background_not_supported";
-    error.message = "only background responses can be cancelled; NInfer does not support "
+    error.message = "only background responses can be cancelled; FrInfer does not support "
                     "background execution";
     write_openai_error(res, error);
 }

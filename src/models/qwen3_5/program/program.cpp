@@ -256,6 +256,17 @@ bool Program::recovery_pending(SequenceHandle sequence) const noexcept {
 
 bool Program::has_context_transaction() const noexcept { return impl_->has_context_transaction(); }
 
+SpeculativeBackend Program::speculative_backend() const noexcept {
+    return impl_->speculative_backend;
+}
+
+void Program::set_constraint(SequenceHandle sequence,
+                             std::shared_ptr<const frontend::CompiledGrammar> grammar,
+                             bool carries_reasoning) {
+    impl_->set_constraint(detail::ContractAccess::lane(sequence).value, std::move(grammar),
+                          carries_reasoning);
+}
+
 PrefillProgress Program::advance_prefill(SequenceHandle h, runtime::ExecutionTiming* t) {
     return impl_->advance_prefill(h, t);
 }
