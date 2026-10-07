@@ -101,7 +101,9 @@ bare completion. `--messages` remains the route for structured multi-turn input 
 chat template; the two text sources do not.
 
 The CLI normally omits `--kv-capacity`, so the shared Main Text KV pool follows the example's
-32,768-token `--max-context`.
+32,768-token `--max-context`. The CLI runs a single execution lane, so that pool already satisfies
+the pinned no-preemption capacity requirement (the pool must cover every lane at full context); an
+explicit `--kv-capacity` must round to that same single-lane pool or startup fails.
 
 Answer content is streamed to stdout. Human-readable startup milestones and runtime errors are
 written to stderr without service timestamps. Reasoning and the CLI result report (timings,

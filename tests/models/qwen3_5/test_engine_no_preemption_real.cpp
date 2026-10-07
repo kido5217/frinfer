@@ -1,7 +1,8 @@
-// Fork product contract: no active-request preemption. Mirrors the pressure scenario of
-// test_engine_preemption_real.cpp (two concurrent requests, history disabled, a KV capacity that
-// upstream's scheduler would satisfy by pausing/replaying a resident request) and asserts the
-// opposite outcome: admission waits for capacity and the preemption/recovery counters stay zero.
+// Fork product contract: no active-request preemption. Two concurrent requests run with history
+// disabled and the preemption/recovery counters stay zero. The pool covers every resident lane at
+// full context, so no resident can ever lose its legal execution unit; a pool below that bound is
+// rejected at startup instead of failing a resident later. The rejection is asserted here and
+// pinned by the message, which names the required and supplied capacity.
 //
 // NINFER_TEST_ARTIFACT selects the artifact; without it the test skips (exit 77).
 
@@ -14,6 +15,7 @@
 #include <filesystem>
 #include <iostream>
 #include <stdexcept>
+#include <string>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -22,9 +24,10 @@ namespace {
 
 constexpr std::uint32_t kPromptTokens = 192;
 constexpr std::uint32_t kOutputTokens = 256;
-// Sized so every resident lane fits at full context: the fork's contract is that
-// admission never needs to preempt a resident, so the pool must cover max_concurrency.
 constexpr std::uint32_t kCapacity     = 1024;
+// The pinned no-preemption contract sizes the pool for every resident lane at full context. The
+// tight pool below (one lane's worth) is what the startup validator must reject.
+constexpr std::uint32_t kPoolCapacity = 2 * kCapacity;
 
 void require(bool condition, const char* message) {
     if (!condition) { throw std::runtime_error(message); }
@@ -34,7 +37,8 @@ ninfer::EngineOptions engine_options(const std::filesystem::path& artifact) {
     ninfer::EngineOptions options;
     options.artifact_path                     = artifact;
     options.max_context                       = kCapacity;
-    options.kv_capacity                       = ninfer::KvCapacityPolicy::explicit_capacity(kCapacity);
+    options.kv_capacity =
+        ninfer::KvCapacityPolicy::explicit_capacity(kPoolCapacity);
     options.prefill_chunk                     = 128;
     options.max_concurrency                   = 2;
     options.max_pending_requests              = 2;
@@ -55,6 +59,29 @@ ninfer::RequestOptions request(std::uint32_t outputs) {
     options.stop.include_model_defaults       = false;
     options.output.raw                        = true;
     return options;
+}
+
+// A pool that cannot cover every resident lane at full context must be rejected at startup, with a
+// message naming the required and supplied capacity. This is the contract pin for option C: a
+// compliant pool means a resident can never lose its completion ability at runtime.
+void exercise_rejection(const std::filesystem::path& artifact) {
+    auto options        = engine_options(artifact);
+    options.kv_capacity = ninfer::KvCapacityPolicy::explicit_capacity(kCapacity);
+    bool rejected       = false;
+    std::string message;
+    try {
+        ninfer::Engine engine(options);
+    } catch (const std::invalid_argument& error) {
+        rejected = true;
+        message  = error.what();
+    }
+    require(rejected, "a KV pool below max_concurrency lanes at full context was accepted");
+    require(message.find("kv_capacity must cover every resident lane at full max_context") !=
+                    std::string::npos &&
+                message.find("32 Main KV pages") != std::string::npos &&
+                message.find("1024 tokens") != std::string::npos,
+            "the capacity rejection did not name the required and supplied capacity");
+    std::cout << "no-preemption rejection: " << message << '\n';
 }
 
 void exercise(const std::filesystem::path& artifact) {
@@ -135,6 +162,7 @@ int main() {
     }
     try {
         exercise(std::filesystem::path(artifact));
+        exercise_rejection(std::filesystem::path(artifact));
     } catch (const std::exception& error) {
         std::cerr << "no-preemption real test failed: " << error.what() << '\n';
         return 1;

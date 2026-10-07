@@ -10,6 +10,10 @@ Generation Engine 使用一张 GPU、一个常驻模型和启动时确定的 `ma
 有界等待队列按提交顺序组织；resident 请求按有限执行单元增量取得资源。
 本 fork 固定**不抢占已激活请求**：上游运行时的 pause/reclaim/replay 原语在本 fork 中被 pin 掉，
 资源不足时新请求等待容量而不是暂停 resident 请求（见 `engine_core.h` 的 `pause_resident`）。
+因此共享 Main KV 池必须在启动时覆盖 `max_concurrency` 个 lane 各自的满上下文：显式 `kv_capacity`
+低于该上界，或自动容量因显存不足解析到上界以下，都在启动时报错；上游“最老 resident 无法取得
+其合法单元”的回退分支因此不可达（契约见
+[资源调度与上下文缓存](resource-scheduling-and-context-cache.md#capacity)）。
 每轮将具备执行许可的 decode-ready 请求组成一个紧凑批次，prefill 与 Replay 分块穿插执行。
 
 Text、Vision、prefix reuse、MTP、DFlash/DFlash2、CLI 和 HTTP serving 都通过公共 `ninfer::Engine`。
@@ -287,7 +291,7 @@ Queue timeout、overload、输入超限和 request 无法表示属于请求级�
 ## 7. 物理执行与 CUDA Graph
 
 Startup planner 根据与执行同源的逐层 Parameters、Use 和设备容量建立 State/KV、workspace 与
-Graph 资源。顺序互斥 scratch 取峰值，跨阶段存活的数据保留到最后消费者：Vision handoff 保留至
+Graph 资源，并校验 Main KV 池覆盖全部 lane 的满上下文，不足即启动失败。顺序互斥 scratch 取峰值，跨阶段存活的数据保留到最后消费者：Vision handoff 保留至
 Text/所选 MTP 消费结束，speculative features 和 verify records 保留至提交边界。
 
 Growing KV 使用共享 typed paged pools，物理页与逻辑 token frontier 分离。所有预留、mapping 更新、

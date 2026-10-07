@@ -789,11 +789,17 @@ void validate_target_options(const execution::Parameters& parameters, DeviceCont
     if (options.max_concurrency == 0 || options.max_concurrency > kMaximumConcurrency) {
         throw std::invalid_argument("max_concurrency must be in [1,8]");
     }
+    // Fork contract: active-request preemption is pinned off, so every resident lane must fit at
+    // full context simultaneously. The Main Text KV pool is shared by all lanes and each lane can
+    // reach page_count(max_context) pages, so the pool must cover max_concurrency lanes at full
+    // context. The MTP/DFlash backend pool is sized on top of the Main pool (the per-lane draft
+    // window extra added in persistent_layout) and each lane's backend frontier is also bounded by
+    // max_context, so covering the Main pool covers the backend pool too. The runtime's
+    // "oldest resident cannot obtain its legal unit" branch is unreachable under this bound.
     const std::uint32_t logical_pages = page_count(options.max_context);
-    const std::uint32_t minimum_pages = std::max(logical_pages, options.max_concurrency);
-    const std::uint64_t maximum_pages64 =
+    const std::uint64_t required_pages64 =
         static_cast<std::uint64_t>(options.max_concurrency) * logical_pages;
-    if (maximum_pages64 > std::numeric_limits<std::uint32_t>::max()) {
+    if (required_pages64 > std::numeric_limits<std::uint32_t>::max()) {
         throw std::overflow_error("maximum Main KV page count exceeds uint32");
     }
     switch (options.kv_capacity.mode) {
@@ -802,7 +808,17 @@ void validate_target_options(const execution::Parameters& parameters, DeviceCont
             throw std::invalid_argument("kv_capacity must be at least max_context");
         }
         const std::uint32_t requested_pages = page_count(options.kv_capacity.explicit_tokens);
-        if (requested_pages < minimum_pages || requested_pages > maximum_pages64) {
+        if (requested_pages < required_pages64) {
+            throw std::invalid_argument(
+                "kv_capacity must cover every resident lane at full max_context: " +
+                std::to_string(required_pages64) + " Main KV pages (" +
+                std::to_string(required_pages64 * kPagedKVPageSize) + " tokens) are required for " +
+                std::to_string(options.max_concurrency) + " lanes at " +
+                std::to_string(options.max_context) + " tokens, but kv_capacity supplies " +
+                std::to_string(requested_pages) + " pages (" +
+                std::to_string(options.kv_capacity.explicit_tokens) + " tokens)");
+        }
+        if (requested_pages > required_pages64) {
             throw std::invalid_argument(
                 "kv_capacity is outside the usable range for max_context and max_concurrency");
         }
