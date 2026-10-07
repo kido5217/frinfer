@@ -22,10 +22,12 @@ Exactly one prompt source is required: `--prompt <text>`, `--prompt-file <file>`
 silently winning:
 
 ```bash
+# prompt.md holds the text verbatim, so it needs no quoting at all:
 ./build/apps/frinfer models/qwen3_8_27b_nvfp4.ninfer \
-  --prompt-file tools/prompts/review.md --max-context 32768 --max-new 8192
+  --prompt-file prompt.md --max-context 32768 --max-new 8192
 
-git show HEAD:src/models/qwen3_5/qwen3_5.py | ./build/apps/frinfer \
+# Anything on stdin works, including a file, a pipe, or another command:
+git show HEAD:README.md | ./build/apps/frinfer \
   models/qwen3_8_27b_nvfp4.ninfer --prompt-stdin --max-context 32768 --max-new 8192
 ```
 
