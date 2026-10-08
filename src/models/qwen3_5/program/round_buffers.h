@@ -26,11 +26,10 @@ struct RoundStateSpec {
     SpeculativeBackend backend   = SpeculativeBackend::None;
     bool causal_scoring          = false;
     // YaRN context extension. `yarn_inv_freq` holds the host-side per-pair frequencies
-    // (rotary_dim / 2 fp32 values) and `yarn_rotary_dim > 0` selects the YaRN route; an
-    // empty table keeps the unextended power-law path structurally unchanged.
+    // (rotary_dim / 2 fp32 values); a non-empty table selects the YaRN route, and an empty table
+    // keeps the unextended power-law path structurally unchanged.
     std::vector<float> yarn_inv_freq;
-    std::uint32_t yarn_rotary_dim = 0;
-    float yarn_mscale             = 1.0f;
+    float yarn_mscale = 1.0f;
 };
 
 struct PrefillRoundHost {

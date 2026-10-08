@@ -18,6 +18,7 @@ target_sources(ninfer_model_runtime PRIVATE
   "${CMAKE_CURRENT_LIST_DIR}/program/planning/graph_profiles.cpp"
   "${CMAKE_CURRENT_LIST_DIR}/program/planning/request_plan.cpp"
   "${CMAKE_CURRENT_LIST_DIR}/program/planning/source.cpp"
+  "${CMAKE_CURRENT_LIST_DIR}/program/planning/yarn_policy.cpp"
 
   "${CMAKE_CURRENT_LIST_DIR}/program/storage/sequence.cpp"
   "${CMAKE_CURRENT_LIST_DIR}/program/storage/checkpoints.cpp"
