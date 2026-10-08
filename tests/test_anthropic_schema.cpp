@@ -557,26 +557,37 @@ int test_tools() {
                          "Anthropic tool schema/examples did not reach the Qwen prompt");
 
     body["tools"] = Json::array({ordinary_tool(true)});
-    failures += check(api_code([&] { (void)parse(body); }) == "strict_tools_not_supported",
-                      "active strict tool was accepted without constrained decoding");
-    body["tool_choice"]               = Json{{"type", "none"}, {"disable_parallel_tool_use", true}};
+    const GenerationRequest strict_request = parse(body).generation;
+    failures += check(strict_request.tools.size() == 1 && strict_request.tools[0].strict &&
+                          prompt(strict_request).options.tool_jsons[0].find("\"strict\":true") !=
+                              std::string::npos,
+                      "active strict tool is carried for Engine enforcement");
+    body["tool_choice"]                 = Json{{"type", "none"}, {"disable_parallel_tool_use", true}};
     body["tools"][0]["defer_loading"] = true;
     body["tools"][0]["allowed_callers"] = Json::array({"code_execution"});
-    const GenerationRequest disabled    = parse(body).generation;
-    failures += check(!disabled.uses_tools() && prompt(disabled).options.tool_jsons.empty(),
-                      "tool_choice:none did not neutralize inactive tool guarantees");
+    const GenerationRequest disabled      = parse(body).generation;
+    failures += check(!disabled.uses_tools() &&
+                          disabled.tool_choice.mode == ToolChoiceMode::None &&
+                          prompt(disabled).options.tool_jsons.size() == 1,
+                      "tool_choice:none disables callable tools while keeping declarations");
 
     body                = base_request();
     body["tools"]       = Json::array({ordinary_tool()});
     body["tool_choice"] = Json{{"type", "any"}};
-    failures += check(api_code([&] { (void)parse(body); }) == "tool_choice_not_supported",
-                      "forced any-tool choice was silently downgraded");
+    const GenerationRequest forced_any = parse(body).generation;
+    failures += check(forced_any.tool_choice.mode == ToolChoiceMode::Required &&
+                          forced_any.uses_tools(),
+                      "forced any-tool choice requires a call");
     body["tool_choice"] = Json{{"type", "tool"}, {"name", "weather"}};
-    failures += check(api_code([&] { (void)parse(body); }) == "tool_choice_not_supported",
-                      "named tool choice was silently downgraded");
+    const GenerationRequest named = parse(body).generation;
+    failures += check(named.tool_choice.mode == ToolChoiceMode::Required &&
+                          named.tool_choice.allowed_names ==
+                              std::vector<std::string>{"weather"},
+                      "named tool choice selects one required tool");
     body["tool_choice"] = Json{{"type", "auto"}, {"disable_parallel_tool_use", true}};
-    failures += check(api_code([&] { (void)parse(body); }) == "parallel_tool_use_not_supported",
-                      "active single-tool-call guarantee was silently downgraded");
+    const GenerationRequest single = parse(body).generation;
+    failures += check(!single.tool_choice.parallel && single.constrains_tools(),
+                      "disabled parallel tool use constrains the turn to one call");
 
     body          = base_request();
     body["tools"] = Json::array({Json{{"type", "web_search_20250305"}, {"name", "web_search"}}});

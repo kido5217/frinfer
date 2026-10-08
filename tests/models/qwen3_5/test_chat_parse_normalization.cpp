@@ -5,7 +5,7 @@
 // integer lexemes, composed anyOf/oneOf unions, legacy fallback for unsupported or ambiguous
 // schemas, and the function-name length bound.
 #include "models/qwen3_5/frontend/chat_parse_core.h"
-#include "models/qwen3_5/frontend/tool_call_parser.h"
+#include "models/qwen3_5/frontend/tool_contract.h"
 
 #include <nlohmann/json.hpp>
 
@@ -76,15 +76,10 @@ struct Parsed {
 };
 
 Parsed parse(const std::vector<std::string>& definitions, const std::string& text,
-             std::size_t max_name_length = 64, bool declared = true) {
-    std::shared_ptr<const ToolCallOutputContract> contract;
-    if (declared) {
-        contract = build_tool_call_output_contract(definitions, true);
-    } else {
-        auto open_contract                    = std::make_shared<ToolCallOutputContract>();
-        open_contract->enforce_declared_names = false;
-        contract                              = std::move(open_contract);
-    }
+             std::size_t max_name_length = 64) {
+    // The contract always enforces declared names; callers testing an orthogonal bound
+    // declare the called tool so the name check is the only possible failure.
+    const auto contract = build_tool_call_output_contract(definitions);
     ChatParseCore core(contract, ChatParseOptions{.thinking_enabled     = false,
                                                   .tool_name_max_length = max_name_length});
     core.begin_preview();
@@ -275,9 +270,11 @@ int legacy_fallbacks() {
 
 int name_length_bound() {
     const std::string name(128, 'a');
-    const auto wide   = parse({}, tool_call(name), 128, /*declared=*/false);
-    const auto narrow = parse({}, tool_call(name), 64, /*declared=*/false);
-    const auto over   = parse({}, tool_call(std::string(129, 'a')), 128, /*declared=*/false);
+    const auto wide   = parse({tool_definition(name, Json::object())}, tool_call(name), 128);
+    const auto narrow = parse({tool_definition(name, Json::object())}, tool_call(name), 64);
+    const auto over =
+        parse({tool_definition(std::string(129, 'a'), Json::object())},
+              tool_call(std::string(129, 'a')), 128);
     int failures      = check(wide.calls.size() == 1, "128-character tool name was rejected");
     failures += check(narrow.calls.empty() && narrow.diagnostics.marker_seen &&
                           narrow.diagnostics.fallback_reason ==

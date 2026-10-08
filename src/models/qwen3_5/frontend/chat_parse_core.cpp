@@ -285,11 +285,9 @@ FallbackReason apply_adapter_checks(std::vector<RawToolCall>& calls, const Contr
             return FallbackReason::InvalidToolName;
         }
     }
-    if (contract.enforce_declared_names) {
-        for (const RawToolCall& call : calls) {
-            if (find_tool_contract(contract, call.name) == nullptr) {
-                return FallbackReason::UndeclaredTool;
-            }
+    for (const RawToolCall& call : calls) {
+        if (find_tool_contract(contract, call.name) == nullptr) {
+            return FallbackReason::UndeclaredTool;
         }
     }
     for (RawToolCall& call : calls) {

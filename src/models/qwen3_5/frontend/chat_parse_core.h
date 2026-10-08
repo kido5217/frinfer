@@ -1,6 +1,6 @@
 #pragma once
 
-#include "models/qwen3_5/frontend/tool_call_parser.h"
+#include "models/qwen3_5/frontend/tool_contract.h"
 #include "ninfer/types.h"
 
 #include <cstddef>

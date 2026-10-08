@@ -3,7 +3,7 @@
 #include "models/qwen3_5/frontend/chat_parse_core.h"
 #include "models/qwen3_5/frontend/chat_template.h"
 #include "models/qwen3_5/frontend/tokenizer.h"
-#include "models/qwen3_5/frontend/tool_call_parser.h"
+#include "models/qwen3_5/frontend/tool_contract.h"
 #include "text/unicode.h"
 
 #include <algorithm>

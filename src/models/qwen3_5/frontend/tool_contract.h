@@ -47,6 +47,10 @@ struct ToolCallOutputContract {
         std::string schema_json;
         std::size_t declaration_index = 0;
         bool strict                   = false;
+        // Fork duplicate tolerance: repeated declarations with an identical parameter
+        // contract merge; a conflicting repeat clears the parameters and decodes through
+        // the legacy normalizer instead of failing the request.
+        bool unambiguous = true;
     };
 
     std::vector<Tool> tools;

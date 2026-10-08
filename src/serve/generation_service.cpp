@@ -83,7 +83,12 @@ ApiError request_error_to_api_error(const ninfer::RequestError& exception, Const
     case ninfer::RequestErrorKind::InvalidJsonSchema:
     case ninfer::RequestErrorKind::UnsupportedJsonSchema:
     case ninfer::RequestErrorKind::UnsatisfiableJsonSchema:
-        error.param  = "response_format";
+        // Tool declarations that fail schema validation are attributed to the tools field
+        // (with the declaration-relative pointer the frontend reports); output-constraint
+        // failures keep the response_format attribution.
+        error.param = exception.source() == ninfer::RequestErrorSource::Tools
+                          ? "tools" + exception.pointer()
+                          : "response_format";
         error.status = 400;
         error.code   = "json_schema_invalid";
         break;
@@ -97,6 +102,9 @@ ApiError request_error_to_api_error(const ninfer::RequestError& exception, Const
     case ninfer::RequestErrorKind::InvalidToolConstraint:
         error.status = 400;
         error.code   = "tool_constraint_invalid";
+        if (exception.source() == ninfer::RequestErrorSource::Tools) {
+            error.param = "tools" + exception.pointer();
+        }
         break;
     case ninfer::RequestErrorKind::Overloaded:
         error.param.clear();

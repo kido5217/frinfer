@@ -26,6 +26,7 @@ struct ResolvedRequestOptions {
     StopPolicy stop;
     OutputOptions output;
     std::optional<OutputConstraint> constraint;
+    ToolChoice tool_choice;
 };
 
 enum class ContinuationAction : std::uint8_t {
