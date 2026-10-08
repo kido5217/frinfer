@@ -54,7 +54,9 @@ After building, `ctest --preset dev` runs the same CTest suite. See
 The devShell provides `just` as a thin wrapper over these commands: `just build`
 configures with the `dev` preset and builds, `just test` runs `ctest --preset dev`
 (extra arguments forward to ctest), and `just test-one <target>` builds and re-runs a
-single test.
+single test. `just verify` runs the whole verification (configure + build, the CTest
+suite, then `pytest tests/convert`) as one bounded command, tee-ing to
+`build/verify.log` and ending with a `VERIFY OK` or `VERIFY FAIL (step: ...)` line.
 
 The chat-template reference test uses Python Jinja2.
 

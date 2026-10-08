@@ -199,8 +199,10 @@ causes failures or interferes with the task, and briefly explain why.
 The root `justfile` wraps the documented build, test and benchmark commands: `just build`
 configures with the `dev` preset and builds, `just test` runs `ctest --preset dev` (extra arguments
 forward to ctest), `just test-one <target>` builds and re-runs a single test, and
-`just bench <target> [args]` builds and runs one benchmark executable. These are conveniences; the
-underlying commands documented in `tests/README.md` and `bench/README.md` remain authoritative.
+`just bench <target> [args]` builds and runs one benchmark executable. `just verify` runs the whole
+verification (configure + build, the CTest suite, then `pytest tests/convert`) as one bounded
+command. These are conveniences; the underlying commands documented in `tests/README.md` and
+`bench/README.md` remain authoritative.
 
 Use the devShell's `python3.13` interpreter explicitly; the default shell's `python3` may be a
 different version.

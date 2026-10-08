@@ -27,3 +27,18 @@ test-one name *args:
 bench target *args:
     cmake --build build --parallel --target {{target}}
     build/bench/{{target}} {{args}}
+
+# Full verification as one bounded command: configure + build, the whole CTest
+# suite, then the Python conversion tests. Everything is tee-ed to
+# build/verify.log and the run ends with an unambiguous `VERIFY OK` or
+# `VERIFY FAIL (step: <step>)` line. Run inside the Nix devShell (see header).
+verify:
+    @mkdir -p build; \
+    { \
+      fail=; \
+      echo '== configure =='; cmake --preset dev || fail=configure; \
+      if [ -z "$fail" ]; then echo '== build =='; cmake --build build -j || fail=build; fi; \
+      if [ -z "$fail" ]; then echo '== ctest =='; ctest --preset dev --output-on-failure || fail=ctest; fi; \
+      if [ -z "$fail" ]; then echo '== pytest tests/convert =='; python3.13 -m pytest tests/convert -q || fail='pytest tests/convert'; fi; \
+      if [ -z "$fail" ]; then echo 'VERIFY OK'; else echo "VERIFY FAIL (step: $fail)"; exit 1; fi; \
+    } 2>&1 | tee build/verify.log
