@@ -92,6 +92,7 @@ set(ninfer_qwen3_5_real_tests
   ninfer_qwen3_5_native_transactions_test
   ninfer_qwen3_5_prefix_real_test
   ninfer_qwen3_5_agent_continuation_real_test
+  ninfer_qwen3_5_grammar_real_test
   ninfer_qwen3_5_score_real_test
   ninfer_qwen3_5_vision_workspace_test
   ninfer_qwen3_5_dflash2_real_test
