@@ -3,6 +3,7 @@
 #include "serve/http_transport.h"
 #include "serve/request.h"
 
+#include <nlohmann/json.hpp>
 #include <spdlog/logger.h>
 #include <spdlog/sinks/null_sink.h>
 
@@ -248,6 +249,11 @@ std::shared_ptr<spdlog::logger> null_logger() {
 int test_metrics_endpoint_without_engine() {
     using ninfer::serve::HttpServerTestAccess;
     int failures = 0;
+    const auto error_type_code = [](const httplib::Response& response) {
+        const auto parsed = nlohmann::json::parse(response.body);
+        return std::pair{parsed.at("error").at("type").get<std::string>(),
+                         parsed.at("error").at("code").get<std::string>()};
+    };
     {
         ninfer::serve::ServeOptions options;
         options.enable_metrics = true;
@@ -255,10 +261,13 @@ int test_metrics_endpoint_without_engine() {
         httplib::Request request;
         httplib::Response response;
         HttpServerTestAccess::handle_metrics(server, request, response);
-        failures += check(response.status == 503 &&
-                              response.body.find("service_unavailable") != std::string::npos &&
-                              response.body.find("not ready") != std::string::npos,
-                          "engine-not-ready metrics did not report 503 service_unavailable");
+        failures += check(
+            response.status == 503 &&
+                response.get_header_value("Content-Type") == "application/json" &&
+                error_type_code(response) == std::pair{std::string("server_error"),
+                                                       std::string("service_unavailable")} &&
+                response.body.find("not ready") != std::string::npos,
+            "engine-not-ready metrics did not report 503 server_error/service_unavailable");
     }
     {
         ninfer::serve::ServeOptions options;
@@ -266,10 +275,17 @@ int test_metrics_endpoint_without_engine() {
         httplib::Request request;
         httplib::Response response;
         HttpServerTestAccess::handle_metrics(server, request, response);
-        failures += check(response.status == 404 &&
-                              response.body.find("not enabled") != std::string::npos,
-                          "disabled metrics did not report the opt-in 404");
+        failures += check(
+            response.status == 404 &&
+                response.get_header_value("Content-Type") == "application/json" &&
+                error_type_code(response) == std::pair{std::string("invalid_request_error"),
+                                                       std::string("not_found")} &&
+                response.body.find("not enabled") != std::string::npos,
+            "disabled metrics did not report the opt-in 404 invalid_request_error/not_found");
     }
+    failures += check(std::string(ninfer::serve::kMetricsContentType) ==
+                          "text/plain; version=0.0.4; charset=utf-8",
+                      "metrics success content type changed from the advertised Prometheus format");
     return failures;
 }
 

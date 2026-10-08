@@ -917,8 +917,10 @@ Serve emits one warning with only the failure classification, never the generate
 It follows the server's API-key authentication and works independently of `--request-log-jsonl`
 and `--log-stats-interval-ms`. The endpoint is opt-in: without `--metrics` it is registered but
 returns **404** `invalid_request_error`/`not_found` naming the flag, so a deployment that never
-asked for a scrape surface never publishes one. Requests before the Engine is attached return
-**503**. Once attached, Engine failure leaves the endpoint readable with `frinfer_engine_ready 0`.
+asked for a scrape surface never publishes one. `listen()` refuses an unattached server and
+attachment always precedes the accept loop, so the handler's **503** `server_error`/`service_unavailable`
+"engine not ready" branch is defensive-only in production; a direct handler test covers it. Once
+attached, Engine failure leaves the endpoint readable with `frinfer_engine_ready 0`.
 Counters start after startup warmup and reset when the server restarts.
 
 ```bash
@@ -928,18 +930,21 @@ curl http://127.0.0.1:8080/metrics
 | Metrics | Meaning |
 |---|---|
 | `frinfer_model_info`, `frinfer_max_concurrency`, `frinfer_max_context_tokens` | Model/backend identity and startup limits |
+| `frinfer_engine_ready`, `frinfer_server_start_time_seconds` | Readiness gauge and Unix time of service attachment after warmup |
+| `frinfer_spec_decode_draft_window` | Configured speculative draft window |
 | `frinfer_requests_running`, `waiting`, `paused`, `prefilling`, `decode_ready`, `replaying`, `materializing` | Current Engine gauges; prefill/decode/replay are subsets of resident requests |
 | `frinfer_prompt_tokens_total`, `frinfer_prompt_tokens_cached_total` | Full input and reused tokens counted once on initial binding |
-| `frinfer_prefill_tokens_total`, `frinfer_replayed_tokens_total` | Actual initial prefill and separate recovery recomputation |
+| `frinfer_prefill_tokens_total`, `frinfer_replayed_tokens_total`, `frinfer_decode_rounds_total`, `frinfer_decode_row_rounds_total` | Actual initial prefill, separate recovery recomputation, executed decode batches, and their summed batch sizes |
 | `frinfer_prefill_units_total`, `frinfer_control_units_total` | Executed prefill units and committed thinking-control units (fork product counters) |
 | `frinfer_generation_tokens_total`, `frinfer_decode_tokens_total` | All committed outputs, or decode/control outputs excluding the first token; include thinking and injected control tokens |
 | `frinfer_spec_decode_{rounds,draft_tokens,accepted_tokens,fallback_steps}_total` | Live native speculative work, including MTP and DFlash/DFlash2 |
 | `frinfer_{preemptions,snapshot_restores,replay_restores}_total` | Pressure pauses and recovery routes (pinned off under this fork's no-preemption runtime) |
-| `frinfer_device_kv_{used,capacity}_pages`, `frinfer_device_state_{used,capacity}_slots` | Physical Main KV and StateImage occupancy; retained history also occupies these pools |
-| `frinfer_host_context_{used,reserved,capacity,peak}_bytes` | Unified Host backing; reserved bytes are already included in used bytes |
-| `frinfer_context_transfer_bytes_total{resource,direction}` | Actual State/Main KV/backend KV payload transfers |
+| `frinfer_root_selections_total`, `frinfer_checkpoint_selections_total` | Initial bindings without and with exact-checkpoint reuse |
+| `frinfer_device_kv_{used,capacity}_pages`, `frinfer_device_state_{used,capacity}_slots`, `frinfer_device_backend_kv_used_pages` | Physical Main KV and StateImage occupancy plus speculative backend KV occupancy; retained history also occupies these pools |
+| `frinfer_host_context_{used,reserved,capacity,peak}_bytes`, `frinfer_host_state_images`, `frinfer_host_kv_used_bytes` | Unified Host backing, the StateImages it holds, and KV bytes within it; reserved bytes are already included in used bytes |
+| `frinfer_context_transfer_bytes_total{resource,direction}`, `frinfer_context_transfer_seconds_total` | Actual State/Main KV/backend KV payload transfers and accumulated transfer operation time |
 | `frinfer_host_work_seconds_total{phase}`, `frinfer_device_wait_seconds_total` | Instrumented worker wall time; device wait is not CUDA kernel time |
-| `frinfer_requests_total{outcome}`, `frinfer_requests_started_total`, `frinfer_response_failures_total` | Generation attempts entering preparation, begun by a protocol route, and subsequent response failures; protocol/model validation failures and token-count requests are excluded |
+| `frinfer_requests_total{outcome}`, `frinfer_requests_started_total`, `frinfer_response_failures_total` | Generation attempts entering preparation, protocol generation and reasoning-control requests begun, and subsequent response failures; protocol/model validation failures and token-count requests are excluded |
 | `frinfer_constraint_*` | Constrained-decoding outcomes, cache access, matcher/mask work and mask upload bytes for constrained requests. The `constraint_draft_wait_seconds_total` series is not emitted: the fork has no corresponding timing field |
 | `frinfer_time_to_first_token_seconds` | Histogram updated once at the first committed token, including preparation, queueing and binding |
 | `frinfer_request_duration_seconds`, `frinfer_request_queue_seconds` | Histograms for settled generation outcomes, including cancellation; exceptional failures have separate counts |
@@ -965,7 +970,7 @@ in append mode and flushes every event, so successive model or MTP blocks may sh
 file. The parent directory must already exist. Failure to open the file aborts startup; the log path
 is also rejected if it resolves to the model artifact.
 
-Every line is one `ninfer_serve_request_log` schema-v24 JSON object. All events carry
+Every line is one `ninfer_serve_request_log` schema-v25 JSON object. All events carry
 `timestamp_unix_ms` and a process-unique `server_instance_id`; request IDs are monotonic only within
 that server instance. Successful request-start records include request-scoped acquisition,
 media-preprocessing wall/work, tokenizer, cache hit/miss/single-flight, and payload-size fields;

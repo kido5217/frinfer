@@ -514,7 +514,7 @@ void HttpServer::handle_metrics(const httplib::Request& req, httplib::Response& 
     }
     const RuntimeStats runtime  = service_->runtime_stats();
     res.set_content(metrics_.render(runtime, service_->is_available(), request_seq_.load()),
-                    "text/plain; version=0.0.4; charset=utf-8");
+                    kMetricsContentType);
 }
 
 void HttpServer::handle_models(const httplib::Request&, httplib::Response& res) const {

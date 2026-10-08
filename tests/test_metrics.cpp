@@ -1,12 +1,132 @@
 #include "serve/metrics.h"
 
+#include <algorithm>
+#include <cctype>
+#include <fstream>
 #include <iostream>
+#include <iterator>
+#include <set>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 
 using namespace ninfer;
 using namespace ninfer::serve;
+
+namespace {
+
+// Collect the sampled metric family names, collapsing histogram _bucket/_sum/_count samples back to
+// their base family so a scrape enumerates each advertised series once.
+std::set<std::string> metric_families(const std::string& text) {
+    std::set<std::string> names;
+    const std::string prefix = "frinfer_";
+    for (std::size_t pos = text.find(prefix); pos != std::string::npos;
+         pos = text.find(prefix, pos)) {
+        std::size_t end = pos + prefix.size();
+        while (end < text.size() &&
+               (std::isalnum(static_cast<unsigned char>(text[end])) != 0 || text[end] == '_')) {
+            ++end;
+        }
+        std::string name = text.substr(pos, end - pos);
+        for (const std::string_view suffix : {"_bucket", "_sum", "_count"}) {
+            if (name.size() > suffix.size() && name.ends_with(suffix)) {
+                name.resize(name.size() - suffix.size());
+                break;
+            }
+        }
+        names.insert(std::move(name));
+        pos = end;
+    }
+    return names;
+}
+
+// Read a repository-relative documentation file. NINFER_SOURCE_DIR is supplied by CMake for tests
+// declared with NEEDS_SOURCE_DIR.
+std::string read_repository_file(const std::string& relative_path) {
+    std::ifstream input(std::string(NINFER_SOURCE_DIR) + "/" + relative_path, std::ios::binary);
+    return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
+}
+
+// The documented Prometheus family set, parsed from docs/serving.md's metrics table. The table is
+// the oracle: the renderer and the documentation must agree in both directions. Handles backticked
+// names, `{a,b}` brace groups, and the `frinfer_requests_*` row whose later entries are bare
+// suffixes; `frinfer_*` wildcard rows are tracked as prefixes.
+struct DocumentedFamilies {
+    std::set<std::string> names;
+    std::set<std::string> wildcards;
+};
+
+DocumentedFamilies parse_documented_families(const std::string& document) {
+    DocumentedFamilies documented;
+    const auto table_begin = document.find("| Metrics | Meaning |");
+    if (table_begin == std::string::npos) { return documented; }
+    const auto after_table   = document.find("Histograms expose", table_begin);
+    const std::string table  = document.substr(
+        table_begin, after_table == std::string::npos ? std::string::npos : after_table - table_begin);
+    for (std::size_t line_begin = 0; line_begin < table.size();) {
+        const auto line_end = table.find('\n', line_begin);
+        const std::string line =
+            table.substr(line_begin, line_end == std::string::npos ? std::string::npos
+                                                                   : line_end - line_begin);
+        line_begin = line_end == std::string::npos ? table.size() : line_end + 1;
+        if (line.empty() || line.front() != '|') { continue; }
+        const auto cell_end = line.find('|', 1);
+        const std::string cell =
+            line.substr(1, cell_end == std::string::npos ? std::string::npos : cell_end - 1);
+        std::string namespace_prefix;
+        for (std::size_t search = 0;;) {
+            const auto open = cell.find('`', search);
+            if (open == std::string::npos) { break; }
+            const auto close = cell.find('`', open + 1);
+            if (close == std::string::npos) { break; }
+            const std::string token = cell.substr(open + 1, close - open - 1);
+            search                  = close + 1;
+            if (token.rfind("frinfer_", 0) != 0) {
+                const bool bare =
+                    !token.empty() &&
+                    token.find_first_not_of("abcdefghijklmnopqrstuvwxyz0123456789_") ==
+                        std::string::npos;
+                if (!namespace_prefix.empty() && bare) {
+                    documented.names.insert(namespace_prefix + token);
+                }
+                continue;
+            }
+            if (token.back() == '*') {
+                documented.wildcards.insert(token.substr(0, token.size() - 1));
+                continue;
+            }
+            const auto brace = token.find('{');
+            const auto brace_end =
+                brace == std::string::npos ? std::string::npos : token.find('}', brace);
+            if (brace != std::string::npos && brace_end != std::string::npos &&
+                brace_end + 1 < token.size()) {
+                const std::string head    = token.substr(0, brace);
+                const std::string tail    = token.substr(brace_end + 1);
+                const std::string options = token.substr(brace + 1, brace_end - brace - 1);
+                for (std::size_t option_begin = 0;;) {
+                    const auto comma = options.find(',', option_begin);
+                    documented.names.insert(
+                        head + options.substr(option_begin, comma == std::string::npos
+                                                              ? std::string::npos
+                                                              : comma - option_begin) +
+                        tail);
+                    if (comma == std::string::npos) { break; }
+                    option_begin = comma + 1;
+                }
+                namespace_prefix = head.substr(0, head.rfind('_') + 1);
+            } else {
+                const std::string family =
+                    brace == std::string::npos ? token : token.substr(0, brace);
+                documented.names.insert(family);
+                namespace_prefix = family.substr(0, family.rfind('_') + 1);
+            }
+        }
+    }
+    return documented;
+}
+
+} // namespace
 
 int main() {
     int failures     = 0;
@@ -53,6 +173,48 @@ int main() {
     check(metrics.render(running, true, 0) == live, "scrapes must not consume or reset counters");
     check(live.find("frinfer_host_context_used_bytes 4096\n") != std::string::npos,
           "reserved bytes must not be added to occupancy twice");
+    check(live.find("le=\"0.05\"") != std::string::npos &&
+              live.find("0.050000000000000003") == std::string::npos,
+          "histogram bucket boundaries must use canonical short precision, not 17 digits");
+    const auto emitted = metric_families(live);
+    const DocumentedFamilies documented =
+        parse_documented_families(read_repository_file("docs/serving.md"));
+    if (documented.names.empty()) {
+        std::cerr << "could not parse the metrics table from docs/serving.md\n";
+        ++failures;
+    }
+    // docs/serving.md is the oracle: the renderer must emit exactly the documented families.
+    std::vector<std::string> undocumented;
+    std::vector<std::string> absent;
+    for (const auto& name : emitted) {
+        if (documented.names.count(name) != 0) { continue; }
+        bool wildcard_match = false;
+        for (const auto& wildcard : documented.wildcards) {
+            if (name.rfind(wildcard, 0) == 0) {
+                wildcard_match = true;
+                break;
+            }
+        }
+        if (!wildcard_match) { undocumented.push_back(name); }
+    }
+    for (const auto& name : documented.names) {
+        if (emitted.count(name) == 0) { absent.push_back(name); }
+    }
+    for (const auto& wildcard : documented.wildcards) {
+        const bool matched =
+            std::any_of(emitted.begin(), emitted.end(), [&](const std::string& name) {
+                return name.rfind(wildcard, 0) == 0;
+            });
+        if (!matched) { absent.push_back(wildcard + "*"); }
+    }
+    if (!undocumented.empty() || !absent.empty()) {
+        std::cerr << "docs/serving.md metric drift; emitted-but-undocumented:";
+        for (const auto& name : undocumented) { std::cerr << ' ' << name; }
+        std::cerr << "; documented-but-absent:";
+        for (const auto& name : absent) { std::cerr << ' ' << name; }
+        std::cerr << '\n';
+        ++failures;
+    }
 
     GenerationOutcome outcome;
     outcome.finish_reason                            = FinishReason::OutputLimit;

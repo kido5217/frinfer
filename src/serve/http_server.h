@@ -36,6 +36,9 @@ httplib::Server::HandlerResponse handle_unrendered_http_error(const ServeOptions
 [[nodiscard]] bool matches_bearer_credential(std::string_view authorization,
                                              std::string_view api_key) noexcept;
 
+// Advertised Prometheus text exposition content type of a successful GET /metrics response.
+inline constexpr const char* kMetricsContentType = "text/plain; version=0.0.4; charset=utf-8";
+
 class HttpServer {
 public:
     HttpServer(ServeOptions options, std::shared_ptr<spdlog::logger> logger);

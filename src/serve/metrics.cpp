@@ -151,7 +151,7 @@ std::string Metrics::render(const RuntimeStats& stats, bool ready,
     counter("control_units_total", stats.host_work.control_units,
             baseline_.host_work.control_units, "Thinking-control units committed.");
     counter("requests_started_total", requests_started, std::uint64_t{0},
-            "Generation requests a protocol route has begun since startup.");
+            "Protocol generation and reasoning-control requests begun since startup.");
     gauge("engine_ready", ready ? 1 : 0, "Whether Engine can accept work.");
     gauge("server_start_time_seconds", start_seconds_,
           "Unix time at service attachment after warmup.");
@@ -285,7 +285,10 @@ std::string Metrics::render(const RuntimeStats& stats, bool ready,
             if (i == kBuckets.size()) {
                 out << "+Inf";
             } else {
-                out << kBuckets[i];
+                // Boundary labels use a short fixed precision so the 17-digit sample precision does
+                // not leak into canonical bucket values (for example 0.05, not
+                // 0.050000000000000003).
+                out << std::setprecision(6) << kBuckets[i] << std::setprecision(17);
             }
             out << "\"} " << count << '\n';
         }

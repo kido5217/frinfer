@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from argparse import Namespace
 import json
+import re
 
 import pytest
 
@@ -40,8 +41,8 @@ def test_result_record_parses_request_host_exposure() -> None:
     payload = {"model": spec.model_id}
     response = {"usage": {"prompt_tokens": 10, "completion_tokens": 5}}
     event = {
-        "artifact_type": "ninfer_serve_request_log",
-        "schema_version": 24,
+        "artifact_type": corpus.SERVER_LOG_ARTIFACT_TYPE,
+        "schema_version": corpus.SERVER_LOG_SCHEMA_VERSION,
         "event": "request_done",
         "request": {
             "model": spec.model_id,
@@ -208,6 +209,18 @@ def test_selected_kv_reaches_server_and_is_verified(
     engine["kv_cache"] = "bf16"
     with pytest.raises(corpus.CampaignError, match="configuration mismatch"):
         validate()
+
+
+def test_server_log_schema_version_matches_serve_header() -> None:
+    header = (
+        Path(__file__).resolve().parents[1] / "src" / "serve" / "request_log.h"
+    ).read_text()
+    match = re.search(r"kRequestLogSchemaVersion\s*=\s*(\d+)", header)
+    assert match is not None, "kRequestLogSchemaVersion not found in request_log.h"
+    assert int(match.group(1)) == corpus.SERVER_LOG_SCHEMA_VERSION, (
+        f"Serve writes schema v{match.group(1)} but the corpus runner expects "
+        f"v{corpus.SERVER_LOG_SCHEMA_VERSION}"
+    )
 
 
 def test_resume_rejects_different_kv_dtype(tmp_path):
