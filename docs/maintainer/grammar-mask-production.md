@@ -1,5 +1,10 @@
 # Grammar mask production
 
+> Historical: this document records the retired in-tree grammar/mask producer and its fill
+> budget. The adopted XGrammar stack replaced it with ticket #245 (see
+> [Constrained decoding](constrained-decoding.md)); the text below is retained as the decision
+> record, not a description of the shipped producer.
+
 How constrained decoding produces its per-state token masks — the serving budget, the measured
 cost of the current producer, and the decision to replace it with compiled/adaptive masks. The
 grammar runtime itself is covered by

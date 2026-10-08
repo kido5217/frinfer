@@ -55,7 +55,8 @@ The devShell provides `just` as a thin wrapper over these commands: `just build`
 configures with the `dev` preset and builds, `just test` runs `ctest --preset dev`
 (extra arguments forward to ctest), and `just test-one <target>` builds and re-runs a
 single test. `just verify` runs the whole verification (configure + build, the CTest
-suite, then `pytest tests/convert`) as one bounded command, tee-ing to
+suite, then the Python suites — `tests/convert` plus the independent JSON Schema and
+regex/choice grammar oracles) as one bounded command, tee-ing to
 `build/verify.log` and ending with a `VERIFY OK` or `VERIFY FAIL (step: ...)` line.
 
 The chat-template reference test uses Python Jinja2.
@@ -117,12 +118,20 @@ Run the native Python suites with the project Python environment:
 ```bash
 python3 -m pytest \
   tests/artifact tests/convert tests/bench/ttft \
+  tests/text tests/models/qwen3_5/test_tool_schema.py \
   tests/test_serve_corpus.py
 ```
 
-The Python suites exercise conversion, encoded output and measurement tools without model inference.
-The maintained environment uses Python 3.11 with the dependencies for those suites. C++ binding and Engine tests
-cover consumption of their resulting representation.
+The Python suites exercise conversion, encoded output and measurement tools without model
+inference. `tests/text/test_json_schema.py`, `tests/text/test_regex_choice.py` and
+`tests/models/qwen3_5/test_tool_schema.py` are the independent oracles for the native constraint
+compiler: they drive the built CPU test binaries (`build/tests/ninfer_json_schema_test`,
+`ninfer_regex_choice_test`, `ninfer_qwen3_5_tool_constraints_test`) through their `--probe`
+interface and compare against the third-party `jsonschema` validator and Python `re.fullmatch`
+semantics, so they are not a mirror of the implementation. `just verify` runs this same set after
+the CTest step, so the C++ binaries are already built. The devShell's Python 3.13 provides
+`jsonschema` (see `flake.nix`; `tests/text/requirements.txt` pins the standalone version). C++
+binding and Engine tests cover consumption of their resulting representation.
 
 The real loading test accepts an explicit artifact path and optional component selection:
 
