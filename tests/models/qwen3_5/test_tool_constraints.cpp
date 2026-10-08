@@ -1,11 +1,13 @@
+#include "models/qwen3_5/frontend/chat_parse_core.h"
 #include "models/qwen3_5/frontend/tool_contract.h"
 #include "models/qwen3_5/frontend/tool_grammar.h"
-#include "models/qwen3_5/frontend/tool_call_parser.h"
 #include "text/grammar.h"
 
 #include <nlohmann/json.hpp>
+
 #include <iostream>
 #include <stdexcept>
+#include <string>
 
 namespace {
 namespace frontend = ninfer::models::qwen3_5::frontend;
@@ -45,7 +47,48 @@ bool accepts(ninfer::text::GrammarCompiler& compiler,
 
 std::string call(std::string_view value, std::string_view name = "call") {
     return "<tool_call>\n<function=" + std::string(name) + ">\n<parameter=x>\n" +
-           std::string(value) + "\n</parameter>\n</function>\n</tool_call>";
+            std::string(value) + "\n</parameter>\n</function>\n</tool_call>";
+}
+
+struct Decoded {
+    std::vector<ninfer::GeneratedToolCall> tool_calls;
+    ninfer::ToolCallParseDiagnostics diagnostics;
+};
+
+// The decode authority is the production streaming core (ChatParseCore), which resolves
+// constrained turns with the canonical parser and free turns with the tolerant analysis.
+// Chunk boundaries commit like stream rounds; the terminal preview resolves the turn.
+Decoded decode(const std::shared_ptr<const frontend::ToolCallOutputContract>& contract,
+               const std::vector<std::string_view>& chunks) {
+    frontend::ChatParseCore core(contract, frontend::ChatParseOptions{.thinking_enabled = false,
+                                                                       .tool_name_max_length = 64});
+    for (std::string_view chunk : chunks) {
+        core.begin_preview();
+        (void)core.preview_feed(chunk);
+        core.commit();
+    }
+    core.begin_preview();
+    (void)core.preview_finish();
+    core.commit();
+    return Decoded{.tool_calls = core.take_tool_calls(), .diagnostics = core.diagnostics()};
+}
+
+Decoded decode(const std::shared_ptr<const frontend::ToolCallOutputContract>& contract,
+               std::string_view text) {
+    return decode(contract, std::vector<std::string_view>{text});
+}
+
+// Function-complete calls in a prefix: the close tolerance retains a call whose function
+// (through `</function>`) is covered even when its `</tool_call>` close is cut off.
+std::size_t complete_functions(const std::string& text, std::size_t cut) {
+    constexpr std::string_view close = "</function>";
+    std::size_t count = 0;
+    std::size_t pos   = 0;
+    while ((pos = text.find(close, pos)) != std::string::npos && pos + close.size() <= cut) {
+        ++count;
+        pos += close.size();
+    }
+    return count;
 }
 
 Json schema(const Json& value) {
@@ -69,9 +112,8 @@ void basic_contracts(ninfer::text::GrammarCompiler& compiled) {
         "</function>\n</tool_call>";
     require(accepts(compiled, *basic, reordered),
             "basic closed or reordered an open parameter list");
-    frontend::ToolCallOutputDecoder decoded(basic, 64);
-    (void)decoded.feed(reordered);
-    const auto arguments = Json::parse(decoded.finish().tool_calls.at(0).arguments_json);
+    const auto decoded   = decode(basic, reordered);
+    const auto arguments = Json::parse(decoded.tool_calls.at(0).arguments_json);
     require(arguments == Json{{"b", 1}, {"a", "007"}, {"extra-key.键", true}},
             "non-strict value normalization changed");
     require(accepts(compiled, *basic, "An ordinary answer."), "default auto forced a call");
@@ -94,9 +136,8 @@ void basic_contracts(ninfer::text::GrammarCompiler& compiled) {
                                  "<parameter=x>\n2\n</parameter>\n</function>\n</tool_call>";
     require(accepts(compiled, *integer, repeated),
             "generic argument syntax rejected repeated keys");
-    frontend::ToolCallOutputDecoder duplicate(integer, 64);
-    (void)duplicate.feed(repeated);
-    require(duplicate.finish().tool_calls.at(0).arguments_json == R"({"x":2})",
+    const auto duplicate = decode(integer, repeated);
+    require(duplicate.tool_calls.at(0).arguments_json == R"({"x":2})",
             "non-strict duplicate was not resolved to one final value");
 
     // These requests share the same compiled envelope but have different value normalization.
@@ -104,19 +145,19 @@ void basic_contracts(ninfer::text::GrammarCompiler& compiled) {
     for (const auto& bound : {integer, string}) {
         require(accepts(compiled, *bound, call("7")),
                 "shared basic grammar changed with value types");
-        frontend::ToolCallOutputDecoder decoder(bound, 64);
-        (void)decoder.feed(call("7"));
-        const auto args = Json::parse(decoder.finish().tool_calls.at(0).arguments_json);
+        const auto decoded = decode(bound, call("7"));
+        const auto args    = Json::parse(decoded.tool_calls.at(0).arguments_json);
         require(args["x"] == (bound == string ? Json("7") : Json(7)),
                 "compiled grammar leaked another request's argument types");
     }
 
+    // A missing </tool_call> close is tolerated (wire rule B3): a truncation that covers a
+    // complete function retains the call even before the close arrives, so the retained
+    // count follows function completions, not full-call completions.
     const auto two = reordered + "\n" + call("later");
     for (std::size_t cut = 0; cut < two.size(); ++cut) {
-        frontend::ToolCallOutputDecoder decoder(basic, 64);
-        (void)decoder.feed(std::string_view(two).substr(0, cut));
-        const auto result = decoder.finish(ninfer::FinishReason::OutputLimit);
-        require(result.tool_calls.size() == (cut >= reordered.size() ? 1 : 0),
+        const auto result = decode(basic, std::string_view(two).substr(0, cut));
+        require(result.tool_calls.size() == complete_functions(two, cut),
                 "non-strict truncation lost a completed call");
     }
     ninfer::ToolChoice automatic;
@@ -154,9 +195,7 @@ void selected_contracts(ninfer::text::GrammarCompiler& compiled) {
             "selection admitted an excluded function");
     const auto mixed = call("2", "strict") + "\n" + call("wrong", "loose");
     require(accepts(compiled, *selected, mixed), "mixed strict/non-strict calls rejected");
-    frontend::ToolCallOutputDecoder decoder(selected, 64);
-    (void)decoder.feed(mixed);
-    const auto calls = decoder.finish().tool_calls;
+    const auto calls = decode(selected, mixed).tool_calls;
     require(calls.size() == 2 && Json::parse(calls[0].arguments_json)["x"] == 2 &&
                 Json::parse(calls[1].arguments_json)["x"] == "wrong",
             "selected tools used another function's argument codec");
@@ -238,10 +277,25 @@ void run() {
                 !accepts(compiled, *conjunction, call("aaaa")),
             "strict parameter domain disagrees with normalized conjunction");
     const auto value = std::string("  你好\n");
-    frontend::ToolCallOutputDecoder decoder(automatic, 64);
-    const auto text = call(value);
-    for (char c : text) require(decoder.feed(std::string_view(&c, 1)).empty(), "tool bytes leaked");
-    auto result = decoder.finish();
+    const auto text  = call(value);
+    {
+        // Withheld region bytes publish nothing until the terminal resolution.
+        frontend::ChatParseCore streaming(
+            automatic, frontend::ChatParseOptions{.thinking_enabled = false,
+                                                  .tool_name_max_length = 64});
+        streaming.begin_preview();
+        for (char c : text) {
+            const auto delta = streaming.preview_feed(std::string_view(&c, 1));
+            require(delta.content_delta.empty() && delta.reasoning_delta.empty(),
+                    "tool bytes leaked");
+        }
+        streaming.commit();
+        streaming.begin_preview();
+        (void)streaming.preview_finish();
+        streaming.commit();
+        require(streaming.take_tool_calls().size() == 1, "streamed call lost");
+    }
+    auto result = decode(automatic, text);
     require(result.tool_calls.size() == 1 &&
                 Json::parse(result.tool_calls[0].arguments_json)["x"] == value,
             "raw string changed");
@@ -252,26 +306,26 @@ void run() {
                                      true, required);
     const auto json_value = std::string(R"({"s": "</parameter>"})");
     require(accepts(compiled, *nested, call(json_value)), "nested marker rejected");
-    frontend::ToolCallOutputDecoder json_decoder(nested, 64);
-    (void)json_decoder.feed(call(json_value));
-    require(Json::parse(json_decoder.finish().tool_calls[0].arguments_json)["x"]["s"] ==
-                "</parameter>",
+    const auto nested_result = decode(nested, call(json_value));
+    require(Json::parse(nested_result.tool_calls[0].arguments_json)["x"]["s"] == "</parameter>",
             "nested marker broke parser");
-    const auto two = call("2") + "\n" + call("3");
-    for (auto reason : {ninfer::FinishReason::OutputLimit, ninfer::FinishReason::Cancelled})
-        for (std::size_t cut = 0; cut < two.size(); ++cut) {
-            frontend::ToolCallOutputDecoder truncated(fixed, 64);
-            (void)truncated.feed(std::string_view(two).substr(0, cut));
-            const auto output = truncated.finish(reason);
-            require(output.tool_calls.size() == (cut >= call("2").size() ? 1 : 0),
-                    "interruption lost a complete call");
-        }
+    // A terminal interruption retains the completed prefix calls; the unfinished suffix
+    // resolves through the tolerant fallback, which keeps complete calls and demotes the rest.
+    // The close tolerance above applies here too: a complete function counts as complete.
+    const auto pair = call("2") + "\n" + call("3");
+    for (std::size_t cut = 0; cut < pair.size(); ++cut) {
+        const auto output = decode(fixed, std::string_view(pair).substr(0, cut));
+        require(output.tool_calls.size() == complete_functions(pair, cut),
+                "interruption lost a complete call");
+    }
+    // An assistant continuation arrives as earlier stream rounds: the prefix commits before
+    // the suffix, and the terminal preview completes the call.
     const auto seed = call("你好").substr(0, call("你好").size() - 20);
-    frontend::ToolCallOutputDecoder continuation(automatic, 64);
-    continuation.initialize_continuation(seed);
-    auto match = frontend::compile_tool_grammar(compiled, *automatic, {}, seed);
-    (void)continuation.feed(std::string_view(call("你好")).substr(seed.size()));
-    require(continuation.finish().tool_calls.size() == 1, "continuation did not complete the call");
+    auto match      = frontend::compile_tool_grammar(compiled, *automatic, {}, seed);
+    const auto continued =
+        decode(automatic, {std::string_view(seed),
+                           std::string_view(call("你好")).substr(seed.size())});
+    require(continued.tool_calls.size() == 1, "continuation did not complete the call");
     bool rejected = false;
     try {
         (void)contract(schema({{"type", {"string", "null"}}}), true, required);
@@ -298,10 +352,9 @@ int main(int argc, char** argv) {
                         bool allowed = accepts(compiled, *bound, text.get<std::string>());
                         response["accepted"].push_back(allowed);
                         if (allowed) {
-                            frontend::ToolCallOutputDecoder decode(bound, 64);
-                            (void)decode.feed(text.get<std::string>());
+                            const auto decoded = decode(bound, text.get<std::string>());
                             response["arguments"].push_back(
-                                Json::parse(decode.finish().tool_calls[0].arguments_json));
+                                Json::parse(decoded.tool_calls[0].arguments_json));
                         } else
                             response["arguments"].push_back(nullptr);
                     }
