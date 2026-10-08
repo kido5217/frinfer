@@ -204,8 +204,9 @@ with HTTP 400 before generation. A tool-constraint violation (undeclared selecti
 choice without callable tools, unsatisfiable strict schema) fails with HTTP 400
 `tool_constraint_invalid` on the `tools` field. For `auto`, text may precede the first call;
 required/named choices start directly with calls (after thinking, if enabled). A token limit or
-cancellation still ends the turn: completed calls are published and the unfinished suffix falls
-back to ordinary content.
+cancellation still ends the turn: completed calls are published and the unfinished constrained
+suffix is dropped, never leaked as text. Assistant continuation may finish a partial call; a
+prefix containing a completed (or, when constrained, malformed) call is rejected.
 
 String parameters preserve function/tool-call markers and balanced nested
 `<parameter=...>...</parameter>` text as value bytes. The Qwen wire format has no delimiter escape,

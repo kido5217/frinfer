@@ -882,7 +882,9 @@ void resolve_tool_region(ParseState& state, const ParseContext& context, const C
             apply_adapter_checks(salvage.calls, contract, max_name_length, merged_arguments);
         if (failure == FallbackReason::None) {
             publish(state.content, rtrim_format_whitespace(region.substr(0, salvage.candidate)));
-            publish(state.content, region.substr(salvage.end));
+            // A constrained turn owns its framing through the grammar: an unfinished suffix
+            // is dropped, not published as text. Only free turns republish it.
+            if (!contract.constrained) { publish(state.content, region.substr(salvage.end)); }
             state.diagnostics.structured_call_count =
                 static_cast<std::uint32_t>(salvage.calls.size());
             state.diagnostics.salvaged_calls += static_cast<std::uint32_t>(salvage.calls.size());
@@ -901,8 +903,10 @@ void resolve_tool_region(ParseState& state, const ParseContext& context, const C
     }
 
     if (accepted == std::string_view::npos) {
-        // No candidate qualifies: the whole region is ordinary content (B2).
-        publish(state.content, region);
+        // No candidate qualifies: on a free turn the whole region is ordinary content
+        // (B2); on a constrained turn the grammar owns the framing, so the unresolvable
+        // region is dropped with its fallback recorded instead of leaking markup as text.
+        if (!contract.constrained) { publish(state.content, region); }
         state.diagnostics.fallback_reason = first_failure;
         return;
     }
@@ -1218,6 +1222,50 @@ std::vector<GeneratedToolCall> ChatParseCore::take_tool_calls() noexcept {
 
 ToolCallParseDiagnostics ChatParseCore::diagnostics() const noexcept {
     return impl_->committed_.diagnostics;
+}
+
+void ChatParseCore::feed_prefix(std::string_view prefix) {
+    Impl& impl = *impl_;
+    if (impl.committed_.finished) { throw std::logic_error("chat parse core is already terminal"); }
+    impl.preview_       = impl.committed_;
+    impl.preview_ready_ = true;
+    feed(impl.preview_, impl.context(), prefix);
+    impl.committed_     = std::move(impl.preview_);
+    impl.preview_       = {};
+    impl.preview_ready_ = false;
+}
+
+std::string_view continuation_tool_region(std::string_view continuation) noexcept {
+    const std::string_view marker = ChatParseWireFormat::qwen3_5().tool_call_open;
+    const std::size_t found       = continuation.rfind(marker);
+    if (found == std::string_view::npos) { return {}; }
+    return continuation.substr(found);
+}
+
+void check_tool_continuation(const ToolCallOutputContract& contract, std::string_view region,
+                             std::size_t max_name_length) {
+    if (contract.constrained) {
+        ConstrainedToolRegionParser parser(region, contract, max_name_length);
+        std::vector<GeneratedToolCall> calls;
+        ToolCallParseDiagnostics diagnostics;
+        const auto status = parser.parse(calls, diagnostics);
+        if (!calls.empty() || status == ConstrainedToolRegionParser::Status::Invalid)
+            throw RequestError(RequestErrorKind::InvalidToolConstraint,
+                               "tool continuation must contain no completed or malformed calls");
+        return;
+    }
+    ChatParseCore probe(std::make_shared<ToolCallOutputContract>(contract),
+                        ChatParseOptions{.thinking_enabled = false,
+                                        .tool_name_max_length = max_name_length});
+    probe.begin_preview();
+    (void)probe.preview_feed(region);
+    probe.commit();
+    probe.begin_preview();
+    (void)probe.preview_finish();
+    probe.commit();
+    if (!probe.take_tool_calls().empty())
+        throw RequestError(RequestErrorKind::InvalidToolConstraint,
+                           "tool continuation must contain no completed calls");
 }
 
 } // namespace ninfer::models::qwen3_5::frontend

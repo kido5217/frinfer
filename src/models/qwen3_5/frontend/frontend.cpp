@@ -981,7 +981,8 @@ OutputSession Frontend::make_output_session(
     }
     return OutputSession(
         impl_->tokenizer, std::move(policy), output, prompt.data_->starts_in_reasoning, thinking,
-        impl_->thinking_control_tokens, std::move(tool_contract), std::move(matcher));
+        impl_->thinking_control_tokens, std::move(tool_contract), std::move(matcher),
+        prompt.data_->continuation_content);
 }
 
 const StopPolicy& Frontend::default_stop_policy() const noexcept { return impl_->defaults; }
