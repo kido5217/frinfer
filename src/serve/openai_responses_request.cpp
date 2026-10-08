@@ -2,6 +2,8 @@
 #include "serve/openai_common.h"
 #include "serve/request_validation.h"
 
+#include "product/constraint/constraint_contract.h"
+
 #include <algorithm>
 #include <iterator>
 #include <optional>
@@ -710,11 +712,9 @@ parse_function_tool(const Json& item, std::optional<std::string> wire_namespace,
         if (!item.at("strict").is_boolean()) {
             bad_request("function strict must be a boolean", "tools");
         }
-        if (item.at("strict").get<bool>()) {
-            bad_request("strict function schema enforcement requires constrained decoding, "
-                        "which the Engine does not provide",
-                        "tools", "strict_tools_not_supported");
-        }
+        // Strict declarations are enforced by the Engine's tool grammar: generated
+        // arguments must satisfy the declared schema or the turn fails closed.
+        parsed.definition.strict = item.at("strict").get<bool>();
     }
     if (item.contains("defer_loading") && !item.at("defer_loading").is_null()) {
         if (!item.at("defer_loading").is_boolean()) {
@@ -751,7 +751,7 @@ parse_function_tool(const Json& item, std::optional<std::string> wire_namespace,
     parsed.canonical                    = {{"type", "function"},
                                            {"name", identity.name},
                                            {"parameters", parameters},
-                                           {"strict", false}};
+                                           {"strict", parsed.definition.strict}};
     if (!function_description.empty()) {
         parsed.canonical["description"] = std::move(function_description);
     }
@@ -841,10 +841,12 @@ void filter_allowed_tools(const Json& choice, ParsedPromptFields& out) {
     if (!choice.contains("mode") || !choice.at("mode").is_string()) {
         bad_request("allowed_tools tool_choice must contain a string mode", "tool_choice");
     }
-    if (choice.at("mode").get<std::string>() != "auto") {
-        bad_request("allowed_tools mode 'required' cannot be enforced", "tool_choice",
-                    "tool_choice_not_supported");
+    const auto mode = choice.at("mode").get<std::string>();
+    if (mode != "auto" && mode != "required") {
+        bad_request("allowed_tools mode must be auto or required", "tool_choice");
     }
+    out.prompt.generation.tool_choice.mode =
+        mode == "required" ? ToolChoiceMode::Required : ToolChoiceMode::Auto;
     if (!choice.contains("tools") || !choice.at("tools").is_array()) {
         bad_request("allowed_tools tool_choice must contain a tools array", "tool_choice");
     }
@@ -873,12 +875,14 @@ void filter_allowed_tools(const Json& choice, ParsedPromptFields& out) {
         selected.insert(name);
     }
 
-    std::vector<ToolDefinition> effective;
-    effective.reserve(selected.size());
-    for (ToolDefinition& tool : out.prompt.generation.tools) {
-        if (selected.contains(tool.name)) { effective.push_back(std::move(tool)); }
+    // All declarations stay rendered; the named subset constrains generation at the frontend
+    // boundary instead of narrowing the prompt.
+    out.prompt.generation.tool_choice.allowed_names.emplace();
+    for (const ToolDefinition& tool : out.prompt.generation.tools) {
+        if (selected.contains(tool.name)) {
+            out.prompt.generation.tool_choice.allowed_names->push_back(tool.name);
+        }
     }
-    out.prompt.generation.tools = std::move(effective);
 }
 
 void parse_tool_choice(const Json& body, ParsedPromptFields& out) {
@@ -894,10 +898,10 @@ void parse_tool_choice(const Json& body, ParsedPromptFields& out) {
         } else if (value == "none") {
             out.prompt.generation.tool_choice.mode = ToolChoiceMode::None;
         } else if (value == "required") {
-            bad_request("tool_choice 'required' cannot be guaranteed by the Engine", "tool_choice",
-                        "tool_choice_not_supported");
+            out.prompt.generation.tool_choice.mode = ToolChoiceMode::Required;
         } else {
-            bad_request("tool_choice must be 'auto', 'none', or a supported object", "tool_choice");
+            bad_request("tool_choice must be 'auto', 'none', 'required', or a supported object",
+                        "tool_choice");
         }
         out.wire_tool_choice = value;
         return;
@@ -905,11 +909,18 @@ void parse_tool_choice(const Json& body, ParsedPromptFields& out) {
     if (!choice.is_object() || !choice.contains("type") || !choice.at("type").is_string()) {
         bad_request("tool_choice must be a string or typed object", "tool_choice");
     }
-    if (choice.at("type").get<std::string>() != "allowed_tools") {
-        bad_request("named or hosted tool_choice cannot be enforced", "tool_choice",
-                    "tool_choice_not_supported");
+    const auto type = choice.at("type").get<std::string>();
+    if (type == "function") {
+        const auto identity = function_identity(choice, "tool_choice");
+        const auto name     = lower_function_identity(identity, out.tool_identities, "tool_choice");
+        out.prompt.generation.tool_choice.mode          = ToolChoiceMode::Required;
+        out.prompt.generation.tool_choice.allowed_names = std::vector<std::string>{name};
+        out.prompt.generation.tool_choice.parallel      = false;
+    } else if (type == "allowed_tools") {
+        filter_allowed_tools(choice, out);
+    } else {
+        bad_request("unsupported tool_choice type", "tool_choice");
     }
-    filter_allowed_tools(choice, out);
     out.wire_tool_choice = choice;
 }
 
@@ -941,7 +952,44 @@ void parse_reasoning(const Json& body, OpenAIResponsesPromptRequest& out) {
     out.generation.reasoning_effort = *effort;
 }
 
-void parse_text(const Json& body) {
+// Validates an admitted JSON Schema document through the shared protocol-neutral constraint
+// contract and renders its fail-closed error on this route's field path, mirroring the Chat
+// response_format and Anthropic output_config.format adapters. The document text is compiled
+// by the Engine's XGrammar converter.
+std::string schema_to_document(const Json& schema) {
+    try {
+        return ninfer::constraint::json_schema_constraint_source(schema);
+    } catch (const ninfer::constraint::ConstraintError& error) {
+        bad_request(error.what(), "text.format", error.code());
+    }
+}
+
+const Json& parse_text_format_schema(const Json& format) {
+    // The Responses wrapper carries the document under `.schema` with optional
+    // name/description/strict metadata (the OpenAI wire always names its schema).
+    if (!format.contains("schema") || format.at("schema").is_null()) {
+        bad_request("text.format.schema is required for type json_schema",
+                    "text.format.schema", "json_schema_invalid");
+    }
+    for (const char* key : {"name", "description"}) {
+        if (format.contains(key) && !format.at(key).is_string()) {
+            const std::string param = std::string("text.format.") + key;
+            bad_request(param + " must be a string", param, "json_schema_invalid");
+        }
+    }
+    if (format.contains("strict") && !format.at("strict").is_null() &&
+        !format.at("strict").is_boolean()) {
+        bad_request("text.format.strict must be a boolean", "text.format.strict",
+                    "json_schema_invalid");
+    }
+    if (!format.at("schema").is_object()) {
+        bad_request("text.format.schema must be a JSON Schema object", "text.format.schema",
+                    "json_schema_invalid");
+    }
+    return format.at("schema");
+}
+
+void parse_text(const Json& body, GenerationRequest& request) {
     if (!body.contains("text") || body.at("text").is_null()) { return; }
     const Json& text = body.at("text");
     if (!text.is_object()) { bad_request("text must be an object", "text"); }
@@ -952,10 +1000,29 @@ void parse_text(const Json& body) {
         if (!format.is_object() || !format.contains("type") || !format.at("type").is_string()) {
             bad_request("text.format must be a typed object", "text");
         }
-        if (format.at("type").get<std::string>() != "text" || format.size() != 1) {
-            bad_request("structured text output requires constrained decoding, which the Engine "
-                        "does not provide",
-                        "text", "structured_outputs_not_supported");
+        const std::string type = format.at("type").get<std::string>();
+        if (type == "text") {
+            if (format.size() != 1) { bad_request("text format has no options", "text.format"); }
+        } else if (type == "json_object") {
+            if (format.size() != 1) {
+                bad_request("json_object format has no options", "text.format");
+            }
+            request.constraint        = ninfer::OutputConstraint::json_object();
+            request.constraint_source = ConstraintSource::JsonSchema;
+        } else if (type == "json_schema") {
+            request.constraint = ninfer::OutputConstraint::json_schema(
+                schema_to_document(parse_text_format_schema(format)));
+            request.constraint_source = ConstraintSource::JsonSchema;
+        } else {
+            bad_request("this text.format requires constrained output, which FrInfer cannot "
+                        "guarantee; only text, json_object, and json_schema are available",
+                        "text.format", "structured_outputs_not_supported");
+        }
+        // The tool-call parser owns the turn when tools are declared, so a constrained
+        // answer and a `tools` field cannot share it, mirroring the other routes.
+        if (request.constraint && body.contains("tools") && !body.at("tools").is_null()) {
+            bad_request("tools with a constrained response is not supported", "text.format",
+                        "constrained_decoding_not_supported");
         }
     }
     if (text.contains("verbosity") && !text.at("verbosity").is_null()) {
@@ -1038,13 +1105,9 @@ ParsedPromptFields parse_prompt_fields(const Json& body, const RequestLimits& li
     parse_tools(body, out);
     parse_tool_choice(body, out);
     out.parallel_tool_calls = optional_bool(body, "parallel_tool_calls", true);
-    if (!out.parallel_tool_calls && out.prompt.generation.uses_tools()) {
-        bad_request("parallel_tool_calls=false cannot be guaranteed when callable tools are "
-                    "present",
-                    "parallel_tool_calls", "parallel_tool_calls_not_supported");
-    }
+    out.prompt.generation.tool_choice.parallel &= out.parallel_tool_calls;
     parse_reasoning(body, out.prompt);
-    parse_text(body);
+    parse_text(body, out.prompt.generation);
     parse_truncation(body);
     parse_preserve_thinking(body, out.prompt);
     out.prompt.generation.max_tokens = limits.default_max_tokens;

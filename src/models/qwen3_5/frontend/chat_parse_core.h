@@ -1,6 +1,6 @@
 #pragma once
 
-#include "models/qwen3_5/frontend/tool_call_parser.h"
+#include "models/qwen3_5/frontend/tool_contract.h"
 #include "ninfer/types.h"
 
 #include <cstddef>
@@ -105,9 +105,23 @@ public:
     [[nodiscard]] std::vector<GeneratedToolCall> take_tool_calls() noexcept;
     [[nodiscard]] ToolCallParseDiagnostics diagnostics() const noexcept;
 
+    // Feeds an assistant-continuation prefix into the committed state before any preview:
+    // the bytes stream through the normal channels, so a partial tool region stays held
+    // for the generated suffix to complete. Prompt bytes never publish as output deltas.
+    void feed_prefix(std::string_view prefix);
+
 private:
     class Impl;
     std::unique_ptr<Impl> impl_;
 };
+
+// Trailing partial tool region of an assistant continuation (from its last tool-call
+// marker), or empty when the continuation carries no tool framing.
+[[nodiscard]] std::string_view continuation_tool_region(std::string_view continuation) noexcept;
+
+// Fail-closed continuation check: the trailing region must hold no completed call and, on
+// a constrained contract, nothing malformed. Throws RequestError on violation.
+void check_tool_continuation(const ToolCallOutputContract& contract, std::string_view region,
+                             std::size_t max_name_length);
 
 } // namespace ninfer::models::qwen3_5::frontend

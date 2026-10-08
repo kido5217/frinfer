@@ -63,6 +63,14 @@ int main() {
                           dead_end_schema.code == "constraint_dead_end" &&
                           dead_end_schema.param == "response_format",
                       "a schema constraint dead end did not map to the response_format field");
+    const ninfer::serve::ApiError tool_constraint = ninfer::serve::request_error_to_api_error(
+        ninfer::RequestError(ninfer::RequestErrorKind::InvalidToolConstraint,
+                             "tool selection names an undeclared tool", "/0/name"));
+    failures += check(tool_constraint.status == 400 &&
+                          tool_constraint.code == "tool_constraint_invalid" &&
+                          tool_constraint.param == "tools/0/name",
+                      "a tool constraint rejection did not map to HTTP 400 "
+                      "tool_constraint_invalid on the tools parameter");
     const ninfer::serve::ApiError cancelled =
         ninfer::serve::request_error_to_api_error(ninfer::RequestError(
             ninfer::RequestErrorKind::Cancelled, "request cancelled during preparation"));

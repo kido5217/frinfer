@@ -3,7 +3,7 @@
 #include "models/qwen3_5/frontend/chat_parse_core.h"
 #include "models/qwen3_5/frontend/chat_template.h"
 #include "models/qwen3_5/frontend/tokenizer.h"
-#include "models/qwen3_5/frontend/tool_call_parser.h"
+#include "models/qwen3_5/frontend/tool_contract.h"
 #include "text/unicode.h"
 
 #include <algorithm>
@@ -290,12 +290,14 @@ public:
          bool starts_in_reasoning, ThinkingControlOptions thinking_,
          std::shared_ptr<const std::vector<TokenId>> thinking_control_tokens_,
          std::shared_ptr<const fi::ToolCallOutputContract> tool_call_output_,
-         std::unique_ptr<text::GrammarSession> grammar_)
+         std::unique_ptr<text::GrammarSession> grammar_, std::string_view continuation)
         : tokenizer(std::move(tokenizer_)), policy(std::move(policy_)),
           thinking_control_tokens(std::move(thinking_control_tokens_)),
           grammar(std::move(grammar_)),
           preserve_special(output.raw || output.preserve_special_tokens),
           raw_presentation(output.raw), split_reasoning(starts_in_reasoning && !output.raw),
+          max_tool_name_length(output.tool_name_max_length),
+          tool_contract(output.raw ? nullptr : tool_call_output_),
           core(output.raw ? nullptr : std::move(tool_call_output_),
                fi::ChatParseOptions{.thinking_enabled     = starts_in_reasoning,
                                     .exact_framing        = grammar_ != nullptr,
@@ -303,6 +305,16 @@ public:
                                     .tool_name_max_length = output.tool_name_max_length}) {
         if (thinking_.budget && *thinking_.budget == 0) {
             throw std::invalid_argument("thinking budget must be positive");
+        }
+        // An assistant continuation may end inside a tool call: its trailing tool region
+        // joins the committed parse state so the generated suffix completes it. A prefix
+        // holding a completed (or, when constrained, malformed) call is rejected.
+        if (tool_contract) {
+            const std::string_view region = fi::continuation_tool_region(continuation);
+            if (!region.empty()) {
+                fi::check_tool_continuation(*tool_contract, region, max_tool_name_length);
+                core.feed_prefix(region);
+            }
         }
         thinking.budget = thinking_.budget;
         // The prefix execution tracker observes the canonical close serialization only while the
@@ -429,6 +441,8 @@ public:
     bool preserve_special = false;
     bool raw_presentation = false;
     bool split_reasoning  = false;
+    std::size_t max_tool_name_length = 0;
+    std::shared_ptr<const fi::ToolCallOutputContract> tool_contract;
     fi::ChatParseCore core;
     DecoderState state;
     DecoderState preview_state;
@@ -491,11 +505,11 @@ OutputSession::OutputSession(
     bool starts_in_reasoning, ThinkingControlOptions thinking,
     std::shared_ptr<const std::vector<TokenId>> thinking_control_tokens,
     std::shared_ptr<const frontend::ToolCallOutputContract> tool_call_output,
-    std::unique_ptr<text::GrammarSession> grammar)
+    std::unique_ptr<text::GrammarSession> grammar, std::string_view continuation)
     : impl_(std::make_unique<Impl>(
           std::move(tokenizer), std::move(policy), output, starts_in_reasoning, thinking,
           std::move(thinking_control_tokens), std::move(tool_call_output),
-          std::move(grammar))) {}
+          std::move(grammar), continuation)) {}
 
 runtime::OutputDecision
 OutputSession::preview_model(std::span<const TokenId> tokens, std::uint32_t total_budget_remaining,

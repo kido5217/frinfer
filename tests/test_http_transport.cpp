@@ -1,10 +1,17 @@
+#include "serve/http_server.h"
+#include "serve/http_server_test_access.h"
 #include "serve/http_transport.h"
 #include "serve/request.h"
+
+#include <spdlog/logger.h>
+#include <spdlog/sinks/null_sink.h>
 
 #include <atomic>
 #include <chrono>
 #include <iostream>
+#include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 #if defined(__linux__)
@@ -226,6 +233,44 @@ int test_inherited_socket_liveness() {
         "accepted HTTP socket did not inherit TCP_USER_TIMEOUT");
     return failures;
 }
+
+std::shared_ptr<spdlog::logger> null_logger() {
+    return std::make_shared<spdlog::logger>("test",
+                                             std::make_shared<spdlog::sinks::null_sink_mt>());
+}
+
+// The metrics 503 engine-not-ready path is not externally reachable at startup: the
+// listener binds before the Engine is ready, the service attaches only afterwards, and
+// listen() itself refuses an unattached server. This drives the handler directly with a
+// null service through the test accessor; startup binding is unchanged.
+int test_metrics_endpoint_without_engine() {
+    using ninfer::serve::HttpServerTestAccess;
+    int failures = 0;
+    {
+        ninfer::serve::ServeOptions options;
+        options.enable_metrics = true;
+        const ninfer::serve::HttpServer server(std::move(options), null_logger());
+        httplib::Request request;
+        httplib::Response response;
+        HttpServerTestAccess::handle_metrics(server, request, response);
+        failures += check(response.status == 503 &&
+                              response.body.find("service_unavailable") != std::string::npos &&
+                              response.body.find("not ready") != std::string::npos,
+                          "engine-not-ready metrics did not report 503 service_unavailable");
+    }
+    {
+        ninfer::serve::ServeOptions options;
+        const ninfer::serve::HttpServer server(std::move(options), null_logger());
+        httplib::Request request;
+        httplib::Response response;
+        HttpServerTestAccess::handle_metrics(server, request, response);
+        failures += check(response.status == 404 &&
+                              response.body.find("not enabled") != std::string::npos,
+                          "disabled metrics did not report the opt-in 404");
+    }
+    return failures;
+}
+
 #endif
 
 } // namespace
@@ -234,7 +279,7 @@ int main() {
     int failures = test_sse_transport() + test_sse_response_headers() +
                    test_prompt_json_member_order() + test_schema_number_precision();
 #if defined(__linux__)
-    failures += test_inherited_socket_liveness();
+    failures += test_inherited_socket_liveness() + test_metrics_endpoint_without_engine();
 #endif
     if (failures == 0) { std::cout << "ok\n"; }
     return failures == 0 ? 0 : 1;

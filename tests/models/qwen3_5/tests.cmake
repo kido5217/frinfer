@@ -53,6 +53,10 @@ ninfer_add_test(ninfer_qwen3_5_grammar_real_test
   SOURCES "${CMAKE_CURRENT_LIST_DIR}/test_engine_grammar_real.cpp"
   LIBRARIES ninfer_engine ninfer::json)
 
+ninfer_add_test(ninfer_qwen3_5_tools_real_test
+  SOURCES "${CMAKE_CURRENT_LIST_DIR}/test_engine_tools_real.cpp"
+  LIBRARIES ninfer_engine ninfer::json)
+
 ninfer_add_test(ninfer_qwen3_5_score_real_test
   SOURCES "${CMAKE_CURRENT_LIST_DIR}/test_engine_score_real.cpp"
   LIBRARIES ninfer_engine)
@@ -93,6 +97,7 @@ set(ninfer_qwen3_5_real_tests
   ninfer_qwen3_5_prefix_real_test
   ninfer_qwen3_5_agent_continuation_real_test
   ninfer_qwen3_5_grammar_real_test
+  ninfer_qwen3_5_tools_real_test
   ninfer_qwen3_5_score_real_test
   ninfer_qwen3_5_vision_workspace_test
   ninfer_qwen3_5_dflash2_real_test
@@ -121,6 +126,12 @@ ninfer_add_test(ninfer_qwen3_5_constrained_matrix_real_test
   NEEDS_SOURCE_DIR
   LIBRARIES ninfer_engine ninfer_llama_chat ninfer::json)
 set_tests_properties(ninfer_qwen3_5_constrained_matrix_real_test PROPERTIES SKIP_RETURN_CODE 77)
+
+# Constrained tool calling (ticket #252): contract selection plus the tool grammar against
+# the real XGrammar compiler, and the strict/basic/free tool surface on a real artifact.
+ninfer_add_test(ninfer_qwen3_5_tool_constraints_test
+  SOURCES "${CMAKE_CURRENT_LIST_DIR}/test_tool_constraints.cpp"
+  LIBRARIES ninfer_model_runtime ninfer_chat_parsing ninfer::json)
 
 # Fork product contract: active-request preemption never fires under fixed concurrency.
 ninfer_add_test(ninfer_qwen3_5_no_preemption_real_test

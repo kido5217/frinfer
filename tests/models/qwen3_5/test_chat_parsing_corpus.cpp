@@ -6,7 +6,7 @@
 // terminal diagnostics. Expectations are never re-derived from the core.
 
 #include "models/qwen3_5/frontend/chat_parse_core.h"
-#include "models/qwen3_5/frontend/tool_call_parser.h"
+#include "models/qwen3_5/frontend/tool_contract.h"
 
 #include <nlohmann/json.hpp>
 
@@ -168,7 +168,7 @@ contract_for(const ordered_json& vector, const std::map<std::string, ordered_jso
         }
         definitions.push_back(tool->second.dump());
     }
-    return build_tool_call_output_contract(definitions, true);
+    return build_tool_call_output_contract(definitions);
 }
 
 void run_vector(const ordered_json& vector, const std::map<std::string, ordered_json>& tools) {

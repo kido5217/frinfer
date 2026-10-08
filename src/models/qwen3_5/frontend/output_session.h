@@ -9,6 +9,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace ninfer::text {
@@ -119,10 +120,11 @@ public:
 private:
     class Impl;
     OutputSession(std::shared_ptr<const frontend::Tokenizer> tokenizer, StopPolicy policy,
-                  OutputOptions output, bool starts_in_reasoning, ThinkingControlOptions thinking,
-                  std::shared_ptr<const std::vector<TokenId>> thinking_control_tokens,
-                  std::shared_ptr<const frontend::ToolCallOutputContract> tool_call_output,
-                  std::unique_ptr<text::GrammarSession> grammar = {});
+                   OutputOptions output, bool starts_in_reasoning, ThinkingControlOptions thinking,
+                   std::shared_ptr<const std::vector<TokenId>> thinking_control_tokens,
+                   std::shared_ptr<const frontend::ToolCallOutputContract> tool_call_output,
+                   std::unique_ptr<text::GrammarSession> grammar = {},
+                   std::string_view continuation                 = {});
     std::unique_ptr<Impl> impl_;
 
     friend class Frontend;

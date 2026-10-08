@@ -285,11 +285,9 @@ FallbackReason apply_adapter_checks(std::vector<RawToolCall>& calls, const Contr
             return FallbackReason::InvalidToolName;
         }
     }
-    if (contract.enforce_declared_names) {
-        for (const RawToolCall& call : calls) {
-            if (find_tool_contract(contract, call.name) == nullptr) {
-                return FallbackReason::UndeclaredTool;
-            }
+    for (const RawToolCall& call : calls) {
+        if (find_tool_contract(contract, call.name) == nullptr) {
+            return FallbackReason::UndeclaredTool;
         }
     }
     for (RawToolCall& call : calls) {
@@ -621,6 +619,158 @@ GeneratedToolCall normalize_raw_tool_call(const RawToolCall& raw, const Contract
     return GeneratedToolCall{.name = raw.name, .arguments_json = std::move(arguments)};
 }
 
+// Canonical constrained tool-call parsing (upstream 41e50d0d ConstrainedToolRegionParser).
+// The tool grammar licenses exactly this framing, so the terminal resolution of a constrained
+// turn parses calls one at a time instead of running the tolerant free-form analysis: strict
+// tools keep declaration order with lexically delimited JSON values, non-strict repeats resolve
+// to the last value as JSON object consumers do, and a marker inside a quoted JSON value never
+// becomes a parameter boundary. An Incomplete suffix (terminal interruption) or an Invalid
+// region (grammar disagreement) falls back to the tolerant path below.
+class ConstrainedToolRegionParser {
+public:
+    enum class Status { Complete, Incomplete, Invalid };
+
+    ConstrainedToolRegionParser(std::string_view input, const Contract& contract,
+                                std::size_t max_name_length)
+        : input_(input), contract_(contract), max_name_length_(max_name_length) {}
+
+    Status parse(std::vector<GeneratedToolCall>& calls, ToolCallParseDiagnostics& diagnostics) {
+        while (position_ < input_.size()) {
+            if (!calls.empty() && !take("\n")) return status_;
+            RawToolCall raw;
+            if (!take("<tool_call>\n<function=")) return status_;
+            const auto end = input_.find('>', position_);
+            if (end == std::string_view::npos) return Status::Incomplete;
+            raw.name.assign(input_.substr(position_, end - position_));
+            if (!valid_function_name(raw.name, max_name_length_)) return Status::Invalid;
+            const auto* tool = find_tool_contract(contract_, raw.name);
+            if (tool == nullptr) return Status::Invalid;
+            position_ = end + 1;
+            if (!take("\n")) return status_;
+            std::ptrdiff_t previous = -1;
+            while (!input_.substr(position_).starts_with("</function>")) {
+                if (std::string_view("</function>").starts_with(input_.substr(position_)))
+                    return Status::Incomplete;
+                if (!take("<parameter=")) return status_;
+                const auto name_end = input_.find('>', position_);
+                if (name_end == std::string_view::npos) return Status::Incomplete;
+                const std::string name(input_.substr(position_, name_end - position_));
+                const auto* parameter = find_parameter_contract(*tool, name);
+                if (name.empty() || name.find_first_of("<>\r\n") != std::string_view::npos)
+                    return Status::Invalid;
+                if (tool->strict) {
+                    if (parameter == nullptr) return Status::Invalid;
+                    const auto index = parameter - tool->parameters.data();
+                    if (index <= previous) return Status::Invalid;
+                    previous = index;
+                }
+                position_ = name_end + 1;
+                if (!take("\n")) return status_;
+                const auto value_begin = position_;
+                if (parameter != nullptr &&
+                    parameter->encoding == Contract::Encoding::Json) {
+                    if (!json_value()) return status_;
+                } else {
+                    const auto close = input_.find("\n</parameter>", position_);
+                    if (close == std::string_view::npos) return Status::Incomplete;
+                    position_ = close;
+                }
+                const std::string value(input_.substr(value_begin, position_ - value_begin));
+                if (!take("\n</parameter>\n")) return status_;
+                // Non-strict arguments use the last value for a repeated name, as JSON object
+                // consumers do. Strict order is grammar-licensed, so repeats cannot occur there.
+                const auto existing =
+                    tool->strict
+                        ? raw.parameters.end()
+                        : std::find_if(raw.parameters.begin(), raw.parameters.end(),
+                                       [&](const RawParameter& item) { return item.name == name; });
+                if (existing == raw.parameters.end())
+                    raw.parameters.push_back({name, value});
+                else
+                    existing->value = value;
+            }
+            if (!take("</function>\n</tool_call>")) return status_;
+            if (!contract_.parallel && !calls.empty()) return Status::Invalid;
+            std::string arguments = "{";
+            bool first            = true;
+            for (const auto& value : raw.parameters) {
+                const auto* parameter = find_parameter_contract(*tool, value.name);
+                NormalizedParameter normalized;
+                if (parameter != nullptr &&
+                    parameter->encoding == Contract::Encoding::RawString) {
+                    normalized.json_value = encode_json_string(value.value);
+                } else if (parameter != nullptr &&
+                           parameter->encoding == Contract::Encoding::Json) {
+                    if (!Json::accept(value.value)) return Status::Invalid;
+                    normalized.json_value = value.value;
+                } else {
+                    // The non-strict normalizer owns its framing removal.
+                    normalized =
+                        normalize_parameter("\n" + value.value + "\n", parameter);
+                }
+                if (normalized.disposition == ParameterNormalization::Omitted) {
+                    ++diagnostics.empty_arguments_omitted;
+                    continue;
+                }
+                if (normalized.disposition == ParameterNormalization::SchemaMismatch)
+                    ++diagnostics.schema_mismatch_arguments;
+                if (!first) arguments += ',';
+                first = false;
+                arguments += encode_json_string(value.name) + ":" + normalized.json_value;
+            }
+            arguments += '}';
+            calls.push_back(
+                {.name = raw.name, .arguments_json = std::move(arguments)});
+        }
+        return Status::Complete;
+    }
+
+private:
+    bool take(std::string_view literal) {
+        const auto remaining = input_.substr(position_);
+        if (remaining.starts_with(literal)) {
+            position_ += literal.size();
+            return true;
+        }
+        status_ = literal.starts_with(remaining) ? Status::Incomplete : Status::Invalid;
+        return false;
+    }
+
+    bool json_value() {
+        bool quoted = false, escaped = false;
+        int depth = 0;
+        for (; position_ < input_.size(); ++position_) {
+            const char c = input_[position_];
+            if (quoted) {
+                if (escaped)
+                    escaped = false;
+                else if (c == '\\')
+                    escaped = true;
+                else if (c == '"')
+                    quoted = false;
+            } else if (c == '"')
+                quoted = true;
+            else if (c == '{' || c == '[')
+                ++depth;
+            else if (c == '}' || c == ']') {
+                if (--depth < 0) {
+                    status_ = Status::Invalid;
+                    return false;
+                }
+            } else if (c == '\n' && depth == 0)
+                return true;
+        }
+        status_ = Status::Incomplete;
+        return false;
+    }
+
+    std::string_view input_;
+    const Contract& contract_;
+    std::size_t max_name_length_;
+    std::size_t position_ = 0;
+    Status status_        = Status::Incomplete;
+};
+
 // ---------------------------------------------------------------- channel state machine (R1-R8)
 //
 // The reasoning boundary and hold rules need bytes the PEG does not track, so they live here as a
@@ -655,6 +805,31 @@ void resolve_tool_region(ParseState& state, const ParseContext& context, const C
                          std::size_t max_name_length) {
     const std::string_view region(state.held);
     const std::string_view tool_open = context.format->tool_call_open;
+
+    // A constrained turn carries grammar-licensed canonical framing: parse it exactly. Any
+    // other outcome (an interrupted suffix or a grammar disagreement) falls through to the
+    // tolerant free-form analysis, which retains complete calls or demotes the region.
+    if (contract.constrained) {
+        const std::size_t marker = region.find(tool_open);
+        if (marker != std::string_view::npos) {
+            ConstrainedToolRegionParser parser(region.substr(marker), contract, max_name_length);
+            std::vector<GeneratedToolCall> calls;
+            ToolCallParseDiagnostics diagnostics;
+            if (parser.parse(calls, diagnostics) ==
+                ConstrainedToolRegionParser::Status::Complete) {
+                publish(state.content, rtrim_format_whitespace(region.substr(0, marker)));
+                state.diagnostics.marker_seen    = true;
+                state.diagnostics.call_attempted = true;
+                state.diagnostics.structured_call_count =
+                    static_cast<std::uint32_t>(calls.size());
+                state.diagnostics.empty_arguments_omitted += diagnostics.empty_arguments_omitted;
+                state.diagnostics.schema_mismatch_arguments +=
+                    diagnostics.schema_mismatch_arguments;
+                state.tool_calls = std::move(calls);
+                return;
+            }
+        }
+    }
 
     FallbackReason first_failure = FallbackReason::MalformedStructure;
     bool failure_recorded        = false;
@@ -707,7 +882,9 @@ void resolve_tool_region(ParseState& state, const ParseContext& context, const C
             apply_adapter_checks(salvage.calls, contract, max_name_length, merged_arguments);
         if (failure == FallbackReason::None) {
             publish(state.content, rtrim_format_whitespace(region.substr(0, salvage.candidate)));
-            publish(state.content, region.substr(salvage.end));
+            // A constrained turn owns its framing through the grammar: an unfinished suffix
+            // is dropped, not published as text. Only free turns republish it.
+            if (!contract.constrained) { publish(state.content, region.substr(salvage.end)); }
             state.diagnostics.structured_call_count =
                 static_cast<std::uint32_t>(salvage.calls.size());
             state.diagnostics.salvaged_calls += static_cast<std::uint32_t>(salvage.calls.size());
@@ -726,8 +903,10 @@ void resolve_tool_region(ParseState& state, const ParseContext& context, const C
     }
 
     if (accepted == std::string_view::npos) {
-        // No candidate qualifies: the whole region is ordinary content (B2).
-        publish(state.content, region);
+        // No candidate qualifies: on a free turn the whole region is ordinary content
+        // (B2); on a constrained turn the grammar owns the framing, so the unresolvable
+        // region is dropped with its fallback recorded instead of leaking markup as text.
+        if (!contract.constrained) { publish(state.content, region); }
         state.diagnostics.fallback_reason = first_failure;
         return;
     }
@@ -1043,6 +1222,50 @@ std::vector<GeneratedToolCall> ChatParseCore::take_tool_calls() noexcept {
 
 ToolCallParseDiagnostics ChatParseCore::diagnostics() const noexcept {
     return impl_->committed_.diagnostics;
+}
+
+void ChatParseCore::feed_prefix(std::string_view prefix) {
+    Impl& impl = *impl_;
+    if (impl.committed_.finished) { throw std::logic_error("chat parse core is already terminal"); }
+    impl.preview_       = impl.committed_;
+    impl.preview_ready_ = true;
+    feed(impl.preview_, impl.context(), prefix);
+    impl.committed_     = std::move(impl.preview_);
+    impl.preview_       = {};
+    impl.preview_ready_ = false;
+}
+
+std::string_view continuation_tool_region(std::string_view continuation) noexcept {
+    const std::string_view marker = ChatParseWireFormat::qwen3_5().tool_call_open;
+    const std::size_t found       = continuation.rfind(marker);
+    if (found == std::string_view::npos) { return {}; }
+    return continuation.substr(found);
+}
+
+void check_tool_continuation(const ToolCallOutputContract& contract, std::string_view region,
+                             std::size_t max_name_length) {
+    if (contract.constrained) {
+        ConstrainedToolRegionParser parser(region, contract, max_name_length);
+        std::vector<GeneratedToolCall> calls;
+        ToolCallParseDiagnostics diagnostics;
+        const auto status = parser.parse(calls, diagnostics);
+        if (!calls.empty() || status == ConstrainedToolRegionParser::Status::Invalid)
+            throw RequestError(RequestErrorKind::InvalidToolConstraint,
+                               "tool continuation must contain no completed or malformed calls");
+        return;
+    }
+    ChatParseCore probe(std::make_shared<ToolCallOutputContract>(contract),
+                        ChatParseOptions{.thinking_enabled = false,
+                                        .tool_name_max_length = max_name_length});
+    probe.begin_preview();
+    (void)probe.preview_feed(region);
+    probe.commit();
+    probe.begin_preview();
+    (void)probe.preview_finish();
+    probe.commit();
+    if (!probe.take_tool_calls().empty())
+        throw RequestError(RequestErrorKind::InvalidToolConstraint,
+                           "tool continuation must contain no completed calls");
 }
 
 } // namespace ninfer::models::qwen3_5::frontend

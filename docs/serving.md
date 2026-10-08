@@ -121,9 +121,10 @@ The endpoint supports:
 - `stream_options.include_usage`;
 - llama.cpp-compatible terminal `timings`, plus opt-in `timings_per_token` and
   streaming `return_progress` observations;
-- non-strict function tools with `tool_choice` `auto`, `none`, or `allowed_tools` in `auto` mode,
-  parallel calls enabled, assistant tool-call history, tool-result messages, and legacy
-  function-call history;
+- function tools with `tool_choice` `auto`/`none`/`required`, named function choice,
+  `allowed_tools` in `auto`/`required` mode, and `parallel_tool_calls` cardinality; `strict:true`
+  argument schemas are enforced by the Engine's tool grammar. Assistant tool-call history,
+  tool-result messages, and legacy function-call history;
 - the top-level `reasoning_effort` field;
 - `enable_thinking` and `preserve_thinking`, either at top level or in
   `chat_template_kwargs`;
@@ -131,14 +132,15 @@ The endpoint supports:
 
 Options whose observable behavior the Engine cannot provide are rejected when they request that
 behavior. This includes nonzero `logit_bias`, requested log probabilities, audio/file input or audio
-output, `strict:true`, required or named tool choice, `parallel_tool_calls:false` with enabled tools,
-explicit low/high image detail, web search, moderation, low/high verbosity, stored Chat Completions,
-and non-empty legacy `functions`. Each capability rejection identifies the affected field and the
+output, explicit low/high image detail, web search, moderation, low/high verbosity, stored Chat
+Completions, and non-empty legacy `functions`. Each capability rejection identifies the affected field and the
 guarantee NInfer cannot provide. The retired vLLM `guided_json`/`guided_regex`/`guided_choice`/
 `guided_grammar` constrained-decoding aliases are rejected with
 `constrained_decoding_not_supported`; use `grammar` (GBNF), `structured_outputs`, or
-`response_format` instead. A `tools` field combined with a constraint is rejected because the
-tool-call parser owns the turn.
+`response_format` instead. A `tools` field combined with an output constraint is rejected because
+the tool-call parser owns the turn. The rejection keys on the declared `tools` field itself, so an
+empty `tools` array or `tool_choice:"none"` does not make the combination executable: a constrained
+answer has no tools route. Constrained tools require model EOS and reject custom stop strings.
 
 Semantically neutral fields do not make an otherwise executable request fail. All-zero
 `logit_bias`, `logprobs:false`, `top_logprobs:0`, `verbosity:"medium"`, empty legacy tool controls,
@@ -168,14 +170,44 @@ Reasoning is returned separately as `reasoning_content`; answer text remains in 
 
 Across Chat Completions, Responses, and Anthropic Messages, a direct top-level tool-parameter
 `type`, or an `anyOf`/`oneOf` composed entirely of explicit primitive types, guides conversion of
-Qwen's untyped parameter text. It does not decide whether structurally complete markup is a tool
-call. String-admitting values remain strings, including the empty string. An empty block for a
+Qwen's untyped parameter text on the unconstrained route. It does not decide whether structurally
+complete markup is a tool call. String-admitting values remain strings, including the empty string. An empty block for a
 declared non-string parameter is omitted. Admitted JSON values retain their JSON type;
 case-insensitive boolean text is normalized to `true` or `false`. A nonempty schema mismatch remains
 a structured call: valid JSON retains its represented type and other text becomes a JSON string so
 the tool consumer can report the validation error and continue the agent loop. Schemas without a
-supported explicit type retain untyped inference. NInfer does not apply defaults, enforce required
-properties, perform recursive JSON Schema validation, or use constrained decoding.
+supported explicit type retain untyped inference. NInfer does not apply defaults,
+enforce required properties, or perform recursive JSON Schema validation on this route.
+
+### Constrained tool calling
+
+The three protocols share one constrained tool implementation. Declarations always render in the
+prompt in order; selection only changes generation permissions:
+
+| Choice | Generated calls |
+|---|---|
+| `auto` | Text or calls; zero to many (basic structural constraints) |
+| `none` | No tool calls; declarations stay rendered but uncallable |
+| OpenAI `required` / Anthropic `any` | One or more calls |
+| OpenAI named function | Exactly one call to that function |
+| Anthropic named `tool` | One or more calls to that tool |
+| OpenAI `allowed_tools` `auto`/`required` | Text or calls / one or more calls, limited to the named subset |
+| OpenAI `parallel_tool_calls:false` / Anthropic `disable_parallel_tool_use:true` | At most one call; exactly one when a call is required |
+
+Requests with tools enable basic structural constraints by default: the model may answer
+normally or emit tool calls, and every call must use the tool framing with a declared function
+name. Non-strict parameter names and order stay open and reuse the value normalization above;
+repeated parameter names resolve to the last value. `strict:true` additionally constrains argument
+values against the declared schema: the parameter root must be a single object declaration with
+`additionalProperties:false`, properties emit in declaration order, and unsupported schemas fail
+with HTTP 400 before generation. A tool-constraint violation (undeclared selection, required
+choice without callable tools, unsatisfiable strict schema) fails with HTTP 400
+`tool_constraint_invalid` on the `tools` field, as does an output-option conflict that only a
+constrained tool turn can reach. For `auto`, text may precede the first call;
+required/named choices start directly with calls (after thinking, if enabled). A token limit or
+cancellation still ends the turn: completed calls are published and the unfinished constrained
+suffix is dropped, never leaked as text. Assistant continuation may finish a partial call; a
+prefix containing a completed (or, when constrained, malformed) call is rejected.
 
 String parameters preserve function/tool-call markers and balanced nested
 `<parameter=...>...</parameter>` text as value bytes. The Qwen wire format has no delimiter escape,
@@ -343,8 +375,12 @@ resource errors.
 Constrained-decoding rejections are client errors at HTTP 400: `grammar_invalid` for a malformed
 GBNF `grammar`, `invalid_choice` for a malformed `structured_outputs.choice`, `invalid_regex` for a
 malformed `structured_outputs.regex`, `structured_outputs_invalid` for a malformed
-`structured_outputs` object, `json_schema_invalid` (param `response_format` or
-`output_config.format`) for a malformed or unsupported JSON Schema, and `constraint_dead_end` when
+`structured_outputs` object, `json_schema_invalid` (param `response_format`,
+`output_config.format`, `text.format`, or `tools` with a declaration-relative pointer) for a
+malformed or unsupported JSON Schema, `tool_constraint_invalid` (param `tools`) for an
+unenforceable tool selection, an unsatisfiable strict tool schema, or an output-option conflict
+(custom stop strings, raw output, non-default EOS) that only a constrained tool turn can reach,
+and `constraint_dead_end` when
 a compiled constraint admits no legal next token, so the request fails closed instead of emitting
 unconstrained text.
 
@@ -451,10 +487,10 @@ wire response contains typed `output` Items.
 | `reasoning.effort` | `none` requests disabled thinking; other standard effort values pass to the selected template |
 | `chat_template_kwargs` | template parameters as a JSON object; standard options merge with typed fields |
 | `preserve_thinking` | alias for `chat_template_kwargs.preserve_thinking`; conflicting values are rejected |
-| `text.format` | omitted or `{"type":"text"}` only |
+| `text.format` | omitted, `{"type":"text"}`, `{"type":"json_object"}`, or `{"type":"json_schema"}` with `name`/`schema` (`strict` accepted as metadata); a malformed schema is `json_schema_invalid`, any other type is `structured_outputs_not_supported` |
 | `tools` | direct function definitions or namespace groups containing function definitions; see below |
-| `tool_choice` | `auto`, `none`, or function-only `allowed_tools` with mode `auto`; a namespaced selection carries both `namespace` and `name` |
-| `parallel_tool_calls` | `true` by default; `false` is accepted only when no effective tool is callable |
+| `tool_choice` | `auto`, `none`, `required`, a named `{"type":"function",...}` choice, or function-only `allowed_tools` with mode `auto`/`required`; a namespaced selection carries both `namespace` and `name` |
+| `parallel_tool_calls` | `true` by default; `false` constrains the turn to at most one call |
 | `max_tool_calls` | non-negative integer accepted as a hosted-tool no-op; NInfer does not execute hosted tools |
 | `truncation` | omitted or `disabled`; overlong input fails instead of silently dropping Items |
 | `top_logprobs` | omitted or `0` |
@@ -546,13 +582,12 @@ client-executed functions; this does not add a remote MCP executor.
 NInfer renders these definitions in the Qwen prompt and parses model output into separate
 `function_call` output Items. Each output has a protocol Item `id` (`fc_...`) and a distinct
 `call_id` (`call_...`). The client executes the function and sends a `function_call_output` Item in
-a later request. Only functions in the current effective tool set can become structured calls;
-undeclared model output remains ordinary text. `allowed_tools` with mode `auto` filters that set
-without changing declaration order, while `tool_choice:"none"` disables structured tool output even
-when the history contains earlier calls.
+a later request. Selection and strict argument enforcement follow the common constrained tool
+contract above: `allowed_tools` limits generation to the named subset without changing
+declaration order, `tool_choice:"none"` renders declarations uncallable even when the history
+contains earlier calls, and undeclared model output remains ordinary text.
 
-NInfer does not execute functions or enforce JSON Schema through constrained decoding, so
-`strict:true`, required or named tool choice, hosted tools, remote MCP tools, and custom free-form
+NInfer does not execute functions, so hosted tools, remote MCP tools, and custom free-form
 tools are rejected. Deferred loading, output schemas, and caller restrictions that exclude direct
 invocation are also rejected because their semantics cannot be honored.
 
@@ -723,11 +758,12 @@ encrypted hidden-reasoning restore semantics. `preserve_thinking` remains a NInf
 closed-turn reasoning history. `output_config.effort` passes its protocol-validated value to the
 selected template.
 
-User-defined, non-strict tools support `name`, `description`, object `input_schema`, and
-`input_examples`. `tool_choice:auto` and `none` are executable. Forced or named choice,
-`strict:true`, active single-call enforcement, deferred tools, tools that exclude direct model
-calls, Anthropic-provided/server tools, toolsets, MCP, and containers are rejected because their
-required constraint or executor is absent. `tool_result` preserves text/image order and marks
+User-defined tools support `name`, `description`, object `input_schema`, `strict`, and
+`input_examples`. `tool_choice:auto`, `none`, `any`, and named `tool` are executable, and
+`disable_parallel_tool_use:true` constrains the turn to one call; strict schemas and selections
+are enforced as described in the constrained tool contract above. Deferred tools, tools that
+exclude direct model calls, Anthropic-provided/server tools, toolsets, MCP, and containers are
+rejected because their required loader or executor is absent. `tool_result` preserves text/image order and marks
 `is_error:true` explicitly in the model prompt. For a visible Assistant tool-use turn, the next
 User turn must provide exactly one leading result for every declared ID; valid results are matched
 by ID and normalized to call order. A history that begins with results remains valid as a truncated
@@ -933,7 +969,7 @@ they do not infer request behavior from process-global counter deltas.
 | `server_start` | artifact path, architecture, public name, actual formats and prefill signature; resolved Engine and context-cache capacities, thinking/non-thinking sampler defaults plus process overrides, thinking-history and thinking-budget defaults, Device arenas, the optional non-additive Vision layout inside the unified workspace, unified Host context capacity and occupancy, KV sizing ledger, CUDA Graph allowance, CUDA/GPU environment, and redacted argv |
 | `request_start` | protocol, resolved sampler and seed, requested reasoning effort, actual initial thinking mode and optional budget, Responses semantic-change flag, output budget, stream/message/tool shape |
 | `request_rejected` | parsed request shape, requested reasoning effort, media-item count, `phase: "prepare"`, and the exact HTTP status/type/code/parameter/message for a synchronous preparation rejection |
-| `request_done` | finish reason, prompt/completion/cache/computed-prefill tokens, prefix reuse path, tool-call parse diagnostics, preemption/recovery counters, thinking-budget application counters, unrounded request-stage seconds, per-request Engine Host exposure, and complete speculative-decoding counters |
+| `request_done` | finish reason, prompt/completion/cache/computed-prefill tokens, prefix reuse path, tool-call parse diagnostics, terminal constraint observation, preemption/recovery counters, thinking-budget application counters, unrounded request-stage seconds, per-request Engine Host exposure, and complete speculative-decoding counters |
 | `request_scheduling` | request identity, pause/restore/recovery transitions, Snapshot revocation, Engine observation time and cumulative global/request work counters |
 | `request_error` | the resolved request configuration and the generation, cancellation, or pre-outcome transport terminal message |
 | `throughput` | interval token/decode/context-cache pressure counter deltas, authoritative worker Host-work deltas, current scheduler/resource gauges, and decode-round batch statistics |
@@ -946,6 +982,15 @@ call count, empty non-string arguments omitted during normalization, schema-mism
 preserved for consumer validation, and a stable text-fallback reason. Fallback reasons are `none`,
 `malformed_structure`, `duplicate_parameter`, `invalid_tool_name`, `undeclared_tool`, and
 `trailing_content`. These counters contain no tool arguments or generated text.
+
+`request_done.result.constraint` carries the Engine's terminal constraint observation. The
+committed output branch is always `undecided`: the adopted session reports completion and
+termination for both output constraints and constrained tool turns, but does not track upstream's
+composition branches. It also carries completion and termination state,
+compile-cache access (`hit`, `built`, or `waited`), and the mask/matcher work attribution
+(`prepare_seconds`, `mask_seconds`, `matcher_seconds`, `mask_positions`, `mask_upload_bytes`,
+plus whether phase timings were collected). It is `null` for unconstrained requests and covers
+both output constraints and constrained tool turns.
 
 `request_done.timings_seconds` contains `prepare`, `ttft`, `vision`, `prefill`, `decode`, and `total`
 as full-precision JSON numbers. Its `speculative` object contains `backend`, `draft_window`, `rounds`,

@@ -184,6 +184,21 @@ NINFER_TEST_ARTIFACT=$NINFER_ARTIFACT_HUB/models--neroued--Qwen3.8-27B-nvfp4-NIn
 `<rev>` is the hub snapshot revision; select the artifact file explicitly, never by glob or
 modification time. The `models--neroued--Qwen3.8-*` repositories hold the NInfer conversions.
 
+Constrained tool calling has a CPU-only contract/grammar test plus a real-artifact surface test:
+
+```bash
+ctest --test-dir build -R ninfer_qwen3_5_tool_constraints_test --output-on-failure
+
+NINFER_TEST_ARTIFACT=$NINFER_ARTIFACT_HUB/models--neroued--Qwen3.8-27B-nvfp4-NInfer/snapshots/<rev>/qwen3_8_27b_nvfp4.ninfer \
+  ctest --test-dir build -R ninfer_qwen3_5_tools_real_test --output-on-failure
+```
+
+The contract test checks tool selection and the compiled tool grammar against the real XGrammar
+compiler, with terminal decoding driven through the production streaming parse core. The real
+test exercises strict tools, thinking, raw continuation, mixed batches, and call/result prefix
+reuse. `NINFER_TEST_TOOL_REPORT` appends schema/output/timing JSONL. Without
+`NINFER_TEST_ARTIFACT` the real test reports a skip.
+
 The `attention` scenario checks the selected KV type, chunked prefill, concurrent Graph decode
 across a resource tier, prefix continuation, and workspace bounds:
 

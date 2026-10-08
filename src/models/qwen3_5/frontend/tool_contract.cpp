@@ -190,11 +190,38 @@ void prepare_strict_parameters(Contract::Tool& tool) {
 }
 } // namespace
 
+bool same_declaration(const Contract::Tool& lhs, const Contract::Tool& rhs) {
+    if (lhs.strict != rhs.strict || lhs.parameters.size() != rhs.parameters.size()) return false;
+    for (std::size_t i = 0; i < lhs.parameters.size(); ++i) {
+        const Contract::Parameter& left  = lhs.parameters[i];
+        const Contract::Parameter& right = rhs.parameters[i];
+        if (left.name != right.name || left.policy != right.policy ||
+            left.types.bits != right.types.bits) {
+            return false;
+        }
+    }
+    return true;
+}
+
+void merge_tool_declaration(Contract& result, Contract::Tool tool) {
+    const auto existing =
+        std::find_if(result.tools.begin(), result.tools.end(),
+                     [&](const auto& candidate) { return candidate.name == tool.name; });
+    if (existing == result.tools.end()) {
+        result.tools.push_back(std::move(tool));
+        return;
+    }
+    if (existing->unambiguous && !same_declaration(*existing, tool)) {
+        existing->parameters.clear();
+        existing->strict       = false;
+        existing->unambiguous  = false;
+    }
+}
+
 std::shared_ptr<const ToolCallOutputContract>
 build_tool_call_output_contract(std::span<const std::string> tool_jsons) {
     if (tool_jsons.empty()) return {};
     auto result = std::make_shared<Contract>();
-    std::set<std::string> names;
     for (std::size_t i = 0; i < tool_jsons.size(); ++i) {
         try {
             const auto parsed       = text::parse_json_numbers(tool_jsons[i]);
@@ -202,8 +229,8 @@ build_tool_call_output_contract(std::span<const std::string> tool_jsons) {
             const auto& function    = declaration.at("function");
             Contract::Tool tool;
             tool.name = function.at("name").get<std::string>();
-            if (tool.name.empty() || !names.insert(tool.name).second)
-                fail("tool names must be nonempty and unique", "/" + std::to_string(i));
+            if (tool.name.empty())
+                fail("tool names must be nonempty", "/" + std::to_string(i));
             tool.strict = function.value("strict", false);
             if (tool.strict) {
                 if (const auto pointer =
@@ -231,7 +258,7 @@ build_tool_call_output_contract(std::span<const std::string> tool_jsons) {
                     tool.parameters.push_back(std::move(parameter));
                 }
             }
-            result->tools.push_back(std::move(tool));
+            merge_tool_declaration(*result, std::move(tool));
         } catch (const Json::exception& error) {
             fail(std::string("invalid tool declaration: ") + error.what(), "/" + std::to_string(i));
         }

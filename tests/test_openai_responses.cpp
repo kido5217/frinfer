@@ -613,9 +613,12 @@ int test_tools_and_effective_subset() {
     const OpenAIResponsesCreateRequest request =
         parse_openai_responses_create_request(body, limits());
     int failures = 0;
-    failures += check(request.tools.size() == 2 && request.prompt.generation.tools.size() == 1 &&
-                          request.prompt.generation.tools[0].name == "clock",
-                      "wire tool list and effective callable subset remain distinct");
+    failures +=
+        check(request.tools.size() == 2 &&
+                  request.prompt.generation.tools.size() == 2 &&
+                  request.prompt.generation.tool_choice.allowed_names ==
+                      std::vector<std::string>{"clock"},
+              "wire tool list stays complete while allowed_tools selects the callable subset");
 
     Json none           = body;
     none["tool_choice"] = "none";
@@ -671,11 +674,13 @@ int test_namespace_tools() {
     failures += check(request.tools.size() == 2 && request.tools[0].at("type") == "namespace" &&
                           request.tools[0].at("tools")[0].at("name") == "now",
                       "wire namespace grouping is retained in the response echo");
-    failures += check(request.prompt.generation.tools.size() == 1 &&
+    failures += check(request.prompt.generation.tools.size() == 2 &&
                           request.prompt.generation.tools[0].name == "mcp__clock__now" &&
                           request.prompt.generation.tools[0].description ==
-                              "Clock service\n\nRead the current time",
-                      "allowed namespace function lowers to one Engine tool with shared context");
+                              "Clock service\n\nRead the current time" &&
+                          request.prompt.generation.tool_choice.allowed_names ==
+                              std::vector<std::string>{"mcp__clock__now"},
+                      "allowed namespace function selects one Engine tool with shared context");
     failures +=
         check(request.tool_identities.at("mcp__clock__now").name == "now" &&
                   request.tool_identities.at("mcp__clock__now").wire_namespace == "mcp__clock",
@@ -805,17 +810,48 @@ int test_explicit_rejections() {
 
     Json value     = base;
     value["tools"] = Json::array({Json{{"type", "function"}, {"name", "f"}, {"strict", true}}});
-    failures += check(api_code([&] {
-                          (void)parse_openai_responses_create_request(value, limits());
-                      }) == "strict_tools_not_supported",
-                      "strict function schema is rejected explicitly");
+    const OpenAIResponsesCreateRequest strict_request =
+        parse_openai_responses_create_request(value, limits());
+    failures += check(strict_request.prompt.generation.tools.size() == 1 &&
+                          strict_request.prompt.generation.tools[0].strict,
+                      "strict function schema is carried for Engine enforcement");
 
     value         = base;
     value["text"] = Json{{"format", Json{{"type", "json_schema"}}}};
     failures += check(api_code([&] {
                           (void)parse_openai_responses_create_request(value, limits());
+                      }) == "json_schema_invalid",
+                      "a text.format schema wrapper without a document is rejected explicitly");
+
+    Json structured = base;
+    structured["text"] =
+        Json{{"format", Json{{"type", "json_schema"},
+                               {"name", "answer"},
+                               {"schema", Json{{"type", "object"}}}}}};
+    const OpenAIResponsesCreateRequest structured_request =
+        parse_openai_responses_create_request(structured, limits());
+    failures += check(structured_request.prompt.generation.constraint.has_value() &&
+                          structured_request.prompt.generation.constraint->kind ==
+                              ninfer::OutputConstraintKind::JsonSchema,
+                      "text.format json_schema constrains the answer");
+    Json object_format = base;
+    object_format["text"] = Json{{"format", Json{{"type", "json_object"}}}};
+    failures += check(parse_openai_responses_create_request(object_format, limits())
+                              .prompt.generation.constraint.has_value(),
+                      "text.format json_object constrains the answer");
+    Json regex_format = base;
+    regex_format["text"] = Json{{"format", Json{{"type", "json_regex"}}}};
+    failures += check(api_code([&] {
+                          (void)parse_openai_responses_create_request(regex_format, limits());
                       }) == "structured_outputs_not_supported",
-                      "structured output is rejected explicitly");
+                      "an unrepresentable text.format type is rejected explicitly");
+    Json constrained_tools = structured;
+    constrained_tools["tools"] =
+        Json::array({Json{{"type", "function"}, {"name", "f"}}});
+    failures += check(api_code([&] {
+                          (void)parse_openai_responses_create_request(constrained_tools, limits());
+                      }) == "constrained_decoding_not_supported",
+                      "tools with a text.format constraint are rejected");
 
     value               = base;
     value["background"] = true;

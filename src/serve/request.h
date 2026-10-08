@@ -11,6 +11,7 @@
 // by Engine; media sources remain unresolved until the product service acquires
 // owning bytes.
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -80,6 +81,7 @@ struct ToolDefinition {
     std::string name;
     std::string description;
     std::string input_schema_json;
+    bool strict = false;
     std::optional<std::string> input_examples_json;
     std::optional<CacheBoundary> cache_boundary_after;
 };
@@ -90,14 +92,12 @@ struct ToolCall {
     std::string arguments_json;
 };
 
-enum class ToolChoiceMode {
-    Auto,
-    None,
-};
-
-struct ToolChoice {
-    ToolChoiceMode mode = ToolChoiceMode::Auto;
-};
+// Constrained tool calling (upstream 41e50d0d): the serve layer shares the Engine's
+// ToolChoice rather than a parallel enum. Selection (required/named) and cardinality
+// (parallel) travel to the frontend boundary, where select_tool_call_contract resolves
+// them against the declared tools.
+using ToolChoiceMode = ninfer::ToolChoiceMode;
+using ToolChoice     = ninfer::ToolChoice;
 
 struct ChatTurn {
     ChatRole role = ChatRole::User;
@@ -220,7 +220,23 @@ struct GenerationRequest {
     ConstraintSource constraint_source = ConstraintSource::None;
 
     [[nodiscard]] bool uses_tools() const noexcept {
-        return !tools.empty() && tool_choice.mode != ToolChoiceMode::None;
+        return !tools.empty() && tool_choice.mode != ToolChoiceMode::None &&
+               (!tool_choice.allowed_names || !tool_choice.allowed_names->empty());
+    }
+
+    // A selection, cardinality, or strict-declaration policy the Engine must enforce with
+    // a tool grammar rather than best-effort parsing. Basic is the default policy, so any
+    // declared tool set constrains the turn unless the choice is explicitly automatic.
+    [[nodiscard]] bool constrains_tools() const noexcept {
+        if (tools.empty() || constraint) { return false; }
+        if (!uses_tools()) { return true; }
+        if (tool_choice.mode == ToolChoiceMode::Required || !tool_choice.parallel ||
+            tool_choice.allowed_names ||
+            tool_choice.constraints == ninfer::ToolConstraintMode::Basic) {
+            return true;
+        }
+        return std::any_of(tools.begin(), tools.end(),
+                           [](const auto& tool) { return tool.strict; });
     }
 
     [[nodiscard]] std::size_t media_item_count() const noexcept {
