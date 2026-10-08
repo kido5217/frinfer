@@ -820,8 +820,38 @@ int test_explicit_rejections() {
     value["text"] = Json{{"format", Json{{"type", "json_schema"}}}};
     failures += check(api_code([&] {
                           (void)parse_openai_responses_create_request(value, limits());
+                      }) == "json_schema_invalid",
+                      "a text.format schema wrapper without a document is rejected explicitly");
+
+    Json structured = base;
+    structured["text"] =
+        Json{{"format", Json{{"type", "json_schema"},
+                               {"name", "answer"},
+                               {"schema", Json{{"type", "object"}}}}}};
+    const OpenAIResponsesCreateRequest structured_request =
+        parse_openai_responses_create_request(structured, limits());
+    failures += check(structured_request.prompt.generation.constraint.has_value() &&
+                          structured_request.prompt.generation.constraint->kind ==
+                              ninfer::OutputConstraintKind::JsonSchema,
+                      "text.format json_schema constrains the answer");
+    Json object_format = base;
+    object_format["text"] = Json{{"format", Json{{"type", "json_object"}}}};
+    failures += check(parse_openai_responses_create_request(object_format, limits())
+                              .prompt.generation.constraint.has_value(),
+                      "text.format json_object constrains the answer");
+    Json regex_format = base;
+    regex_format["text"] = Json{{"format", Json{{"type", "json_regex"}}}};
+    failures += check(api_code([&] {
+                          (void)parse_openai_responses_create_request(regex_format, limits());
                       }) == "structured_outputs_not_supported",
-                      "structured output is rejected explicitly");
+                      "an unrepresentable text.format type is rejected explicitly");
+    Json constrained_tools = structured;
+    constrained_tools["tools"] =
+        Json::array({Json{{"type", "function"}, {"name", "f"}}});
+    failures += check(api_code([&] {
+                          (void)parse_openai_responses_create_request(constrained_tools, limits());
+                      }) == "constrained_decoding_not_supported",
+                      "tools with a text.format constraint are rejected");
 
     value               = base;
     value["background"] = true;

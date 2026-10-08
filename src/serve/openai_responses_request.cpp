@@ -2,6 +2,8 @@
 #include "serve/openai_common.h"
 #include "serve/request_validation.h"
 
+#include "product/constraint/constraint_contract.h"
+
 #include <algorithm>
 #include <iterator>
 #include <optional>
@@ -950,7 +952,44 @@ void parse_reasoning(const Json& body, OpenAIResponsesPromptRequest& out) {
     out.generation.reasoning_effort = *effort;
 }
 
-void parse_text(const Json& body) {
+// Validates an admitted JSON Schema document through the shared protocol-neutral constraint
+// contract and renders its fail-closed error on this route's field path, mirroring the Chat
+// response_format and Anthropic output_config.format adapters. The document text is compiled
+// by the Engine's XGrammar converter.
+std::string schema_to_document(const Json& schema) {
+    try {
+        return ninfer::constraint::json_schema_constraint_source(schema);
+    } catch (const ninfer::constraint::ConstraintError& error) {
+        bad_request(error.what(), "text.format", error.code());
+    }
+}
+
+const Json& parse_text_format_schema(const Json& format) {
+    // The Responses wrapper carries the document under `.schema` with optional
+    // name/description/strict metadata (the OpenAI wire always names its schema).
+    if (!format.contains("schema") || format.at("schema").is_null()) {
+        bad_request("text.format.schema is required for type json_schema",
+                    "text.format.schema", "json_schema_invalid");
+    }
+    for (const char* key : {"name", "description"}) {
+        if (format.contains(key) && !format.at(key).is_string()) {
+            const std::string param = std::string("text.format.") + key;
+            bad_request(param + " must be a string", param, "json_schema_invalid");
+        }
+    }
+    if (format.contains("strict") && !format.at("strict").is_null() &&
+        !format.at("strict").is_boolean()) {
+        bad_request("text.format.strict must be a boolean", "text.format.strict",
+                    "json_schema_invalid");
+    }
+    if (!format.at("schema").is_object()) {
+        bad_request("text.format.schema must be a JSON Schema object", "text.format.schema",
+                    "json_schema_invalid");
+    }
+    return format.at("schema");
+}
+
+void parse_text(const Json& body, GenerationRequest& request) {
     if (!body.contains("text") || body.at("text").is_null()) { return; }
     const Json& text = body.at("text");
     if (!text.is_object()) { bad_request("text must be an object", "text"); }
@@ -961,10 +1000,29 @@ void parse_text(const Json& body) {
         if (!format.is_object() || !format.contains("type") || !format.at("type").is_string()) {
             bad_request("text.format must be a typed object", "text");
         }
-        if (format.at("type").get<std::string>() != "text" || format.size() != 1) {
-            bad_request("structured text output requires constrained decoding, which the Engine "
-                        "does not provide",
-                        "text", "structured_outputs_not_supported");
+        const std::string type = format.at("type").get<std::string>();
+        if (type == "text") {
+            if (format.size() != 1) { bad_request("text format has no options", "text.format"); }
+        } else if (type == "json_object") {
+            if (format.size() != 1) {
+                bad_request("json_object format has no options", "text.format");
+            }
+            request.constraint        = ninfer::OutputConstraint::json_object();
+            request.constraint_source = ConstraintSource::JsonSchema;
+        } else if (type == "json_schema") {
+            request.constraint = ninfer::OutputConstraint::json_schema(
+                schema_to_document(parse_text_format_schema(format)));
+            request.constraint_source = ConstraintSource::JsonSchema;
+        } else {
+            bad_request("this text.format requires constrained output, which FrInfer cannot "
+                        "guarantee; only text, json_object, and json_schema are available",
+                        "text.format", "structured_outputs_not_supported");
+        }
+        // The tool-call parser owns the turn when tools are declared, so a constrained
+        // answer and a `tools` field cannot share it, mirroring the other routes.
+        if (request.constraint && body.contains("tools") && !body.at("tools").is_null()) {
+            bad_request("tools with a constrained response is not supported", "text.format",
+                        "constrained_decoding_not_supported");
         }
     }
     if (text.contains("verbosity") && !text.at("verbosity").is_null()) {
@@ -1049,7 +1107,7 @@ ParsedPromptFields parse_prompt_fields(const Json& body, const RequestLimits& li
     out.parallel_tool_calls = optional_bool(body, "parallel_tool_calls", true);
     out.prompt.generation.tool_choice.parallel &= out.parallel_tool_calls;
     parse_reasoning(body, out.prompt);
-    parse_text(body);
+    parse_text(body, out.prompt.generation);
     parse_truncation(body);
     parse_preserve_thinking(body, out.prompt);
     out.prompt.generation.max_tokens = limits.default_max_tokens;
