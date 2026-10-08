@@ -136,6 +136,8 @@ int test_schema_number_precision() {
     const std::vector<std::pair<std::string, std::string>> cases{
         {R"({"response_format":{"type":"json_schema","json_schema":{"name":"x","schema":{"type":"number","minimum":0.10000000000000001}}}})",
          "response_format.json_schema.schema/minimum"},
+        {R"({"response_format":{"type":"json_schema","json_schema":{"type":"number","minimum":0.10000000000000001}}})",
+         "response_format.json_schema/minimum"},
         {R"({"text":{"format":{"type":"json_schema","name":"x","schema":{"type":"number","minimum":1e-400}}}})",
          "text.format.schema/minimum"},
         {R"({"output_config":{"format":{"type":"json_schema","schema":{"type":"number","maximum":0.10000000000000001}}}})",

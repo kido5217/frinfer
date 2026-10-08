@@ -44,12 +44,6 @@ struct StreamingResponse {
     std::atomic<bool> started{false};
 };
 
-ApiError responses_error(ApiError error) {
-    if (error.param == "messages") { error.param = "input"; }
-    if (error.param == "reasoning_effort") { error.param = "reasoning.effort"; }
-    return error;
-}
-
 ApiError internal_error(const std::exception& exception) {
     ApiError error;
     error.status  = 500;
@@ -238,6 +232,15 @@ Json paginated_input_items(const httplib::Request& request, const std::vector<Js
 }
 
 } // namespace
+
+ApiError responses_error(ApiError error) {
+    if (error.param == "messages") { error.param = "input"; }
+    if (error.param == "reasoning_effort") { error.param = "reasoning.effort"; }
+    // The Engine constraint-error mapping reports output-constraint failures on the OpenAI
+    // `response_format` root; this route carries the constraint in `text.format`.
+    if (error.param == "response_format") { error.param = "text.format"; }
+    return error;
+}
 
 void HttpServer::handle_responses(const httplib::Request& req, httplib::Response& res) {
     OpenAIResponsesCreateRequest request;

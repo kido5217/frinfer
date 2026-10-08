@@ -375,12 +375,15 @@ resource errors.
 Constrained-decoding rejections are client errors at HTTP 400: `grammar_invalid` for a malformed
 GBNF `grammar`, `invalid_choice` for a malformed `structured_outputs.choice`, `invalid_regex` for a
 malformed `structured_outputs.regex`, `structured_outputs_invalid` for a malformed
-`structured_outputs` object, `json_schema_invalid` (param `response_format`,
-`output_config.format`, `text.format`, or `tools` with a declaration-relative pointer) for a
-malformed or unsupported JSON Schema, `tool_constraint_invalid` (param `tools`) for an
-unenforceable tool selection, an unsatisfiable strict tool schema, or an output-option conflict
-(custom stop strings, raw output, non-default EOS) that only a constrained tool turn can reach,
-and `constraint_dead_end` when
+`structured_outputs` object, `json_schema_invalid` for a malformed JSON Schema,
+`json_schema_unsupported` for an assertion the matcher does not enforce, and
+`constraint_too_large` for a schema beyond the payload or nesting limit, each attributed either
+to the originating field for a wrapper-level rejection (`response_format`, `output_config.format`,
+`text.format`, or `tools` with a declaration-relative pointer) or to the schema-relative keyword
+pointer for a per-keyword rejection (`format`, `required`, `items/items/...`),
+`tool_constraint_invalid` (param `tools`) for an unenforceable tool selection, an
+unsatisfiable strict tool schema, or an output-option conflict (custom stop strings, raw output,
+non-default EOS) that only a constrained tool turn can reach, and `constraint_dead_end` when
 a compiled constraint admits no legal next token, so the request fails closed instead of emitting
 unconstrained text.
 
@@ -400,8 +403,9 @@ or number types (and on untyped numeric nodes), `const`, `enum`, `anyOf`, `$ref`
 `$defs`/`definitions`, plus the standard annotations. Rejected assertions include `allOf`,
 `oneOf`, `additionalItems`, draft-07 `items` arrays, `format`, `minProperties`, and
 `patternProperties`; an assertion used in a context where the matcher does not read it (for
-example a string keyword on a `number`, or numeric bounds on a `string`) is rejected rather than
-silently dropped.
+example a string keyword on a `number`, or numeric bounds on a `string`) is rejected with
+`json_schema_unsupported` rather than silently dropped. A document above the 64 KiB payload or
+64-level nesting limit is `constraint_too_large`.
 
 ## OpenAI prompt caching
 
@@ -487,7 +491,7 @@ wire response contains typed `output` Items.
 | `reasoning.effort` | `none` requests disabled thinking; other standard effort values pass to the selected template |
 | `chat_template_kwargs` | template parameters as a JSON object; standard options merge with typed fields |
 | `preserve_thinking` | alias for `chat_template_kwargs.preserve_thinking`; conflicting values are rejected |
-| `text.format` | omitted, `{"type":"text"}`, `{"type":"json_object"}`, or `{"type":"json_schema"}` with `name`/`schema` (`strict` accepted as metadata); a malformed schema is `json_schema_invalid`, any other type is `structured_outputs_not_supported` |
+| `text.format` | omitted, `{"type":"text"}`, `{"type":"json_object"}`, or `{"type":"json_schema"}` with `name`/`schema` (`strict` accepted as metadata); a malformed schema is `json_schema_invalid`, an unenforced assertion is `json_schema_unsupported`, an oversized or over-nested schema is `constraint_too_large`, and any other type is `structured_outputs_not_supported` |
 | `tools` | direct function definitions or namespace groups containing function definitions; see below |
 | `tool_choice` | `auto`, `none`, `required`, a named `{"type":"function",...}` choice, or function-only `allowed_tools` with mode `auto`/`required`; a namespaced selection carries both `namespace` and `name` |
 | `parallel_tool_calls` | `true` by default; `false` constrains the turn to at most one call |
@@ -707,9 +711,9 @@ curl http://127.0.0.1:8080/v1/responses/input_tokens \
 ```
 
 Unsupported Create fields include Conversations, prompt templates, context management, hosted
-moderation, Structured Outputs/JSON mode, non-empty `include`, background execution, compaction,
-files/audio, and OpenAI-hosted/MCP/custom tools. These are compatibility boundaries, not silently
-accepted placeholders.
+moderation, non-empty `include`, background execution, compaction, files/audio, and
+OpenAI-hosted/MCP/custom tools. These are compatibility boundaries, not silently accepted
+placeholders.
 
 ## Anthropic Messages
 
@@ -756,7 +760,10 @@ remains usable across serve restarts.
 `display:"omitted"` is rejected because NInfer cannot provide Anthropic's
 encrypted hidden-reasoning restore semantics. `preserve_thinking` remains a NInfer extension for
 closed-turn reasoning history. `output_config.effort` passes its protocol-validated value to the
-selected template.
+selected template. `output_config.format` is the route's only structured-output spelling; the
+retired top-level `output_format` beta field is rejected (internal code
+`output_format_not_supported`; the Anthropic error body carries only `type`/`message`) rather
+than run unconstrained.
 
 User-defined tools support `name`, `description`, object `input_schema`, `strict`, and
 `input_examples`. `tool_choice:auto`, `none`, `any`, and named `tool` are executable, and

@@ -20,6 +20,9 @@ void validate_schema_number_input(const text::ParsedJsonNumbers& parsed) {
     const auto& body = parsed.value;
     for (const auto& [path, param] :
          {std::pair{"/response_format/json_schema/schema", "response_format.json_schema.schema"},
+          // A bare Chat Completions schema puts the document directly under `.json_schema`; the
+          // wrapper form's `.schema` is a non-keyword member, so this pointer finds nothing there.
+          std::pair{"/response_format/json_schema", "response_format.json_schema"},
           std::pair{"/text/format/schema", "text.format.schema"},
           std::pair{"/output_config/format/schema", "output_config.format.schema"}})
         check(path, param);

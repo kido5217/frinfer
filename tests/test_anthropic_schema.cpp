@@ -304,6 +304,17 @@ int test_structured_output() {
                           "output_config.format with the beta output_format is rejected");
     }
 
+    // A lone retired top-level output_format is rejected instead of running unconstrained.
+    {
+        Json request             = base_request();
+        request["output_format"] = body["output_config"]["format"];
+        const ApiError error     = api_error([&] { (void)parse(request); });
+        failures += check(error.status == 400 &&
+                              error.code == "output_format_not_supported" &&
+                              error.param == "output_format",
+                          "a lone output_format is rejected rather than ignored");
+    }
+
     // count_tokens carries no answer stream and keeps ignoring output-only format.
     {
         Json request             = base_request();
@@ -589,6 +600,24 @@ int test_tools() {
     failures += check(!single.tool_choice.parallel && single.constrains_tools(),
                       "disabled parallel tool use constrains the turn to one call");
 
+    body                = base_request();
+    body["tool_choice"] = Json{{"type", "any"}};
+    const ApiError any_without_tools = api_error([&] { (void)parse(body); });
+    failures += check(any_without_tools.status == 400 &&
+                          any_without_tools.code == "tool_constraint_invalid" &&
+                          any_without_tools.param == "tools",
+                      "any-tool choice without tools is a tool constraint violation");
+
+    body                = base_request();
+    body["tools"]       = Json::array({ordinary_tool()});
+    body["tool_choice"] = Json{{"type", "tool"}, {"name", "absent"}};
+    const ApiError named_without_tool = api_error([&] { (void)parse(body); });
+    failures += check(named_without_tool.status == 400 &&
+                          named_without_tool.code == "tool_constraint_invalid" &&
+                          named_without_tool.param == "tools",
+                      "a named tool choice referencing an unknown tool is a tool constraint "
+                      "violation");
+
     body          = base_request();
     body["tools"] = Json::array({Json{{"type", "web_search_20250305"}, {"name", "web_search"}}});
     failures += check(api_code([&] { (void)parse(body); }) == "anthropic_tools_not_supported",
@@ -811,8 +840,8 @@ int test_aggregate_and_errors() {
         check(empty["content"].empty() && empty["stop_reason"] == "model_context_window_exceeded",
               "empty output was fabricated or context capacity was misclassified");
 
-    // An Engine-rejected constraint surfaces from the shared contract on the OpenAI field path;
-    // the Anthropic adapter reports its own slot.
+    // An Engine-rejected constraint is reported by the Engine constraint-error mapping on the
+    // OpenAI field path; the Anthropic adapter reports its own slot.
     ApiError constraint_error;
     constraint_error.status  = 400;
     constraint_error.param   = "response_format";

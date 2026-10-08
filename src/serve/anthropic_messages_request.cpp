@@ -786,12 +786,19 @@ void lower_tools(const Json& body, GenerationRequest& request) {
 
     if (selection.kind == ToolSelectionKind::Named) {
         if (std::none_of(definitions.begin(), definitions.end(), named)) {
-            bad_request("tool_choice references unknown tool: " + selection.name, "tool_choice");
+            // A selection naming an absent tool is the documented tool-constraint violation, not a
+            // malformed `tool_choice` object; mirror the sibling Any case and the Engine's mapping.
+            bad_request("tool_choice references unknown tool: " + selection.name, "tools",
+                        "tool_constraint_invalid");
         }
         request.tool_choice.allowed_names = std::vector<std::string>{selection.name};
     }
     if (selection.kind == ToolSelectionKind::Any) {
-        if (definitions.empty()) { bad_request("tool_choice requires tools", "tool_choice"); }
+        if (definitions.empty()) {
+            // A required choice without callable tools is the documented tool-constraint
+            // violation, not a malformed `tool_choice` object; mirror the Engine's mapping.
+            bad_request("tool_choice requires tools", "tools", "tool_constraint_invalid");
+        }
     }
 
     request.tool_choice.mode     = selection.kind == ToolSelectionKind::None
@@ -921,23 +928,36 @@ std::string schema_to_document(const Json& schema) {
 }
 
 void parse_output_config(const Json& body, GenerationRequest& request, ParsePurpose purpose) {
-    if (!body.contains("output_config") || body.at("output_config").is_null()) { return; }
-    const Json& config = body.at("output_config");
-    if (!config.is_object()) { bad_request("output_config must be an object", "output_config"); }
+    const bool has_config = body.contains("output_config") && !body.at("output_config").is_null();
+    if (has_config && !body.at("output_config").is_object()) {
+        bad_request("output_config must be an object", "output_config");
+    }
+    const Json* config    = has_config ? &body.at("output_config") : nullptr;
+    const bool has_format = config != nullptr && config->contains("format") &&
+                            !config->at("format").is_null();
+    const bool has_output_format =
+        body.contains("output_format") && !body.at("output_format").is_null();
+
+    // The retired top-level `output_format` beta spelling is not an accepted alias: a lone field
+    // would otherwise be ignored and the request would run unconstrained; naming both asks for two
+    // spellings of one constrained answer. Output-only, so count_tokens ignores it exactly as it
+    // ignores output_config.format.
+    if (purpose == ParsePurpose::Messages && has_output_format) {
+        if (has_format) {
+            bad_request("output_config.format cannot be combined with output_format",
+                        "output_config.format", "constrained_decoding_conflict");
+        }
+        bad_request("the retired top-level output_format is not supported; use "
+                    "output_config.format",
+                    "output_format", "output_format_not_supported");
+    }
 
     // output_config.format is the route's only constraint kind and reaches the same shared
     // constraint contract the OpenAI `response_format` json_schema path uses. Output-only:
     // count_tokens has no answer stream, so the field is ignored there (unchanged behavior).
-    if (purpose == ParsePurpose::Messages && config.contains("format") &&
-        !config.at("format").is_null()) {
-        // The retired top-level `output_format` beta spelling carries the same constraint; naming
-        // both is a request that asks for two spellings of one constrained answer.
-        if (body.contains("output_format") && !body.at("output_format").is_null()) {
-            bad_request("output_config.format cannot be combined with output_format",
-                        "output_config.format", "constrained_decoding_conflict");
-        }
+    if (purpose == ParsePurpose::Messages && has_format) {
         request.constraint = ninfer::OutputConstraint::json_schema(
-            schema_to_document(parse_output_format(config.at("format"))));
+            schema_to_document(parse_output_format(config->at("format"))));
         request.constraint_source = ConstraintSource::JsonSchema;
         // The tool-call parser owns the turn when tools are declared, so a constrained answer and
         // a `tools` field cannot share it (even an empty array), mirroring the OpenAI route.
@@ -947,11 +967,13 @@ void parse_output_config(const Json& body, GenerationRequest& request, ParsePurp
         }
     }
 
-    if (!config.contains("effort") || config.at("effort").is_null()) { return; }
-    if (!config.at("effort").is_string()) {
+    if (config == nullptr || !config->contains("effort") || config->at("effort").is_null()) {
+        return;
+    }
+    if (!config->at("effort").is_string()) {
         bad_request("output_config.effort must be a string", "output_config.effort");
     }
-    const std::string value = config.at("effort").get<std::string>();
+    const std::string value = config->at("effort").get<std::string>();
     const auto effort       = parse_requested_reasoning_effort(value);
     if (!effort) {
         bad_request("output_config.effort is not a recognized effort value",
