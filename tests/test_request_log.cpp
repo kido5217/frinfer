@@ -467,6 +467,36 @@ int main() {
                   done.at("result").at("tool_call_parse").at("schema_mismatch_arguments") == 0 &&
                   done.at("result").at("tool_call_parse").at("fallback_reason") == "none",
               "default tool-call parse diagnostics missing");
+    failures += check(done.at("result").at("constraint").is_null(),
+                      "unconstrained request fabricated a constraint observation");
+    auto constrained_outcome      = outcome;
+    constrained_outcome.constraint = ninfer::ConstraintObservation{
+        .branch            = ninfer::ConstraintOutputBranch::Tools,
+        .complete          = true,
+        .terminated        = true,
+        .cache             = ninfer::ConstraintCacheAccess::Built,
+        .timings_collected = true,
+        .prepare_seconds   = 0.5,
+        .mask_seconds      = 1.5,
+        .matcher_seconds   = 2.5,
+        .mask_positions    = 7,
+        .mask_upload_bytes = 9000,
+    };
+    const Json constrained_done =
+        Json::parse(format_request_done_json("serve-test", 3004, context, constrained_outcome));
+    const auto& logged_constraint = constrained_done.at("result").at("constraint");
+    failures +=
+        check(logged_constraint.at("branch") == "tools" &&
+                  logged_constraint.at("complete") == true &&
+                  logged_constraint.at("terminated") == true &&
+                  logged_constraint.at("cache") == "built" &&
+                  logged_constraint.at("timings_collected") == true &&
+                  logged_constraint.at("prepare_seconds") == 0.5 &&
+                  logged_constraint.at("mask_seconds") == 1.5 &&
+                  logged_constraint.at("matcher_seconds") == 2.5 &&
+                  logged_constraint.at("mask_positions") == 7 &&
+                  logged_constraint.at("mask_upload_bytes") == 9000,
+              "terminal constraint observation missing from request_done");
     failures += check(done.at("timings_seconds").at("decode").get<double>() ==
                           outcome.metrics.decode_seconds,
                       "decode time lost precision");

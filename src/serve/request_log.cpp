@@ -85,6 +85,47 @@ const char* finish_reason_name(ninfer::FinishReason reason) {
     return "unknown";
 }
 
+const char* constraint_branch_name(ninfer::ConstraintOutputBranch branch) {
+    switch (branch) {
+    case ninfer::ConstraintOutputBranch::Undecided:
+        return "undecided";
+    case ninfer::ConstraintOutputBranch::Content:
+        return "content";
+    case ninfer::ConstraintOutputBranch::Tools:
+        return "tools";
+    }
+    return "unknown";
+}
+
+const char* constraint_cache_name(ninfer::ConstraintCacheAccess cache) {
+    switch (cache) {
+    case ninfer::ConstraintCacheAccess::Hit:
+        return "hit";
+    case ninfer::ConstraintCacheAccess::Built:
+        return "built";
+    case ninfer::ConstraintCacheAccess::Waited:
+        return "waited";
+    }
+    return "unknown";
+}
+
+// The Engine's terminal ConstraintObservation, as also consumed by metrics.cpp: branch and
+// completion state plus the cache/work attribution. Null for unconstrained requests.
+Json constraint_json(const std::optional<ninfer::ConstraintObservation>& observation) {
+    if (!observation) { return Json(nullptr); }
+    const auto& c = *observation;
+    return Json{{"branch", constraint_branch_name(c.branch)},
+                {"complete", c.complete},
+                {"terminated", c.terminated},
+                {"cache", constraint_cache_name(c.cache)},
+                {"timings_collected", c.timings_collected},
+                {"prepare_seconds", c.prepare_seconds},
+                {"mask_seconds", c.mask_seconds},
+                {"matcher_seconds", c.matcher_seconds},
+                {"mask_positions", c.mask_positions},
+                {"mask_upload_bytes", c.mask_upload_bytes}};
+}
+
 Json tool_call_parse_json(const ninfer::ToolCallParseDiagnostics& diagnostics) {
     return Json{{"marker_seen", diagnostics.marker_seen},
                 {"call_attempted", diagnostics.call_attempted},
@@ -655,7 +696,8 @@ std::string format_request_done_json(const std::string& server_instance_id, std:
              {"thinking_control_tokens", outcome.thinking.injected_tokens},
              {"thinking_control_applied", outcome.thinking.applied},
              {"tool_call_count", outcome.tool_calls.size()},
-             {"tool_call_parse", tool_call_parse_json(outcome.tool_call_parse)}};
+             {"tool_call_parse", tool_call_parse_json(outcome.tool_call_parse)},
+             {"constraint", constraint_json(outcome.constraint)}};
     record["timings_seconds"] = Json{
         {"prepare", outcome.metrics.prepare_seconds}, {"ttft", outcome.metrics.ttft_seconds},
         {"vision", outcome.metrics.vision_seconds},   {"prefill", outcome.metrics.prefill_seconds},
