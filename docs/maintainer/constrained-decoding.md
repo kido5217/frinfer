@@ -650,20 +650,25 @@ A/B 使用相同 prompt，分别要求对象字段和有限枚举。编译资源
 
 主要参考：[XGrammar C++ compiler](https://github.com/mlc-ai/xgrammar/blob/8262b5c94161f4cd0e2c356ab3b62de16b919873/include/xgrammar/compiler.h)、[matcher](https://github.com/mlc-ai/xgrammar/blob/8262b5c94161f4cd0e2c356ab3b62de16b919873/include/xgrammar/matcher.h)、[EBNF/GBNF](https://xgrammar.mlc.ai/docs/latest/defining_structures/ebnf_grammar.html)、[引擎接入](https://xgrammar.mlc.ai/docs/latest/using_xgrammar/engine_integration.html)。
 
-## 16. 本 fork 的实施边界（#242 同步）
+## 16. 本 fork 的实施边界（#242 同步，#252 落地更新）
 
-第 1–15 节是目标合同；本节记录截至 `sync/81c8ce09-int` 已落地与仍未落地的部分，避免设计文档被当成当前能力清单。对外协议边界以 [serving.md](../serving.md) 与受约束的 schema 测试为准，二者与本节的取舍一致。
+第 1–15 节是目标合同；本节记录已落地与仍未落地的部分，避免设计文档被当成当前能力清单。对外协议边界以 [serving.md](../serving.md) 与受约束的 schema 测试为准，二者与本节的取舍一致。
 
-### 已落地
+### 已落地（#252）
 
-- **ConstraintObservation 诊断链路**：Engine 在执行结束时产出 `GenerationResult.constraint`（`OutputSession::constraint_observation()` 读取请求拥有的 `text::GrammarSession::observation()`，含 matcher 终态、cache 访问、mask 位置/上传字节与可选阶段耗时），经 `GenerationOutcome.constraint` 发布；`src/serve/metrics.cpp` 渲染 `frinfer_constraint_*` 家族，并且是 `outcome.constraint` 唯一的消费者；request log 的 `request_done` 记录**不**携带该观测。
-- **有界数字输入校验**：`src/serve/request_validation.cpp` 的 `validate_schema_number_input()` 在每个请求体解析后拒绝无法由 JSON 数字表示保真的 schema 数字（上游 `81c8ce09` “support tuple schemas and bounded numbers”）。
-- **工具约束编译原语**：`src/models/qwen3_5/frontend/tool_contract.cpp` 与 `tool_grammar.cpp` 现编入 `ninfer_model_runtime`（上游 `41e50d0d`/`2734a56e` 的 `select_tool_call_contract` 与 XGrammar 工具语法构造）。这两个 TU 当前没有调用方，仅证明可编译；上游同批的 `tests/models/qwen3_5/test_tool_constraints.cpp` 与 `test_frontend.cpp` 的 `test_tools_and_json_output` 均未注册，属于下述未落地的工具调用面。
+- **约束工具调用的 serve 暴露**：三个协议路由接受 `required`/命名选择、`parallel_tool_calls:false`（Anthropic `disable_parallel_tool_use`）、`allowed_tools` 的 `auto`/`required` 模式与 `strict:true` 声明。`ninfer::serve::ToolChoice` 即 `ninfer::ToolChoice`（不再是平行 enum）；选择经 `translate.cpp` → `RequestOptions.tool_choice` → `ResolvedRequestOptions` → `Frontend::make_output_session(..., tool_choice)`，在 frontend 边界由 `select_tool_call_contract` 对 prepared declarations 解析，受约束时以 `compile_tool_grammar` 编译 matcher。终端解析沿用本 fork 的流式 `ChatParseCore`：受约束回合走 canonical `ConstrainedToolRegionParser`（strict 顺序/JSON 值、`parallel` 计数、非 strict 重名取末值），其余走原有 tolerant 分析；中断截断保留完整调用、未完成后缀按既有 salvage/demote 处理。
+- **统一工具合同**：`tool_call_parser.h` 的 fork 私有 `ToolCallOutputContract` 已删除，`tool_contract.h` 为唯一定义（增补 fork 已 pin 的 `unambiguous` 重名合并语义；`enforce_declared_names` 恒为真，原 open-contract 测试辅助改为直接声明被测工具）。`ChatParseCore`、`OutputSession`、`prepare()` 与 chat parsing 语料/归一化测试随之迁移。
+- **工具测试注册**：`ninfer_qwen3_5_tool_constraints_test`（合同选择、工具语法 `accepts` 与经生产流式核心的终端解码；解码器断言相对上游适配：缺 `</tool_call>` 关闭容忍按本 fork B3 规则保留调用）与 `ninfer_qwen3_5_tools_real_test`（artifact 门控，缺件跳过）已注册；`tests/README.md` 记录两者。`test_tool_schema.py` 的 `--probe` 口径保留在单测二进制中，但其 `jsonschema` oracle 未接入 CTest（devShell 无该依赖，见下）。
+- **Responses 路由的 `text.format` 结构化输出**：`src/serve/openai_responses_request.cpp` 接受 `json_object` 与带 `name`/`schema` 的 `json_schema`（经与 Chat/Anthropic 同源的 `json_schema_constraint_source` 校验，错误定位 `text.format`），写入 `GenerationRequest.constraint`；`tools` 与约束同存仍按他路由 fail-closed 拒绝。
+- **ConstraintObservation 请求日志**：`request_done` 的 `result.constraint` 携带 Engine 终态观测（分支、完成/终结、cache 访问、阶段耗时与 mask 位置/上传字节；无约束为 `null`），与 `metrics.cpp` 同源；`docs/serving.md` 记录字段。
+- **Metrics 503 覆盖**：`GET /metrics` 在未 attach Engine 时返回 503 `service_unavailable`（启动期绑定先于 Engine 就绪），由 `ninfer_http_transport_test` 经 loopback 绑定但未 attach 的 server 黑盒覆盖；另覆盖未 `--metrics` 的 404。启动绑定顺序未动。
+- **有界数字输入校验**：`src/serve/request_validation.cpp` 的 `validate_schema_number_input()` 在每个请求体解析后拒绝无法由 JSON 数字表示保真的 schema 数字（上游 `81c8ce09` “support tuple schemas and bounded numbers”；已覆盖 `text.format` 与 strict 工具路径）。
 
-### 仍未落地（保留给 ticket #250 的受约束栈移植）
+### 仍未落地
 
-- **约束工具调用的 serve 暴露**：`tool_choice` 的 `required`/命名/`parallel_tool_calls:false` 策略，以及 `allowed_names` 选择。本 fork 的 `ninfer::serve::ToolChoice` 仅暴露 `auto`/`none`（以及 `allowed_tools` 的 auto 模式）；上游编译原语虽已入库，但协议路由未接入 `ToolChoiceMode::Required`/`allowed_names`。
-- **Responses 路由的 `text.format` 结构化输出**：当前 `src/serve/openai_responses_request.cpp` 对结构化 `text.format` 直接返回 `structured_outputs_not_supported`，只接受省略或 `{"type":"text"}`。
-- **集中式请求解析**：上游把 `response_format`/`text.format`/`output_config.format` 的解析集中在 `src/serve/request_validation.cpp`（`parse_json_output_format`/`parse_structured_outputs`）；本 fork 在各协议路由内各自实现（如 `anthropic_messages_request.cpp` 的 `parse_structured_outputs`），因此未整文件采用上游的 `request_validation.*`，只补入其中独立可用的有界数字校验。
+- **`test_frontend.cpp` 的 `test_tools_and_json_output`**：该用例断言 body 约束与工具约束组合输出的分支观测（`ConstraintOutputBranch` 的 `Undecided`/`Content`/`Tools` 迁移与 complete-before-EOS 状态），属于上游 `2734a56e` 的组合（composition）机制；本 fork 的 `text::GrammarSession` 不跟踪分支。`make_output_session` 沿 `41e50d0d` 在约束与工具有效声明并存时 fail-closed（serve 层亦拒绝该组合），与未移植组合一致。
+- **`test_tool_schema.py` 的 CTest oracle**：需第三方 `jsonschema`（`tests/text/requirements.txt`），devShell 未提供且本 fork CTest 无 Python 用例先例；`--probe` 二进制口径已随 `tool_constraints_test` 落地，可手动以 `nix shell` 提供依赖的方式运行。
+- **`tool_constraints: auto` 线控**：上游 `request_validation.cpp` 的 `tool_constraints`（`auto`/`basic`）字段未引入；本 fork 默认即 basic 结构约束（见 serving.md 的约束工具调用一节），未提供切回自由解析的开关。
+- **集中式请求解析**：上游把 `response_format`/`text.format`/`output_config.format` 的解析集中在 `src/serve/request_validation.cpp`（`parse_json_output_format`/`parse_structured_outputs`）；本 fork 在各协议路由内各自实现，因此未整文件采用上游的 `request_validation.*`，只补入其中独立可用的有界数字校验。此为刻意分歧，非缺口。
 
-这些缺口不改变对外合同的宽度：`docs/serving.md` 已明确列出仅支持的取值，Responses 结构化 `text.format` 与 required/named 工具选择均在拒绝之列，schema 测试随文档一同固定。
+对外合同的宽度以 `docs/serving.md` 与 schema 测试为准：required/named/strict/`parallel_tool_calls:false` 与 Responses 结构化 `text.format` 已从拒绝改为执行；`serving.md` 与 schema 测试随实现一同更新。
