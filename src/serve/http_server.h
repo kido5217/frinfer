@@ -92,6 +92,8 @@ private:
     void handle_chat_control(const httplib::Request& req, httplib::Response& res);
     void handle_metrics(const httplib::Request& req, httplib::Response& res) const;
 
+    friend struct HttpServerTestAccess;
+
     void record_request_start(const RequestLogContext& context);
     void record_request_rejected(const RequestRejectionLogContext& context);
     void record_request_done(const RequestLogContext& context, const GenerationOutcome& outcome);

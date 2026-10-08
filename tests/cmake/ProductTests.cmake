@@ -86,7 +86,7 @@ ninfer_add_test(ninfer_http_error_handler_test
 
 ninfer_add_test(ninfer_http_transport_test
   SOURCES "${CMAKE_CURRENT_LIST_DIR}/../test_http_transport.cpp"
-  LIBRARIES ninfer_serve)
+  LIBRARIES ninfer_serve spdlog::spdlog)
 
 # The four product binaries answer `--version` with their build identity without an artifact.
 if(NINFER_BUILD_APPS)
