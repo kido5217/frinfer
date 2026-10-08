@@ -1,6 +1,16 @@
 # Constrained thinking design: the wrapper-grammar route
 
-Status: **design, handed off for execution** (wayfinder map #95; seed #90). Selected on prototype
+Status: **superseded design context** (ADR
+[0001](../adr/0001-wrapper-grammar-for-constrained-reasoning.md) amendment, ticket #245). The
+wrapper semantics this document specifies are implemented today by upstream's
+`text::GrammarCompiler` reasoning-prefix composition, not by the retired fork hand-written wrapper
+(`src/models/qwen3_5/frontend/grammar/thinking_wrapper.cpp`,
+`Frontend::compile_grammar(..., ConstraintScope::Thinking)`). The active constraint authority is
+[Constrained decoding](constrained-decoding.md). This document is retained for its design rationale,
+wrapper construction, rejected alternatives and verification plan, not as a description of the
+shipped implementation.
+
+Originally **design, handed off for execution** (wayfinder map #95; seed #90). Selected on prototype
 evidence: wrapper route `proto/wrapper-thinking-boundary` @ `0ea1a20d` (ticket #96); close-rule
 prototype `proto/close-rule` @ `6c1b1b8b` (ticket #97, rejected alternative); research
 `research/mask-activation-boundary` @ `b7095db4`, `research/vllm-enable-in-reasoning` @

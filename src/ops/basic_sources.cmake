@@ -1,7 +1,6 @@
 target_sources(ninfer_ops PRIVATE
   "${CMAKE_CURRENT_LIST_DIR}/weight_input.cpp"
   "${CMAKE_CURRENT_LIST_DIR}/launcher/add_bias.cu"
-  "${CMAKE_CURRENT_LIST_DIR}/launcher/apply_mask.cu"
   "${CMAKE_CURRENT_LIST_DIR}/launcher/argmax.cu"
   "${CMAKE_CURRENT_LIST_DIR}/launcher/cast.cu"
   "${CMAKE_CURRENT_LIST_DIR}/launcher/causal_conv1d.cu"
@@ -29,7 +28,6 @@ target_sources(ninfer_ops PRIVATE
   "${CMAKE_CURRENT_LIST_DIR}/launcher/target_logprobs.cu"
   "${CMAKE_CURRENT_LIST_DIR}/launcher/vision_pos_embed.cu"
   "${CMAKE_CURRENT_LIST_DIR}/wrapper/add_bias.cpp"
-  "${CMAKE_CURRENT_LIST_DIR}/wrapper/apply_mask.cpp"
   "${CMAKE_CURRENT_LIST_DIR}/wrapper/argmax.cpp"
   "${CMAKE_CURRENT_LIST_DIR}/wrapper/cast.cpp"
   "${CMAKE_CURRENT_LIST_DIR}/wrapper/causal_conv1d_silu.cpp"

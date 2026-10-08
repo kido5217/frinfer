@@ -46,10 +46,7 @@ xgrammar::Grammar arguments(const Contract::Tool& tool) {
     }
 }
 
-xgrammar::Grammar build(const Contract& contract, const std::optional<OutputConstraint>& body) {
-    std::optional<xgrammar::Grammar> json;
-    if (body) json = text::build_json_grammar(*body);
-    if (json && contract.tools.empty()) return *json;
+xgrammar::Grammar build(const Contract& contract) {
     xgrammar::GrammarBuilder builder;
     if (contract.tools.empty())
         return builder.Get(
@@ -73,26 +70,19 @@ xgrammar::Grammar build(const Contract& contract, const std::optional<OutputCons
     const auto first = builder.AddRuleWithHint(
         "calls", builder.AddSequence({builder.AddRuleRef(call_body), tail}));
     const auto root =
-        (contract.required || body)
+        contract.required
             ? builder.AddSequence({builder.AddByteString("<tool_call>"), builder.AddRuleRef(first)})
             : builder.AddTagDispatch({{{"<tool_call>", first}}, false, {}});
-    auto calls =
-        xgrammar::GrammarNormalizer::Apply(builder.Get(builder.AddRuleWithHint("root", root)));
-    return json && !contract.required ? xgrammar::Grammar::Union({*json, calls}) : calls;
+    return xgrammar::GrammarNormalizer::Apply(builder.Get(builder.AddRuleWithHint("root", root)));
 }
 } // namespace
 
 std::unique_ptr<text::GrammarSession>
 compile_tool_grammar(text::GrammarCompiler& compiler, const Contract& contract,
-                     std::string_view reasoning_close, std::string_view continuation,
-                     const std::optional<OutputConstraint>& body) {
+                     std::string_view reasoning_close, std::string_view continuation) {
     Json identity{{"qwen_tools", Json::array()},
                   {"required", contract.required},
                   {"parallel", contract.parallel}};
-    if (body && !body->choices.empty())
-        throw RequestError(RequestErrorKind::InvalidJsonSchema,
-                           "JSON constraints do not accept literal alternatives");
-    if (body) identity["body"] = {{"kind", static_cast<int>(body->kind)}, {"source", body->source}};
     for (const auto& tool : contract.tools) {
         Json entry{{"name", tool.name}, {"strict", tool.strict}};
         if (tool.strict) {
@@ -103,6 +93,6 @@ compile_tool_grammar(text::GrammarCompiler& compiler, const Contract& contract,
         identity["qwen_tools"].push_back(std::move(entry));
     }
     return compiler.compile_model(
-        identity.dump(), [&] { return build(contract, body); }, reasoning_close, continuation);
+        identity.dump(), [&] { return build(contract); }, reasoning_close, continuation);
 }
 } // namespace ninfer::models::qwen3_5::frontend

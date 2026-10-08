@@ -1,11 +1,11 @@
 # Vendored llama.cpp grammar runtime
 
-How `third_party/llama-grammar/` — the GBNF runtime behind constrained decoding — is kept current
-with upstream [ggml-org/llama.cpp](https://github.com/ggml-org/llama.cpp). The recorded baseline,
-the file map, the patch set and the compat adaptations live in
-[`third_party/llama-grammar/README.frinfer.md`](../../third_party/llama-grammar/README.frinfer.md);
-that README is the authority for *what* is vendored and *how* the maintained copies are derived,
-this document for *how* they are refreshed. The design is recorded on wayfinder map
+How `third_party/llama-grammar/` — the GBNF runtime behind constrained decoding — was kept current
+with upstream [ggml-org/llama.cpp](https://github.com/ggml-org/llama.cpp). The tree, its
+`README.frinfer.md` file map, patch set and compat adaptations were retired with ticket #248 when
+the adopted XGrammar stack replaced the in-tree grammar producer and trie mask producer (see
+[Constrained decoding](constrained-decoding.md)); this historical document records how the
+maintained copies were derived and refreshed. The design is recorded on wayfinder map
 [#45](https://github.com/kido5217/frinfer/issues/45) (design
 [#47](https://github.com/kido5217/frinfer/issues/47)).
 
@@ -61,8 +61,8 @@ baseline.
 
 ## Verification standard
 
-- `third_party/llama-grammar/verify-vendor.sh` — pristine baseline plus patch set reproduces the
-  maintained copies byte-for-byte.
+- The (retired) `third_party/llama-grammar/verify-vendor.sh` checked that a pristine baseline plus
+  patch set reproduced the maintained copies byte-for-byte.
 - Build and run the grammar set:
   `ctest --test-dir build -R '^ninfer_grammar_test$' --output-on-failure`. The suite carries the
   ported upstream vectors, the differential mask oracle (every vocabulary token replayed through

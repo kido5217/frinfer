@@ -63,7 +63,7 @@ other references own narrower contracts:
 | [Constrained decoding](maintainer/constrained-decoding.md) | the adopted upstream XGrammar architecture: one token-constraint mechanism behind GBNF, JSON/Schema, regex/choice and tool-call entry points, the request-owned matcher, and the shared execution contract |
 | [Vendored llama.cpp grammar runtime](maintainer/llama-grammar-vendor.md) | historical: `third_party/llama-grammar` baseline and patch set, retired with ticket #248 |
 | [Grammar mask production](maintainer/grammar-mask-production.md) | historical: the retired in-tree trie producer's fill budget and escalation decision |
-| [Constrained thinking design](maintainer/constrained-thinking-design.md) | the wrapper-grammar route for thinking-on constrained requests: contract, wrapper construction, mask lifecycle, rejected alternatives and verification plan (ADR [0001](adr/0001-wrapper-grammar-for-constrained-reasoning.md)) |
+| [Constrained thinking design](maintainer/constrained-thinking-design.md) | historical/superseded (ADR [0001](adr/0001-wrapper-grammar-for-constrained-reasoning.md) amendment): the wrapper-grammar route's design rationale, wrapper construction, mask lifecycle, rejected alternatives and verification plan; shipped semantics live in [Constrained decoding](maintainer/constrained-decoding.md) |
 
 Model cards contain official artifact facts and source provenance. The
 [conversion guide](weight-conversion.md) is the entry point for making an artifact. Exact config

@@ -18,6 +18,7 @@
       python = pkgs.python313.withPackages (
         ps: with ps; [
           jinja2
+          jsonschema
           numpy
           pytest
           pyyaml
