@@ -48,6 +48,17 @@
           pkgs.curl
           python
         ];
+        shellHook = ''
+          # NixOS exposes the proprietary NVIDIA driver libraries, including libcuda.so.1,
+          # under /run/opengl-driver/lib. Without that directory on LD_LIBRARY_PATH the
+          # CUDA runtime cannot find the driver and reports the misleading
+          # "CUDA driver version is insufficient for CUDA runtime version". Prepend it
+          # once, leaving any existing LD_LIBRARY_PATH entries in place.
+          case ":''${LD_LIBRARY_PATH:-}:" in
+            *:/run/opengl-driver/lib:*) ;;
+            *) export LD_LIBRARY_PATH="/run/opengl-driver/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" ;;
+          esac
+        '';
       };
     };
 }
