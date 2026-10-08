@@ -656,9 +656,9 @@ A/B 使用相同 prompt，分别要求对象字段和有限枚举。编译资源
 
 ### 已落地
 
-- **ConstraintObservation 诊断链路**：Engine 在执行结束时产出 `GenerationResult.constraint`（`OutputSession::constraint_observation()` 读取请求拥有的 `text::GrammarSession::observation()`，含 matcher 终态、cache 访问、mask 位置/上传字节与可选阶段耗时），经 `GenerationOutcome.constraint` 发布；`src/serve/metrics.cpp` 渲染 `frinfer_constraint_*` 家族，request log 的 `request_done` 记录同样携带该观测。
+- **ConstraintObservation 诊断链路**：Engine 在执行结束时产出 `GenerationResult.constraint`（`OutputSession::constraint_observation()` 读取请求拥有的 `text::GrammarSession::observation()`，含 matcher 终态、cache 访问、mask 位置/上传字节与可选阶段耗时），经 `GenerationOutcome.constraint` 发布；`src/serve/metrics.cpp` 渲染 `frinfer_constraint_*` 家族，并且是 `outcome.constraint` 唯一的消费者；request log 的 `request_done` 记录**不**携带该观测。
 - **有界数字输入校验**：`src/serve/request_validation.cpp` 的 `validate_schema_number_input()` 在每个请求体解析后拒绝无法由 JSON 数字表示保真的 schema 数字（上游 `81c8ce09` “support tuple schemas and bounded numbers”）。
-- **工具约束编译原语**：`src/models/qwen3_5/frontend/tool_contract.cpp` 与 `tool_grammar.cpp` 现编入 `ninfer_model_runtime`（上游 `41e50d0d`/`2734a56e` 的 `select_tool_call_contract` 与 XGrammar 工具语法构造）。
+- **工具约束编译原语**：`src/models/qwen3_5/frontend/tool_contract.cpp` 与 `tool_grammar.cpp` 现编入 `ninfer_model_runtime`（上游 `41e50d0d`/`2734a56e` 的 `select_tool_call_contract` 与 XGrammar 工具语法构造）。这两个 TU 当前没有调用方，仅证明可编译；上游同批的 `tests/models/qwen3_5/test_tool_constraints.cpp` 与 `test_frontend.cpp` 的 `test_tools_and_json_output` 均未注册，属于下述未落地的工具调用面。
 
 ### 仍未落地（保留给 ticket #250 的受约束栈移植）
 

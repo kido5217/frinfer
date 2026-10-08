@@ -897,7 +897,7 @@ curl http://127.0.0.1:8080/metrics
 | `frinfer_context_transfer_bytes_total{resource,direction}` | Actual State/Main KV/backend KV payload transfers |
 | `frinfer_host_work_seconds_total{phase}`, `frinfer_device_wait_seconds_total` | Instrumented worker wall time; device wait is not CUDA kernel time |
 | `frinfer_requests_total{outcome}`, `frinfer_requests_started_total`, `frinfer_response_failures_total` | Generation attempts entering preparation, begun by a protocol route, and subsequent response failures; protocol/model validation failures and token-count requests are excluded |
-| `frinfer_constraint_*` | Constrained-decoding outcomes, cache access, matcher/mask work and mask upload bytes for constrained requests |
+| `frinfer_constraint_*` | Constrained-decoding outcomes, cache access, matcher/mask work and mask upload bytes for constrained requests. The `constraint_draft_wait_seconds_total` series is not emitted: the fork has no corresponding timing field |
 | `frinfer_time_to_first_token_seconds` | Histogram updated once at the first committed token, including preparation, queueing and binding |
 | `frinfer_request_duration_seconds`, `frinfer_request_queue_seconds` | Histograms for settled generation outcomes, including cancellation; exceptional failures have separate counts |
 
