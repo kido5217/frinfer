@@ -1,9 +1,9 @@
 #pragma once
 
 #include "serve/generation_service.h"
+#include "serve/metrics.h"
 #include "serve/operational_log.h"
 #include "serve/openai_responses_store.h"
-#include "serve/prometheus_metrics.h"
 #include "serve/reasoning_control.h"
 #include "serve/request_log.h"
 #include "serve/serve_options.h"
@@ -98,6 +98,7 @@ private:
     void record_request_failure(const RequestLogContext& context, const RequestFailure& failure);
     void record_response_failure(std::uint64_t request_id, const RequestFailure& failure);
     void record_throughput(const ThroughputReport& report);
+    [[nodiscard]] ninfer::GenerationFirstTokenObserver first_token_observer();
     void run_stats_reporter();
     void stop_stats_reporter();
 
@@ -108,6 +109,7 @@ private:
     ReasoningControlRegistry reasoning_controls_;
     OperationalLog operational_log_;
     JsonlRequestLog request_jsonl_;
+    Metrics metrics_;
     httplib::Server server_;
     std::atomic<std::uint64_t> request_seq_{0};
     std::mutex stats_mutex_;

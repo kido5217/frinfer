@@ -649,3 +649,21 @@ A/B 使用相同 prompt，分别要求对象字段和有限枚举。编译资源
 源码调研基线为 NInfer `abb7f14f`、vLLM `00b7847c`、SGLang `28c5e7f5`、llama.cpp `53ed051c`。XGrammar API/行为检查基线为 `8262b5c94161f4cd0e2c356ab3b62de16b919873`；vendor 导入时固定明确来源，本文规定的是 NInfer 目标合同，不能以库默认行为替代。
 
 主要参考：[XGrammar C++ compiler](https://github.com/mlc-ai/xgrammar/blob/8262b5c94161f4cd0e2c356ab3b62de16b919873/include/xgrammar/compiler.h)、[matcher](https://github.com/mlc-ai/xgrammar/blob/8262b5c94161f4cd0e2c356ab3b62de16b919873/include/xgrammar/matcher.h)、[EBNF/GBNF](https://xgrammar.mlc.ai/docs/latest/defining_structures/ebnf_grammar.html)、[引擎接入](https://xgrammar.mlc.ai/docs/latest/using_xgrammar/engine_integration.html)。
+
+## 16. 本 fork 的实施边界（#242 同步）
+
+第 1–15 节是目标合同；本节记录截至 `sync/81c8ce09-int` 已落地与仍未落地的部分，避免设计文档被当成当前能力清单。对外协议边界以 [serving.md](../serving.md) 与受约束的 schema 测试为准，二者与本节的取舍一致。
+
+### 已落地
+
+- **ConstraintObservation 诊断链路**：Engine 在执行结束时产出 `GenerationResult.constraint`（`OutputSession::constraint_observation()` 读取请求拥有的 `text::GrammarSession::observation()`，含 matcher 终态、cache 访问、mask 位置/上传字节与可选阶段耗时），经 `GenerationOutcome.constraint` 发布；`src/serve/metrics.cpp` 渲染 `frinfer_constraint_*` 家族，request log 的 `request_done` 记录同样携带该观测。
+- **有界数字输入校验**：`src/serve/request_validation.cpp` 的 `validate_schema_number_input()` 在每个请求体解析后拒绝无法由 JSON 数字表示保真的 schema 数字（上游 `81c8ce09` “support tuple schemas and bounded numbers”）。
+- **工具约束编译原语**：`src/models/qwen3_5/frontend/tool_contract.cpp` 与 `tool_grammar.cpp` 现编入 `ninfer_model_runtime`（上游 `41e50d0d`/`2734a56e` 的 `select_tool_call_contract` 与 XGrammar 工具语法构造）。
+
+### 仍未落地（保留给 ticket #250 的受约束栈移植）
+
+- **约束工具调用的 serve 暴露**：`tool_choice` 的 `required`/命名/`parallel_tool_calls:false` 策略，以及 `allowed_names` 选择。本 fork 的 `ninfer::serve::ToolChoice` 仅暴露 `auto`/`none`（以及 `allowed_tools` 的 auto 模式）；上游编译原语虽已入库，但协议路由未接入 `ToolChoiceMode::Required`/`allowed_names`。
+- **Responses 路由的 `text.format` 结构化输出**：当前 `src/serve/openai_responses_request.cpp` 对结构化 `text.format` 直接返回 `structured_outputs_not_supported`，只接受省略或 `{"type":"text"}`。
+- **集中式请求解析**：上游把 `response_format`/`text.format`/`output_config.format` 的解析集中在 `src/serve/request_validation.cpp`（`parse_json_output_format`/`parse_structured_outputs`）；本 fork 在各协议路由内各自实现（如 `anthropic_messages_request.cpp` 的 `parse_structured_outputs`），因此未整文件采用上游的 `request_validation.*`，只补入其中独立可用的有界数字校验。
+
+这些缺口不改变对外合同的宽度：`docs/serving.md` 已明确列出仅支持的取值，Responses 结构化 `text.format` 与 required/named 工具选择均在拒绝之列，schema 测试随文档一同固定。

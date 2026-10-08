@@ -19,7 +19,8 @@ public:
     void rejected();
     void failed(bool cancelled);
     void response_failed();
-    [[nodiscard]] std::string render(const RuntimeStats& runtime, bool ready) const;
+    [[nodiscard]] std::string render(const RuntimeStats& runtime, bool ready,
+                                     std::uint64_t requests_started) const;
 
 private:
     struct Histogram {

@@ -235,29 +235,39 @@ void HttpServer::record_request_start(const RequestLogContext& context) {
 }
 
 void HttpServer::record_request_rejected(const RequestRejectionLogContext& context) {
+    metrics_.rejected();
     request_jsonl_.write_request_rejected(context);
     operational_log_.request_rejected(context);
 }
 
 void HttpServer::record_request_done(const RequestLogContext& context,
                                      const GenerationOutcome& outcome) {
+    metrics_.done(outcome);
     request_jsonl_.write_request_done(context, outcome);
     operational_log_.request_done(context, outcome);
 }
 
 void HttpServer::record_request_failure(const RequestLogContext& context,
                                         const RequestFailure& failure) {
+    metrics_.failed(failure.classification == RequestFailureClass::ClientDisconnected);
     request_jsonl_.write_request_error(context, failure.machine_message);
     operational_log_.request_failure(context, failure);
 }
 
 void HttpServer::record_response_failure(std::uint64_t request_id, const RequestFailure& failure) {
+    metrics_.response_failed();
     operational_log_.response_failure(request_id, failure);
 }
 
 void HttpServer::record_throughput(const ThroughputReport& report) {
     request_jsonl_.write_throughput(report);
     operational_log_.throughput(report);
+}
+
+ninfer::GenerationFirstTokenObserver HttpServer::first_token_observer() {
+    return [this](const ninfer::GenerationFirstTokenObservation& observation) {
+        metrics_.first_token(observation);
+    };
 }
 
 void HttpServer::run_stats_reporter() {
@@ -502,10 +512,9 @@ void HttpServer::handle_metrics(const httplib::Request& req, httplib::Response& 
         write_openai_error(res, error);
         return;
     }
-    const PrometheusSnapshot snapshot{.runtime         = service_->runtime_stats(),
-                                     .memory           = service_->memory_summary(),
-                                     .requests_started = request_seq_.load()};
-    res.set_content(render_prometheus_metrics(snapshot), "text/plain; version=0.0.4; charset=utf-8");
+    const RuntimeStats runtime  = service_->runtime_stats();
+    res.set_content(metrics_.render(runtime, service_->is_available(), request_seq_.load()),
+                    "text/plain; version=0.0.4; charset=utf-8");
 }
 
 void HttpServer::handle_models(const httplib::Request&, httplib::Response& res) const {
@@ -537,6 +546,8 @@ void HttpServer::attach(GenerationService& service) {
     const ninfer::LoadSummary load = service.load_summary();
     public_model_id_               = resolve_public_model_id(options_, load.model_name);
     service_                       = &service;
+    metrics_.configure(public_model_id_, service.engine_options(), service.memory_summary(),
+                       service.runtime_stats());
     request_jsonl_.write_server_start(options_, service.engine_options(),
                                       service.sampling_defaults(), public_model_id_, load,
                                       service.memory_summary());

@@ -101,7 +101,8 @@ void Metrics::response_failed() {
     ++requests_.response_failures;
 }
 
-std::string Metrics::render(const RuntimeStats& stats, bool ready) const {
+std::string Metrics::render(const RuntimeStats& stats, bool ready,
+                            std::uint64_t requests_started) const {
     Requests requests;
     {
         std::lock_guard lock(mutex_);
@@ -111,29 +112,29 @@ std::string Metrics::render(const RuntimeStats& stats, bool ready) const {
     out.imbue(std::locale::classic());
     out << std::setprecision(17);
     const auto header = [&](std::string_view name, std::string_view type, std::string_view help) {
-        out << "# HELP ninfer_" << name << ' ' << help << '\n'
-            << "# TYPE ninfer_" << name << ' ' << type << '\n';
+        out << "# HELP frinfer_" << name << ' ' << help << '\n'
+            << "# TYPE frinfer_" << name << ' ' << type << '\n';
     };
     const auto gauge = [&](std::string_view name, auto value, std::string_view help) {
         header(name, "gauge", help);
-        out << "ninfer_" << name << ' ' << value << '\n';
+        out << "frinfer_" << name << ' ' << value << '\n';
     };
     const auto counter = [&](std::string_view name, auto current, auto baseline,
                              std::string_view help) {
         header(name, "counter", help);
-        out << "ninfer_" << name << ' ' << current - baseline << '\n';
+        out << "frinfer_" << name << ' ' << current - baseline << '\n';
     };
     header("constraint_requests_total", "counter",
            "Settled constrained requests by language completion.");
     const char* outcomes[]    = {"terminated", "complete_interrupted", "incomplete_interrupted"};
     const char* cache_names[] = {"hit", "built", "waited"};
     for (std::size_t i = 0; i < 3; ++i)
-        out << "ninfer_constraint_requests_total{outcome=\"" << outcomes[i] << "\"} "
+        out << "frinfer_constraint_requests_total{outcome=\"" << outcomes[i] << "\"} "
             << requests.constraint_outcomes[i] << '\n';
     header("constraint_cache_total", "counter",
            "Compilation cache access for settled constrained requests.");
     for (std::size_t i = 0; i < 3; ++i)
-        out << "ninfer_constraint_cache_total{result=\"" << cache_names[i] << "\"} "
+        out << "frinfer_constraint_cache_total{result=\"" << cache_names[i] << "\"} "
             << requests.constraint_cache[i] << '\n';
     counter("constraint_prepare_seconds_total", requests.constraint_prepare_seconds, 0.0,
             "Observed constraint preparation work.");
@@ -145,14 +146,17 @@ std::string Metrics::render(const RuntimeStats& stats, bool ready) const {
             "Evaluated constrained prediction positions.");
     counter("constraint_mask_upload_bytes_total", requests.constraint_upload_bytes, 0,
             "Submitted mask payload bytes.");
-    counter("constraint_draft_wait_seconds_total", stats.host_work.constraint_draft_wait_ns * 1e-9,
-            baseline_.host_work.constraint_draft_wait_ns * 1e-9,
-            "Draft-ready wait, counted once per batch.");
+    counter("prefill_units_total", stats.host_work.prefill_units,
+            baseline_.host_work.prefill_units, "Prefill units executed.");
+    counter("control_units_total", stats.host_work.control_units,
+            baseline_.host_work.control_units, "Thinking-control units committed.");
+    counter("requests_started_total", requests_started, std::uint64_t{0},
+            "Generation requests a protocol route has begun since startup.");
     gauge("engine_ready", ready ? 1 : 0, "Whether Engine can accept work.");
     gauge("server_start_time_seconds", start_seconds_,
           "Unix time at service attachment after warmup.");
     header("model_info", "gauge", "Resident model and speculative backend.");
-    out << "ninfer_model_info{model_name=\"" << escape_label(model_) << "\",speculative_backend=\""
+    out << "frinfer_model_info{model_name=\"" << escape_label(model_) << "\",speculative_backend=\""
         << product::speculative_backend_name(options_.speculative.backend) << "\"} 1\n";
     gauge("max_concurrency", options_.max_concurrency, "Maximum resident execution lanes.");
     gauge("max_context_tokens", options_.max_context, "Per-request logical context limit.");
@@ -227,7 +231,7 @@ std::string Metrics::render(const RuntimeStats& stats, bool ready) const {
     header("context_transfer_bytes_total", "counter", "Completed context payload transfers.");
     const auto transfer_bytes = [&](const char* resource, const char* direction, auto current,
                                     auto baseline) {
-        out << "ninfer_context_transfer_bytes_total{resource=\"" << resource << "\",direction=\""
+        out << "frinfer_context_transfer_bytes_total{resource=\"" << resource << "\",direction=\""
             << direction << "\"} " << current - baseline << '\n';
     };
 #define TRANSFER(resource, prefix, direction)                                                      \
@@ -249,7 +253,7 @@ std::string Metrics::render(const RuntimeStats& stats, bool ready) const {
     header("host_work_seconds_total", "counter",
            "Exclusive Engine Host phases, excluding device waits.");
     const auto host = [&](std::string_view phase, std::uint64_t value, std::uint64_t baseline) {
-        out << "ninfer_host_work_seconds_total{phase=\"" << phase << "\"} "
+        out << "frinfer_host_work_seconds_total{phase=\"" << phase << "\"} "
             << static_cast<double>(value - baseline) * 1e-9 << '\n';
     };
 #define HOST(field) host(#field, stats.host_work.field##_ns, baseline_.host_work.field##_ns)
@@ -267,7 +271,7 @@ std::string Metrics::render(const RuntimeStats& stats, bool ready) const {
     for (const auto& [outcome, count] : std::array{
              std::pair{"completed", requests.completed}, std::pair{"cancelled", requests.cancelled},
              std::pair{"failed", requests.failed}, std::pair{"rejected", requests.rejected}}) {
-        out << "ninfer_requests_total{outcome=\"" << outcome << "\"} " << count << '\n';
+        out << "frinfer_requests_total{outcome=\"" << outcome << "\"} " << count << '\n';
     }
     counter("response_failures_total", requests.response_failures, 0U,
             "Response rendering, storage or transport failures after generation settlement.");
@@ -277,7 +281,7 @@ std::string Metrics::render(const RuntimeStats& stats, bool ready) const {
         std::uint64_t count = 0;
         for (std::size_t i = 0; i < value.bins.size(); ++i) {
             count += value.bins[i];
-            out << "ninfer_" << name << "_bucket{le=\"";
+            out << "frinfer_" << name << "_bucket{le=\"";
             if (i == kBuckets.size()) {
                 out << "+Inf";
             } else {
@@ -285,8 +289,8 @@ std::string Metrics::render(const RuntimeStats& stats, bool ready) const {
             }
             out << "\"} " << count << '\n';
         }
-        out << "ninfer_" << name << "_sum " << value.sum << '\n'
-            << "ninfer_" << name << "_count " << count << '\n';
+        out << "frinfer_" << name << "_sum " << value.sum << '\n'
+            << "frinfer_" << name << "_count " << count << '\n';
     };
     histogram("time_to_first_token_seconds", requests.ttft,
               "Preparation through first committed token; observed once, before completion.");
