@@ -4,13 +4,16 @@
 #include "models/qwen3_5/program/round_buffers.h"
 #include "models/qwen3_5/program/vision_control.h"
 
+#include "models/qwen3_5/program/planning/yarn_policy.h"
 #include "models/qwen3_5/program/prefix_identity.h"
+#include "ninfer/ops/rope.h"
 #include "runtime/contract/timing.h"
 
 #include <algorithm>
 #include <array>
 #include <cstdint>
 #include <iostream>
+#include <stdexcept>
 #include <string_view>
 #include <utility>
 #include <vector>
@@ -486,6 +489,74 @@ void test_regular_prefix_identity() {
     check_against_input(other_vision, right);
 }
 
+// Fork YaRN context-extension policy (startup.cpp): the extension activates exactly above the
+// native position capacity. At or below native the plan carries an empty table, so the power-law
+// rope path is structurally unchanged; at native+1 the table is built and non-inert. A DFlash
+// draft backend rejects an active extension; a non-masking backend accepts it.
+void test_yarn_extension_policy() {
+    constexpr std::uint32_t native = 262144;
+    const q36::RopeConfig rope{.rope_theta = 1.0e6F, .rotary_dim = 128};
+
+    const auto at_native = q36::detail::plan_yarn_extension(&rope, native, native);
+    expect(!at_native.active && at_native.inv_freq.empty() && at_native.mscale == 1.0F,
+           "capacity at the native bound activated a non-empty YaRN table");
+    const auto below = q36::detail::plan_yarn_extension(&rope, native, native - 1);
+    expect(!below.active && below.inv_freq.empty() && below.mscale == 1.0F,
+           "capacity below the native bound activated a non-empty YaRN table");
+    const auto absent = q36::detail::plan_yarn_extension(nullptr, native, native + 1);
+    expect(!absent.active && absent.inv_freq.empty(),
+           "a model without rope parameters activated a YaRN table");
+
+    // The first extended capacity builds the table, and it is not inert: its mscale differs from
+    // the power-law value and its per-pair frequencies differ from the power law.
+    const auto extended = q36::detail::plan_yarn_extension(&rope, native, native + 1);
+    const auto power    = ninfer::ops::compute_rope_yarn_table(
+        rope.rope_theta, static_cast<int>(rope.rotary_dim), native, 1.0);
+    expect(extended.active && !extended.inv_freq.empty() &&
+               extended.inv_freq.size() == power.inv_freq.size() &&
+               extended.inv_freq != power.inv_freq && power.mscale == 1.0F &&
+               extended.mscale != power.mscale,
+           "the first extended capacity produced an inert YaRN table");
+
+    // The active table reaches the Device layout with its host values; an unextended plan reserves
+    // no YaRN region at all, which is the byte-identical power-law path.
+    ninfer::LayoutBuilder extended_builder;
+    const q36::RoundStateLayout extended_round = q36::begin_round_state_layout(
+        extended_builder, q36::RoundStateSpec{.hidden        = 32,
+                                              .output_rows   = 128,
+                                              .yarn_inv_freq = extended.inv_freq,
+                                              .yarn_mscale   = extended.mscale});
+    (void)extended_builder.finish(256);
+    expect(extended_round.yarn_inv_freq.has_value() &&
+               extended_round.yarn_inv_freq_values == extended.inv_freq &&
+               extended_round.yarn_mscale == extended.mscale,
+           "an active YaRN plan did not reach the round device layout");
+
+    ninfer::LayoutBuilder plain_builder;
+    const q36::RoundStateLayout plain_round = q36::begin_round_state_layout(
+        plain_builder, q36::RoundStateSpec{.hidden = 32, .output_rows = 128});
+    (void)plain_builder.finish(256);
+    expect(!plain_round.yarn_inv_freq.has_value() && plain_round.yarn_inv_freq_values.empty() &&
+               plain_round.yarn_mscale == 1.0F,
+           "an unextended plan reserved a YaRN device region");
+
+    const auto rejects = [](std::uint32_t capacity, std::uint32_t bound,
+                            ninfer::SpeculativeBackend backend) {
+        try {
+            q36::detail::validate_yarn_extension(capacity, bound, backend);
+        } catch (const std::invalid_argument&) { return true; }
+        return false;
+    };
+    expect(rejects(native + 1, native, ninfer::SpeculativeBackend::DFlash),
+           "an over-native YaRN extension was accepted with a DFlash draft backend");
+    expect(!rejects(native, native, ninfer::SpeculativeBackend::DFlash),
+           "a DFlash draft at the native bound was rejected");
+    expect(!rejects(native + 1, native, ninfer::SpeculativeBackend::None),
+           "a non-masking backend was rejected for an over-native extension");
+    expect(!rejects(native + 1, native, ninfer::SpeculativeBackend::Mtp),
+           "an MTP draft was rejected for an over-native extension");
+}
+
 } // namespace
 
 int main() {
@@ -496,6 +567,7 @@ int main() {
     test_vision_control();
     test_prefix_identity();
     test_regular_prefix_identity();
+    test_yarn_extension_policy();
     if (failures != 0) {
         std::cerr << failures << " Qwen3.6 runtime mechanism checks failed\n";
         return 1;
