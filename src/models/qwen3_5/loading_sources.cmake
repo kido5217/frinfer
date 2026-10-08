@@ -11,5 +11,4 @@ target_sources(ninfer_model_loading PRIVATE
   "${CMAKE_CURRENT_LIST_DIR}/load/prepare.cpp"
   "${CMAKE_CURRENT_LIST_DIR}/frontend/resources.cpp"
   "${CMAKE_CURRENT_LIST_DIR}/frontend/tokenizer.cpp"
-  "${CMAKE_CURRENT_LIST_DIR}/frontend/grammar/tokenizer_vocabulary.cpp"
 )

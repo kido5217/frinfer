@@ -631,6 +631,8 @@ GeneratedToolCall normalize_raw_tool_call(const RawToolCall& raw, const Contract
 struct ParseContext {
     const ChatParseWireFormat* format = nullptr;
     bool tools_enabled                = false;
+    bool exact_framing                = false;
+    std::string_view close_framing    = {};
 };
 
 struct ParseState {
@@ -640,6 +642,8 @@ struct ParseState {
     bool at_turn_start         = false;
     bool strip_content_leading = false;
     bool finished              = false;
+    // Exact-framing mode: close-framing bytes still to drop from the next content bytes.
+    std::string_view exact_framing_pending = {};
     std::string held;
     std::string reasoning;
     std::string content;
@@ -741,6 +745,17 @@ void feed_content(ParseState& state, const ParseContext& context, std::string_vi
     state.held.append(text);
     const std::string_view tool_open = context.format->tool_call_open;
 
+    if (!state.exact_framing_pending.empty()) {
+        std::size_t drop = 0;
+        while (drop < state.held.size() && drop < state.exact_framing_pending.size() &&
+               state.held[drop] == state.exact_framing_pending[drop]) {
+            ++drop;
+        }
+        state.held.erase(0, drop);
+        state.exact_framing_pending.remove_prefix(drop);
+        if (!state.exact_framing_pending.empty()) { return; }
+    }
+
     if (state.strip_content_leading) {
         std::size_t begin = 0;
         while (begin < state.held.size() && is_format_whitespace(state.held[begin])) { ++begin; }
@@ -824,8 +839,12 @@ void feed_reasoning(ParseState& state, const ParseContext& context, std::string_
     if (close != std::string_view::npos) {
         publish(state.reasoning, buffer.substr(begin, close - begin));
         state.held.erase(0, close + thinking_close.size());
-        state.phase                 = ParseState::Phase::Content;
-        state.strip_content_leading = true;
+        state.phase = ParseState::Phase::Content;
+        if (context.exact_framing) {
+            state.exact_framing_pending = context.close_framing;
+        } else {
+            state.strip_content_leading = true;
+        }
         feed_content(state, context, {});
         return;
     }
@@ -877,7 +896,14 @@ void terminalize(ParseState& state, const ParseContext& context, const Contract*
         break;
     }
     case ParseState::Phase::Content:
-        // R2: whitespace directly after the close is never published as content.
+        if (!state.exact_framing_pending.empty()) {
+            const std::size_t drop =
+                std::min(state.held.size(), state.exact_framing_pending.size());
+            state.held.erase(0, drop);
+            state.exact_framing_pending.remove_prefix(drop);
+        }
+        // R2: whitespace directly after the close is never published as content (exact framing
+        // already dropped its known framing bytes above).
         if (!state.strip_content_leading) { publish(state.content, state.held); }
         break;
     case ParseState::Phase::ToolRegion:
@@ -916,8 +942,10 @@ public:
     }
 
     [[nodiscard]] ParseContext context() const {
-        return ParseContext{.format        = &ChatParseWireFormat::qwen3_5(),
-                            .tools_enabled = contract_ != nullptr};
+        return ParseContext{.format         = &ChatParseWireFormat::qwen3_5(),
+                            .tools_enabled  = contract_ != nullptr,
+                            .exact_framing  = options_.exact_framing,
+                            .close_framing  = options_.close_framing};
     }
 
     std::shared_ptr<const ToolCallOutputContract> contract_;

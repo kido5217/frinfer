@@ -2,7 +2,8 @@
 
 How this fork (`kido5217/frinfer`) stays current with upstream `Neroued/ninfer` while keeping
 its own patches. Every fact below was verified during the first sync (2026-09-26, upstream tip
-`e31bc99b`) and re-confirmed during the second sync (2026-09-30, upstream tip `d44ab584`).
+`e31bc99b`), re-confirmed during the second sync (2026-09-30, upstream tip `d44ab584`), and
+re-confirmed during the third sync (2026-10-08, upstream tip `81c8ce09`).
 
 ## Ground rules
 

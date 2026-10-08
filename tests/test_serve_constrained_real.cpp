@@ -15,6 +15,7 @@
 #include "serve/openai_responses.h"
 #include "serve/translate.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
@@ -56,8 +57,7 @@ ninfer::EngineOptions engine_options(const char* artifact) {
     options.max_concurrency                      = 1;
     options.max_pending_requests                 = 1;
     options.context_cache.device_state_slots     = 1;
-    options.context_cache.host_state_slots       = 2;
-    options.context_cache.host_kv_capacity_bytes = 512ULL << 20;
+    options.context_cache.host_capacity_bytes    = 1ULL << 30;
     return options;
 }
 
@@ -118,6 +118,25 @@ int exercise(const char* artifact) {
     }
     check(schema_valid, "json_schema answer satisfies the schema", schema_detail);
 
+    // 2b. structured_outputs.choice forces one literal alternative.
+    Json choice_body                  = base_request();
+    choice_body["structured_outputs"] = Json{{"choice", Json::array({"cat", "dog"})}};
+    const ninfer::GenerationResult choice_result = run_route(engine, server, choice_body);
+    check(choice_result.content == "cat" || choice_result.content == "dog",
+          "structured_outputs.choice forces one literal alternative",
+          "content=" + choice_result.content);
+
+    // 2c. structured_outputs.regex matches the complete content.
+    Json regex_body                  = base_request();
+    regex_body["structured_outputs"] = Json{{"regex", "[AB]{1,3}"}};
+    const ninfer::GenerationResult regex_result = run_route(engine, server, regex_body);
+    const bool regex_ok =
+        !regex_result.content.empty() && regex_result.content.size() <= 3 &&
+        std::all_of(regex_result.content.begin(), regex_result.content.end(),
+                    [](char byte) { return byte == 'A' || byte == 'B'; });
+    check(regex_ok, "structured_outputs.regex confines the content",
+          "content=" + regex_result.content);
+
     // 3. A grammar that overflows the producer's structural guards is rejected at compile with
     Json invalid_body       = base_request();
     invalid_body["grammar"] = "root ::= \"unterminated";
@@ -135,27 +154,33 @@ int exercise(const char* artifact) {
               mapped.code + " " + mapped.message);
     }
 
-    // 4. An invalid grammar is rejected at submit and maps back to grammar_invalid.
-    //     a diagnostic instead of crashing the serving engine mid-generation.
-    Json pathological_body       = base_request();
-    pathological_body["grammar"] = "root ::= ([ab]{0,5}){0,64}";
+    // 4. Nested bounded repetition that the retired fork guard rejected is now compiled by the
+    //    adopted XGrammar parser and executes; the output stays within the grammar's alphabet.
+    Json nested_body       = base_request();
+    nested_body["grammar"] = "root ::= ([ab]{0,5}){0,64}";
     try {
-        (void)run_route(engine, server, pathological_body);
-        check(false, "a pathological grammar was accepted");
+        const ninfer::GenerationResult nested = run_route(engine, server, nested_body);
+        bool in_alphabet                      = true;
+        for (const char byte : nested.content) {
+            if (byte != 'a' && byte != 'b') { in_alphabet = false; }
+        }
+        check(in_alphabet, "a nested bounded-repetition grammar stays within its alphabet",
+              nested.content);
     } catch (const ninfer::RequestError& error) {
-        check(error.kind() == ninfer::RequestErrorKind::InvalidConstraint,
-              "a pathological grammar fails closed as an invalid constraint", error.what());
+        check(false, "a nested bounded-repetition grammar was rejected", error.what());
     }
 
-    // 5. A grammar whose initial mask admits nothing is rejected before generation.
-    Json unsatisfiable_body       = base_request();
-    unsatisfiable_body["grammar"] = "root ::= \"\\x00\"";
+    // 5. The adopted parser compiles the GBNF `"\x00"` literal, so there is no submit-time
+    //    unsatisfiable surface as in the retired fork. If such a constraint ever admits no legal
+    //    next token, generation fails closed as ConstraintDeadEnd (HTTP 400 constraint_dead_end).
+    Json null_body       = base_request();
+    null_body["grammar"] = "root ::= \"\\x00\"";
     try {
-        (void)run_route(engine, server, unsatisfiable_body);
-        check(false, "an unsatisfiable grammar was accepted");
+        (void)run_route(engine, server, null_body);
+        std::cout << "note: the NUL-literal grammar is accepted by the adopted parser\n";
     } catch (const ninfer::RequestError& error) {
-        check(error.kind() == ninfer::RequestErrorKind::InvalidConstraint,
-              "an unsatisfiable grammar fails closed as an invalid constraint");
+        check(error.kind() == ninfer::RequestErrorKind::ConstraintDeadEnd,
+              "a NUL-literal grammar only fails closed as a generation dead end", error.what());
     }
 
     // 6. Serve-level backend policy: DFlash rejects a constrained request naming the backend;

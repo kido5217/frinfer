@@ -51,7 +51,7 @@ other references own narrower contracts:
 | [Storage layouts](maintainer/storage-layouts.md) | packing, plane offsets, padding, encoded sizes and view addressing |
 | [Qwen3.5 model](maintainer/qwen3_5-model.md) | Dense/MoE mathematics, instance config, logical parameters, MTP, Vision and state semantics |
 | [DFlash and DFlash2](maintainer/dflash.md) | conditioning, masked draft computation, proposal distributions and backend state |
-| [Resource scheduling and context cache](maintainer/resource-scheduling-and-context-cache.md) | candidate selection, retention, materialization and Device/Host checkpoint policy |
+| [Resource scheduling and context cache](maintainer/resource-scheduling-and-context-cache.md) | core design for continuation, retention, incremental resources, preemption and recovery |
 | [Paged KV context store](maintainer/paged-kv-cache.md) | typed pools, pages, replicas, address spaces, reservations and consumer views |
 | [ReplaySSM GDN](maintainer/replayssm-gdn.md) | raw transition records and faithful commitment of the verified state prefix |
 | [Op development](maintainer/op-development.md) | semantic boundaries, source ownership, numerical qualification and performance evidence |
@@ -60,8 +60,9 @@ other references own narrower contracts:
 | [Linear tuning and reports](maintainer/linear-tuning.md) | tuning ranges, priority points, dispatch tradeoffs and final performance report format |
 | [Upstream sync](maintainer/upstream-sync.md) | fork patches vs upstream `Neroued/ninfer`: read-only rules, sync procedure, conflict policy, verification and drift alert |
 | [Vendored llama.cpp chat stack](maintainer/llama-chat-vendor.md) | `third_party/llama-chat`: recorded baseline, re-vendor procedure, drift alert and verification |
-| [Vendored llama.cpp grammar runtime](maintainer/llama-grammar-vendor.md) | `third_party/llama-grammar`: recorded baseline, patch set, re-vendor procedure, drift alert and verification |
-| [Grammar mask production](maintainer/grammar-mask-production.md) | mask-production budget, measured fill costs, the compiled-mask escalation decision and replacement requirements |
+| [Constrained decoding](maintainer/constrained-decoding.md) | the adopted upstream XGrammar architecture: one token-constraint mechanism behind GBNF, JSON/Schema, regex/choice and tool-call entry points, the request-owned matcher, and the shared execution contract |
+| [Vendored llama.cpp grammar runtime](maintainer/llama-grammar-vendor.md) | historical: `third_party/llama-grammar` baseline and patch set, retired with ticket #248 |
+| [Grammar mask production](maintainer/grammar-mask-production.md) | historical: the retired in-tree trie producer's fill budget and escalation decision |
 | [Constrained thinking design](maintainer/constrained-thinking-design.md) | the wrapper-grammar route for thinking-on constrained requests: contract, wrapper construction, mask lifecycle, rejected alternatives and verification plan (ADR [0001](adr/0001-wrapper-grammar-for-constrained-reasoning.md)) |
 
 Model cards contain official artifact facts and source provenance. The

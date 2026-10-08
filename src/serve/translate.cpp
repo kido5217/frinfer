@@ -332,7 +332,7 @@ ninfer::RequestOptions to_request_options(const GenerationRequest& request,
     }
     options.execution.sampling             = resolve_sampling_overrides(request.sampling, server);
     options.execution.logprobs             = request.logprobs;
-    if (request.grammar) {
+    if (request.constraint) {
         // The serve contract rejects a constrained request up front when the configured
         // speculative backend cannot carry one (design #48), naming the backend.
         const SpeculativeBackend backend = server.speculative.backend;
@@ -340,18 +340,14 @@ ninfer::RequestOptions to_request_options(const GenerationRequest& request,
             ApiError error;
             error.status = 400;
             error.type   = "invalid_request_error";
-            error.param  = request.constraint_source == ConstraintSource::JsonSchema
-                               ? "response_format"
-                               : "grammar";
+            error.param  = std::string(constraint_source_param(request.constraint_source));
             error.code   = "constrained_decoding_not_supported";
             error.message = std::string("constrained generation is not supported with the ") +
                             product::speculative_backend_name(backend) +
                             " speculative backend; use the ordinary or MTP backend";
             throw ApiException(std::move(error));
         }
-        options.constraint.emplace(ninfer::GrammarConstraint{
-            .gbnf = *request.grammar,
-            .thinking_enabled = semantics.enable_thinking.value_or(false)});
+        options.constraint = request.constraint;
     }
     options.output.raw                     = false;
     options.output.preserve_special_tokens = request.uses_tools() || request.has_tool_history();

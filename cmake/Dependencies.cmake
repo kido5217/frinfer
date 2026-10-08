@@ -16,9 +16,8 @@ add_subdirectory(third_party/llama-jinja EXCLUDE_FROM_ALL)
 # consumers will link it explicitly.
 add_subdirectory(third_party/llama-chat EXCLUDE_FROM_ALL)
 
-# Vendored llama.cpp GBNF runtime (see its README.frinfer.md); consumers will link it
-# explicitly.
-add_subdirectory(third_party/llama-grammar EXCLUDE_FROM_ALL)
+# Vendored XGrammar CPU core (see its README.ninfer.md); consumers will link it explicitly.
+add_subdirectory(third_party/xgrammar EXCLUDE_FROM_ALL)
 
 if(NINFER_BUILD_PRODUCT_SUPPORT)
   # Media acquisition uses CURLOPT_PROTOCOLS_STR and CURLOPT_REDIR_PROTOCOLS_STR,

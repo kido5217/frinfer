@@ -93,9 +93,10 @@ std::string read_constraint_file(const char* path, std::string_view flag) {
     return buffer.str();
 }
 
-// Converts a JSON Schema document through the shared protocol-neutral constraint contract, so the
+// Validates a JSON Schema document through the shared protocol-neutral constraint contract, so the
 // CLI and the serve route admit exactly the same documents and report the same fail-closed codes
-// (`json_schema_invalid`, `json_schema_unsupported`, `constraint_too_large`).
+// (`json_schema_invalid`, `json_schema_unsupported`, `constraint_too_large`). The returned text is
+// the schema document the Engine's XGrammar converter compiles.
 std::string convert_json_schema(const std::string& text, std::string_view flag) {
     nlohmann::ordered_json schema;
     try {
@@ -105,7 +106,7 @@ std::string convert_json_schema(const std::string& text, std::string_view flag) 
                                     "JSON Schema is not valid JSON: " + error.what());
     }
     try {
-        return ninfer::constraint::json_schema_constraint_grammar(schema);
+        return ninfer::constraint::json_schema_constraint_source(schema);
     } catch (const ninfer::constraint::ConstraintError& error) {
         throw std::invalid_argument(std::string(flag) + ": " + error.code() + ": " + error.what());
     }
@@ -215,6 +216,8 @@ std::string usage_text(const char* argv0) {
            "--kv-capacity auto leaves " +
            std::to_string(kDefaultKvCapacityHeadroomBytes / (1024ULL * 1024ULL)) +
            " MiB of sizing headroom.\n"
+           "--kv-capacity omitted follows --max-context; the CLI runs one execution lane, so an "
+           "explicit value must round to that same single-lane pool.\n"
            "--max-context above the model's native position capacity activates the YaRN context "
            "extension (spec defaults); the DFlash draft backend rejects it.\n"
            "Sampling defaults come from the loaded model and thinking mode; flags override "
@@ -497,8 +500,7 @@ Options parse_options(int argc, char** argv) {
                 "--thinking-budget cannot be combined with a constraint that resolves thinking "
                 "off; pass --reasoning-effort or drop --thinking-budget");
         }
-        options.enable_thinking             = explicitly_enabled;
-        options.constraint.thinking_enabled = explicitly_enabled;
+        options.enable_thinking = explicitly_enabled;
     }
     return options;
 }

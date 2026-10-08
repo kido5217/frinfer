@@ -17,8 +17,7 @@
 namespace ninfer::serve {
 
 void HttpServer::handle_count_tokens(const httplib::Request& req, httplib::Response& res) {
-    const std::string request_id = new_anthropic_request_id();
-    res.set_header("request-id", request_id);
+    const std::string request_id = res.get_header_value("request-id");
     try {
         const AnthropicCountTokensRequest request =
             parse_anthropic_count_tokens_request(parse_json_body(req));
@@ -39,8 +38,7 @@ void HttpServer::handle_count_tokens(const httplib::Request& req, httplib::Respo
 }
 
 void HttpServer::handle_messages(const httplib::Request& req, httplib::Response& res) {
-    const std::string request_id = new_anthropic_request_id();
-    res.set_header("request-id", request_id);
+    const std::string request_id = res.get_header_value("request-id");
 
     AnthropicMessagesRequest request;
     try {
@@ -62,15 +60,17 @@ void HttpServer::handle_messages(const httplib::Request& req, httplib::Response&
     }
 
     const std::uint64_t req_id = ++request_seq_;
-    const RequestLogMetadata metadata{.model                  = request.model,
-                                      .stream                 = request.stream,
-                                      .output_tokens_explicit = request.output_tokens_explicit};
+    RequestLogMetadata metadata{.http_request_id        = request_id,
+                                .model                  = request.model,
+                                .stream                 = request.stream,
+                                .output_tokens_explicit = request.output_tokens_explicit};
     PreparedRequest prepared;
     try {
-        prepared = service_->prepare(request.generation,
-                                     request.stream ? GenerationConsumerMode::Streaming
-                                                    : GenerationConsumerMode::Aggregate,
-                                     {}, [&req] { return client_disconnected(req); });
+        prepared = service_->prepare(
+            request.generation,
+            request.stream ? GenerationConsumerMode::Streaming : GenerationConsumerMode::Aggregate,
+            {.first_token = first_token_observer()},
+            [&req] { return client_disconnected(req); });
     } catch (const ApiException& exception) {
         const ApiError error = normalize_anthropic_error(exception.error());
         record_request_rejected(make_request_rejection_log_context(
@@ -90,6 +90,7 @@ void HttpServer::handle_messages(const httplib::Request& req, httplib::Response&
 
     const AnthropicResponseIdentity identity =
         make_anthropic_response_identity(request_id, request.model);
+    metadata.response_id   = identity.message_id;
     const int input_tokens = prepared.prompt_tokens;
 
     auto lifecycle = begin_request(make_request_log_context(
@@ -226,6 +227,12 @@ void HttpServer::handle_messages(const httplib::Request& req, httplib::Response&
 
                 lifecycle->done(outcome);
                 if (demotion_signal) { return send_error(*demotion_signal); }
+                if (outcome.finish_reason == ninfer::FinishReason::Cancelled ||
+                    stream->cancelled.load(std::memory_order_acquire)) {
+                    lifecycle->response_failure(
+                        make_client_disconnected_failure(RequestFailurePhase::Transport));
+                    return false;
+                }
                 std::vector<std::string> terminal;
                 try {
                     terminal = encoder->finish(outcome);

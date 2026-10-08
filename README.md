@@ -5,7 +5,7 @@
 ## This fork: `kido5217/frinfer` stands for `Frankenstein + ninfer`
 
 This repository is a fork of [Neroued/ninfer](https://github.com/Neroued/ninfer), kept current
-through periodic true-merge syncs (last sync: `d44ab584`, 2026-09-30). It adds YaRN context
+through periodic true-merge syncs (last sync: `81c8ce09`, 2026-10-08). It adds YaRN context
 extension, a llama.cpp-derived chat/tool-call parsing stack, and constrained decoding, and ships
 the `frinfer` product binaries. The rest of this README describes the combined product
 (fork + upstream).
@@ -33,22 +33,22 @@ the `frinfer` product binaries. The rest of this README describes the combined p
 ### Changes from upstream
 
 Maintained: add or update a row whenever a fork feature changes or its status changes.
-Last updated 2026-10-07 (wayfinder map #175 closed: 15/15 port items landed).
+Last updated 2026-10-08 (upstream sync `81c8ce09` merged + #242 integration: group-(c) SM-derived launches, group-(e) linear retuning, the `68c54356` template-trim cache-boundary fix, upstream `metrics.*` under the `--metrics` gate, and the orphaned-file recovery; runtime re-homed onto the upstream cache + scheduler, #244; preemption pinned off; Main KV capacity must cover every resident lane, #249).
 
 | What | Why | How | Status | Source |
 |---|---|---|---|---|
 | YaRN context extension — `--max-context` beyond the model's native `max_position_embeddings` (β_fast=32, β_slow=1, ext_factor=1) | Long-context agent sessions (opencode compaction, 200K+ contexts) exceed the model's native capacity on 32 GB VRAM | YaRN correction in the RoPE op, golden-vector tested; unsupported by the DFlash draft backend | shipped | FrInfer (implementation); spec cross-checked against the YaRN original, llama.cpp, HF transformers, and vLLM |
 | Real-time reasoning control — `POST /v1/chat/completions/control` with `action: "reasoning_end"`, armed per completion by `reasoning_control: true` | A long thinking block is only stoppable by waiting out its cap; the client wants a "stop overthinking" mid-stream | One Engine control signal consumed at the next decode boundary, committing the same canonical thinking-control suffix a thinking budget commits | shipped | llama.cpp-compatible contract; injection machinery reuses FrInfer's existing thinking-budget close |
 | llama.cpp-derived chat/tool-call parsing stack for Qwen3.5 turns (reasoning / content / tool-call regions) | Agent tool-call parsing must survive quoted markers, truncation, and degenerate loops without silent demotion | Vendored llama.cpp subset (chat params, PEG grammar runtime) under `third_party/`, re-vendor runbook with drift alert, 48-vector parse corpus + e2e gate | shipped (vendored baseline `05af0d2b`) | llama.cpp (vendored subset) |
-| Prometheus `/metrics` scrape (`--metrics`) | The deployment stack scrapes Prometheus; the JSONL measurement log is a log, not a scrape target | One pure renderer over the same Engine snapshot the JSONL `throughput` event carries, in text exposition format 0.0.4, `frinfer_`-namespaced | shipped | Prometheus format; metric names are FrInfer's own, not a llama.cpp replica |
+| Prometheus `/metrics` scrape (`--metrics`) | The deployment stack scrapes Prometheus; the JSONL measurement log is a log, not a scrape target | Upstream's stateful `Metrics` renderer (first-token/done/rejected/failed/response-failure callbacks + latency histograms) under the fork's `--metrics` opt-in gate; default off returns 404 naming the flag; text exposition format 0.0.4, `frinfer_`-namespaced, plus the fork's `prefill_units_total`/`control_units_total`/`requests_started_total` counters | shipped | Renderer: upstream `abb7f14f` (adopted per #241/#242); opt-in gate, namespace, fork counters: FrInfer |
 | Tool-call demotion recovery + client signaling (G1) | A malformed or truncated tool call demoted to plain text, stalling the agent silently | Partial-AST salvage + second-chance raw-value parse (llama.cpp-derived, in-core); lost calls signal a retryable in-band error (SSE error frame / 409 + `x-should-retry`) with per-class codes (ADR-0002) | shipped | Salvage: llama.cpp-derived; signaling: FrInfer (verified against the opencode client's error classifier; llama.cpp-flush and vLLM close-at-end alternatives rejected) |
-| Constrained decoding — per-request GBNF grammar + OpenAI `response_format` `json_object`/`json_schema` + Anthropic `output_config.format` `json_schema` | Agents depend on guaranteed structured output (tool arguments, JSON) | Engine GBNF mask via an in-tree token-trie producer (differential-verified); serve enforcement with a context-accurate schema allowlist and fail-closed codes shared by the OpenAI `response_format` and Anthropic `output_config.format` routes; thinking-aware wrapper grammar; CLI exposure (`--grammar`/`--grammar-file`/`--json-schema`/`--json-schema-file`) sharing the serve contract; grammar A/B perf-neutral (±0.24 ms/step) | shipped | GBNF language, PEG runtime, and JSON-schema converter: llama.cpp (vendored + 3 fork patches); mask producer and serve contract: FrInfer |
+| Constrained decoding — `structured_outputs` choice/regex/GBNF grammar, OpenAI `response_format` `json_object`/`json_schema` (tuple schemas, `pattern`, number/integer bounds) + Anthropic `output_config.format` `json_schema` | Agents depend on guaranteed structured output (tool arguments, JSON) | Engine mask via the adopted upstream XGrammar matcher (`third_party/xgrammar`) on the request-owned `GrammarSession`, replacing the fork's GBNF runtime and in-tree token-trie producer; serve enforcement with a schema allowlist and fail-closed codes shared by the OpenAI `response_format` and Anthropic `output_config.format` routes; thinking-aware wrapper grammar; CLI exposure (`--grammar`/`--grammar-file`/`--json-schema`/`--json-schema-file`) sharing the serve contract | shipped | GBNF/JSON-schema/choice/regex compilation: upstream XGrammar (vendored, adopted per #239 verdict C / #245); schema allowlist and serve contract: FrInfer |
 | Token log probabilities — OpenAI `logprobs`/`top_logprobs` on the chat + Responses routes | Clients and evaluators need the model's per-token confidence (OpenAI spec shape, not llama.cpp's self-declared non-compatible one) | New bounded `logprob_topk` split-CTA Op gathers the full-vocabulary log-softmax of the post-mask, penalty/temperature-scaled sampler logits before truncation; Engine per-committed-token channel aligned with `preview_model`; chat `{content, refusal}` + Responses aggregate/streaming shapes; Anthropic route unaffected | shipped | OpenAI OpenAPI spec (shape); evidence gate `research/logprobs-evidence` (distribution, oracle, cost) |
 | Realized reasoning tokens in the request log (schema v24) + CLI summary | Clients must distinguish realized thinking tokens from the thinking budget | `reasoning_tokens` in `request_done.result`, `model_thinking_tokens` → `budget_thinking_tokens`, realized tokens in the CLI generation summary | shipped (r5) | FrInfer (opencode-deployment driven) |
 | Benchmark extensions | Measure fork features at their claimed scope | `ninfer_bench --grammar` (constrained-decoding mode); Qwen3.8 GPQA context-window comparison | shipped | GPQA-Diamond (public benchmark); runners: FrInfer |
 | NVFP4 35B-A3B MoE experts — converter recipe + `.ninfer` codec + loader binding | The MoE line had no native FP4 expert route; prefill is compute-bound on the Q4/Q5 banks | `qwen3_6_35b_a3b_nvfp4` imports the compressed-tensors per-expert gate/up/down tensors as one `nvfp4` parent per expert projection (the source selects a per-expert FP32 divisor and gate/up are separate tensors; gate/up share the source divisor within an expert). `SparseMoeWeights` carries the expert banks and the Op validation/route-plan profiles admit the codec. At `T>=20` the routed prefill path executes end to end on the Blackwell W4A4 `mma_nvfp4_e4m3` path: grouped 64-column/64-row gate/up and down kernels over the packed route, one compact FP4 activation plane per stage with a single private activation divisor, merged with the shared expert. At `T<20` the routed gate/up and down run an A16 SIMT path: each warp decodes the per-expert E2M1 codes and K16 E4M3 scales on the fly, against the BF16 hidden state for gate/up and the FP32 SwiGLU activation for down (FP64-oracle coverage at `T=1` and the small-T boundaries). The e2e/perplexity check (#208) follows | in progress — loads; both routed routes (`T>=20` prefill, `T<20` decode/small-T) execute end to end; e2e/perplexity pending | FrInfer; evidence gate `research/nvfp4-moe-evidence` (#177) |
 | GGUF as a converter source — `--model file.gguf` for `qwen35`/`qwen35moe` (F32/F16/BF16, Q8_0, Q4_K/Q5_K/Q6_K, NVFP4) | The community distributes quantized Qwen checkpoints (including NVFP4 MoE repacks) as GGUF; the converter only read Safetensors | New `tools/convert/sources/gguf.py` `LogicalSource`: ggml-exact dequantization, encoded NVFP4 import through the `.scale`/`.input_scale` sidecars (stored divisors are the sidecar reciprocals), V-head order restore on GDN tensors, recipe-side HF→GGUF name mapping; `docs/weight-conversion.md` | shipped | Container/codecs: llama.cpp-derived, verified against the vendored checkout; reader/mapping: FrInfer |
-| Upstream sync process | Keep the fork current while preserving upstream ancestry | True merge commits per the sync runbook; drift alert on the vendored subset; last sync `d44ab584` (2026-09-30) | ongoing | Neroued/ninfer (upstream) |
+| Upstream sync process | Keep the fork current while preserving upstream ancestry | True merge commits per the sync runbook; drift alert on the vendored subset; last sync `81c8ce09` (2026-10-08) | ongoing | Neroued/ninfer (upstream) |
 | Product executables renamed to the `frinfer` family | Distinguish the fork's binaries from upstream's | CMake target rename (`frinfer`, `frinfer-serve`, `frinfer-perplexity`) | shipped | FrInfer |
 | Nix flake dev environment | Reproducible build environment | `flake.nix` at the repo root: CUDA 13.1, C++20, CMake/Ninja, FFmpeg, libcurl, Python 3.13 + torch; builds run in `nix develop` | shipped | nixpkgs (CUDA 13.1 `cudaPackages_13_1`) |
 | Agent/governance documentation | The fork is developed with LLM agents in the loop | `AGENTS.md` (product boundaries, verification, reporting), issue tracker + triage-label conventions, branch→commit→push→PR→merge→rebase landing pipeline; the LLM is permitted to open and merge PRs | ongoing | FrInfer |
@@ -58,6 +58,8 @@ Last updated 2026-10-07 (wayfinder map #175 closed: 15/15 port items landed).
 | Model-acquisition flags — `--hf-repo`/`--hf-file`, `--model-url`, `--cache-dir`, `--offline`, `--cache-list` on `frinfer` + `frinfer-serve` | The quick start was a two-tool dance (external `hf` CLI + ninfer) while artifacts live on Hugging Face | libcurl streaming download into `~/.cache/frinfer` with resume, offline cache reuse, cache listing, and fail-closed `hf_not_found`/`offline_not_cached` codes | shipped | llama.cpp (the `-hf`/`--hf-repo`, `--offline`, `--cache-list` pattern, adopted) |
 | Tokenizer CLI — `frinfer-tokenize` (encode / decode / per-id spelling) | No surface answers "how does this text tokenize?", which is the daily debugging primitive for prompt framing, template drift and token budgets | `Engine::detokenize` and `Engine::token_piece` alongside the existing `tokenize_text`, plus a small app; encode/decode round-trip tested against the artifact | shipped | FrInfer (decode direction; llama.cpp's `llama-tokenize` is encode-only) |
 | CLI prompt from file or stdin — `--prompt-file FILE` / `--prompt-stdin` | Long or awkward prompts (code, CJK, tabs, newlines) hit shell-quoting pain in the one place a prompt must be typed, and the structured `--messages` route forces JSON for plain text | Both sources read the body verbatim — no escape processing, no trailing-newline trimming, no re-encoding — and feed the same `prompt_from_text` route `--prompt` uses, so identical bytes give an identical token count; the prompt now has exactly one source among `--prompt`/`--prompt-file`/`--prompt-stdin`/`--messages`, and naming two reports both flags | shipped | FrInfer (llama.cpp's `-f`/`--stdin` is the shape; its silent precedence of `--stdin` over `-f`/`-p` is deliberately not copied, because a run that quietly used the wrong prompt is worse than a rejected one) |
+| No active-request preemption — the upstream runtime's pause/reclaim/replay primitives are pinned off | The fork contract is bounded FIFO ingress with startup-fixed 1–8 concurrency: a resident request must never lose its completion ability to a newer one | `pause_resident` returns false, so admission waits for capacity; `test_engine_no_preemption_real` runs two concurrent requests under the pressure scenario and asserts the preemption/recovery counters stay zero | shipped | FrInfer (pin) on the adopted upstream runtime (#238/#244) |
+| Main KV capacity must cover every resident lane at full context | With preemption pinned off, an undersized shared pool would otherwise fail a resident at runtime instead of at boot | `validate_target_options` requires the explicit pool to round to the curve upper bound `max_concurrency × ceil(max_context / 64)` and rejects a smaller one naming required/supplied capacity; an under-sized `auto` resolution is rejected in `construct_model`; `test_engine_no_preemption_real` asserts both the accepted concurrent run and the startup rejection message | shipped | FrInfer (validators) on the adopted upstream runtime (#249) |
 | Attention kernel tuning — measured, **not ported** | The port survey's last open performance candidate, and the only one whose verdict was a measurement rather than a port | Decode attention already runs at 84–91 % of the DRAM roofline at long context under the deployed 8-bit KV profiles, leaving a ≈1.10–1.19× kernel ceiling and a ≈3–7 % end-to-end decode gain — under the bar for a bespoke kernel; nvfp4 KV (63–66 % utilization) is the one profile with real kernel headroom and has no published end-to-end baseline to attach a gain to | no-port (measured) | FrInfer measurement (gate evidence `research/attention-tuning-evidence` @ `08171824`); candidates surveyed from llama.cpp |
 
 ### Bug reporting
@@ -92,7 +94,7 @@ project or its maintainer. Use at your own risk.
 FrInfer is a from-scratch C++/CUDA inference engine for Qwen3.5 Dense and MoE architectures on a
 single NVIDIA GeForce RTX 5090. It runs text, image, and video prompts through a local CLI or
 OpenAI-/Anthropic-compatible HTTP APIs. The runtime is deliberately specialized: one GPU, one
-resident model, and a startup-fixed capacity of one to eight active requests.
+resident model, and one to eight execution lanes fixed at startup.
 
 Five official artifacts are available. The quick-start commands use Qwen3.8-27B NVFP4.
 
@@ -156,30 +158,30 @@ artifact argument below accepts the same `--hf-repo`/`--hf-file` flags:
 ./build/apps/frinfer-serve \
   --hf-repo neroued/Qwen3.8-27B-nvfp4-NInfer \
   --hf-file qwen3_8_27b_nvfp4.ninfer \
-  --max-context 240000
+  --max-context 240000 \
+  --kv-dtype fp8
 ```
 
-Start a long-running text/agent server with two active-request lanes and explicit Device/Host
-checkpoint capacity:
+Start a long-running text/agent server with two active-request lanes:
 
 ```bash
 ./build/apps/frinfer-serve models/qwen3_8_27b_nvfp4.ninfer \
-  --max-context 240000 \
+  --max-context 120000 \
   --kv-capacity 240000 \
   --max-concurrency 2 \
   --kv-dtype fp8 \
   --device-state-slots 2 \
-  --host-state-slots 8 \
-  --host-kv-mib 8192 \
   --spec mtp --draft-tokens 3 \
   --lm-head-draft \
   --preserve-thinking
 ```
 
-Each request has a 240,000-token logical ceiling. A shared 240,000-token Device KV pool serves
-admitted requests; two requests run concurrently when their combined reservations fit. The cache
-tiers provide two Device checkpoint slots, eight pinned Host State slots, and 8 GiB of pinned Host
-KV beyond the two active StateImages.
+Each request has a 120,000-token logical ceiling. A shared 240,000-token Device KV pool covers both
+lanes, so each may reach its full 120,000-token context while the other is resident. Requests
+acquire KV pages as execution advances; under pressure, the scheduler can pause a request and
+resume it later. The profile provides two extra
+Device StateImages and the default shared pinned Host budget: 8 GiB plus eight model StateImages,
+used for retained state, KV and pause snapshots.
 
 Send an OpenAI-style request:
 
@@ -216,10 +218,11 @@ diagnostics. Use `--messages FILE` and `--vision` for structured image/video inp
 
 ## Resource-aware long-context reuse
 
-A reusable prefix checkpoint contains KV and the complete continuation state for its exact prompt
-frontier. A Device-resident checkpoint resumes directly. Under pressure, the planner weighs Device
-retention, pinned Host State/KV, and eviction by immediate restore work and later reuse cost. Active
-requests retain their completion reservations.
+A reusable checkpoint combines KV with the complete continuation state at an exact token frontier.
+The engine retains completed conversation endpoints and stable input boundaries for multi-turn and
+agent reuse. Inactive checkpoints share Device and pinned Host capacity; pressure reclaims retained
+resources before pausing resident requests. Paused requests resume from a snapshot or rebuild their
+state by replaying already committed tokens.
 
 See [Resource scheduling and context cache](docs/maintainer/resource-scheduling-and-context-cache.md)
 for the algorithm and [Serve TTFT benchmark](tools/bench/ttft/) for public-HTTP coverage of hot
@@ -305,13 +308,11 @@ docker run --rm \
   ninfer:local \
   frinfer-serve /models/qwen3_8_27b_nvfp4.ninfer \
   --host 0.0.0.0 \
-  --max-context 240000 \
+  --max-context 120000 \
   --kv-capacity 240000 \
   --max-concurrency 2 \
   --kv-dtype fp8 \
   --device-state-slots 2 \
-  --host-state-slots 8 \
-  --host-kv-mib 8192 \
   --spec mtp --draft-tokens 3 \
   --lm-head-draft \
   --preserve-thinking
@@ -340,9 +341,10 @@ and either full or optimized proposal heads.
 The product boundary remains intentionally small:
 
 - one RTX 5090 and one resident model per Engine;
-- a startup-fixed capacity of one to eight active requests with bounded FIFO ingress;
-- no request preemption, priority/QoS, active-request swapping, weight offload, multi-GPU, or
-  distributed serving;
+- one to eight resident execution lanes with bounded FIFO ingress;
+- no active-request preemption: the adopted runtime's pause/reclaim/replay primitives are pinned
+  off; admission waits for capacity instead of pausing a resident request;
+- no priority/QoS, weight offload, multi-GPU, or distributed serving;
 - one shared startup-fixed KV pool across active requests and retained prefixes;
 - model architectures and format/shape combinations use explicitly implemented native paths;
 - parsed tool calls are returned to the client; FrInfer does not execute tools;

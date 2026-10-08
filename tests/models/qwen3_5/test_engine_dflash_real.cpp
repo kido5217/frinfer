@@ -42,6 +42,8 @@ ninfer::EngineOptions dflash_vision_engine_options(const char* artifact) {
         dflash_engine_options(artifact, ninfer::ProposalHead::Optimized, 4096);
     options.prefill_chunk   = 1024;
     options.max_concurrency = 2;
+    // The pinned no-preemption contract sizes the shared pool for both lanes at full context.
+    options.kv_capacity     = ninfer::KvCapacityPolicy::explicit_capacity(2 * 4096);
     options.enable_vision   = true;
     return options;
 }
@@ -50,6 +52,7 @@ ninfer::RequestOptions greedy_options(std::uint32_t outputs, bool reuse) {
     ninfer::RequestOptions options;
     options.execution.requested_output_tokens = outputs;
     options.execution.sampling.temperature    = 0.0F;
+    options.execution.sampling.seed           = 0;
     options.execution.allow_prefix_reuse      = reuse;
     options.stop.include_model_defaults       = false;
     return options;
@@ -85,10 +88,7 @@ ninfer::PromptInput media_conversation(ninfer::MediaKind kind, std::string sessi
     ninfer::PromptInput input;
     input.messages.push_back(std::move(user));
     input.options.enable_thinking = false;
-    if (!session.empty()) {
-        input.context_cache.session_key = std::move(session);
-        input.context_cache.retention   = ninfer::CacheRetentionHint::LiveSession;
-    }
+    if (!session.empty()) { input.context_cache.session_key = std::move(session); }
     return input;
 }
 
@@ -114,7 +114,6 @@ ninfer::PromptInput initial_conversation() {
     ninfer::PromptInput input;
     input.options.enable_thinking   = false;
     input.context_cache.session_key = "dflash-boundary-real";
-    input.context_cache.retention   = ninfer::CacheRetentionHint::LiveSession;
 
     ninfer::ChatMessage user;
     user.role = ninfer::ChatRole::User;
@@ -190,7 +189,7 @@ int exercise_partial_terminal(ninfer::Engine& engine, const std::vector<ninfer::
                       stop) != reference.begin() + static_cast<std::ptrdiff_t>(stop_index)) {
             continue;
         }
-        ninfer::RequestOptions options = greedy_options(24, true);
+        ninfer::RequestOptions options = greedy_options(24, false);
         options.stop.token_ids.push_back(stop);
         const ninfer::GenerationResult stopped =
             engine.generate(engine.prepare_tokens(prompt), options);
@@ -209,15 +208,11 @@ int exercise_partial_terminal(ninfer::Engine& engine, const std::vector<ninfer::
         continuation.insert(continuation.end(), stopped.generated_token_ids.begin(),
                             stopped.generated_token_ids.end());
         continuation.push_back(198);
-        const ninfer::GenerationResult reused = engine.generate(
-            engine.prepare_tokens(std::move(continuation)), greedy_options(2, true));
-        const std::uint32_t expected_reuse =
-            static_cast<std::uint32_t>(prompt.size() + stopped.generated_token_ids.size() - 1);
-        if (reused.reused_prompt_tokens != expected_reuse ||
-            reused.generated_token_ids.size() != 2) {
-            std::cerr << "partial DFlash terminal did not publish its exact context frontier: "
-                      << "reused=" << reused.reused_prompt_tokens << " expected=" << expected_reuse
-                      << '\n';
+        const ninfer::GenerationResult after_stop = engine.generate(
+            engine.prepare_tokens(std::move(continuation)), greedy_options(2, false));
+        if (after_stop.generated_token_ids.size() != 2 ||
+            after_stop.finish_reason != ninfer::FinishReason::OutputLimit) {
+            std::cerr << "request after partial DFlash terminal did not finish its output budget\n";
             return 1;
         }
         return 0;
@@ -390,6 +385,7 @@ int main() {
         ninfer::EngineOptions options =
             dflash_engine_options(artifact, ninfer::ProposalHead::Full, 128);
         options.max_concurrency = 2;
+        options.kv_capacity     = ninfer::KvCapacityPolicy::explicit_capacity(2 * 128);
         ninfer::Engine full(std::move(options));
         auto first  = full.submit(full.prepare_tokens(prompt), greedy_options(17, false));
         auto second = full.submit(full.prepare_tokens(prompt), greedy_options(9, false));

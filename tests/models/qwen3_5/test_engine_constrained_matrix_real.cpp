@@ -4,8 +4,9 @@
 // The acceptance fixtures run against a real artifact under the ordinary and MTP backends: the
 // g1-g3 grammars and the diary JSON schema from tests/fixtures/grammar/, plus multi-byte
 // literals, a small schema with reachable maxLength/maxItems bounds, an empty root, a literal
-// continuation whose drafts survive verify columns, and the invalid/unsatisfiable grammar
-// contracts. Each constrained output is checked against its constraint independently of the
+// continuation whose drafts survive verify columns, the invalid-syntax rejection, and the NUL
+// literal that the retired fork called unsatisfiable. Each constrained output is checked against
+// its constraint independently of the
 // mask producer: greedy sampling makes a run deterministic, but the model's chosen text inside
 // the constraint is not golden.
 //
@@ -17,7 +18,6 @@
 
 #include "ninfer/engine.h"
 
-#include "json-schema-to-grammar.h"
 #include "json.h"
 
 #include <cstddef>
@@ -99,10 +99,6 @@ std::string hex_preview(const std::string& text, std::size_t limit = 24) {
     }
     if (text.size() > limit) { out += " ..."; }
     return out;
-}
-
-std::string json_schema_grammar(const std::string& schema_text) {
-    return json_schema_to_grammar(common_json::parse(schema_text), true);
 }
 
 std::vector<std::string> split(const std::string& text, char separator) {
@@ -339,18 +335,17 @@ bool small_schema_conforms(const std::string& text, std::string& why) {
 
 struct Case {
     std::string name;
-    std::string grammar;
+    ninfer::OutputConstraint constraint;
     std::uint32_t max_tokens = 0;
     std::function<void(const ninfer::GenerationResult&, const std::string&)> verify;
 };
 
-ninfer::RequestOptions greedy_request(std::uint32_t max_tokens, const std::string& grammar) {
+ninfer::RequestOptions greedy_request(std::uint32_t max_tokens,
+                                      ninfer::OutputConstraint constraint) {
     ninfer::RequestOptions request;
     request.execution.requested_output_tokens = max_tokens;
     request.execution.sampling.temperature    = 0.0F;
-    if (!grammar.empty()) {
-        request.constraint.emplace(ninfer::GrammarConstraint{grammar});
-    }
+    request.constraint.emplace(std::move(constraint));
     return request;
 }
 
@@ -368,8 +363,7 @@ ninfer::EngineOptions engine_options(const char* artifact, ninfer::SpeculativeBa
     options.max_concurrency                      = 1;
     options.max_pending_requests                 = 1;
     options.context_cache.device_state_slots     = 1;
-    options.context_cache.host_state_slots       = 2;
-    options.context_cache.host_kv_capacity_bytes = 512ULL << 20;
+    options.context_cache.host_capacity_bytes    = 1ULL << 30;
     return options;
 }
 
@@ -480,7 +474,7 @@ void run_cases(ninfer::Engine& engine, const std::string& backend, bool mtp,
         try {
             const ninfer::GenerationResult result = engine.generate(
                 engine.prepare_tokens(engine.tokenize_text("Complete the sequence: ")),
-                greedy_request(test_case.max_tokens, test_case.grammar));
+                greedy_request(test_case.max_tokens, test_case.constraint));
             report(where, result);
             test_case.verify(result, where);
             if (mtp && test_case.name == "fib-literal") {
@@ -504,30 +498,19 @@ void run_cases(ninfer::Engine& engine, const std::string& backend, bool mtp,
     }
 }
 
-// A grammar with an empty language can never be satisfied. The contract is fail-closed: the
-// request is rejected at submit or generation fails, and no content is emitted through it.
-void expect_unsatisfiable_fail_closed(ninfer::Engine& engine, const std::string& where,
-                                      const std::string& grammar) {
+// The adopted XGrammar stack has no submit-time "unsatisfiable grammar" rejection: the retired
+// fork treated the GBNF `"\x00"` literal as unsatisfiable, while the adopted parser compiles it
+// and the grammar forces exactly one NUL byte. This pins that behavior change.
+void expect_nul_literal(ninfer::Engine& engine, const std::string& where) {
     try {
         const ninfer::GenerationResult result = engine.generate(
             engine.prepare_tokens(engine.tokenize_text("Complete the sequence: ")),
-            greedy_request(32, grammar));
-        if (result.content.empty() && result.finish_reason == ninfer::FinishReason::StopToken) {
-            std::printf("matrix %-28s stopped empty (no token emitted)\n", where.c_str());
-            return;
-        }
-        check(false, where + ": an unsatisfiable grammar produced content",
+            greedy_request(32, ninfer::OutputConstraint::grammar("root ::= \"\\x00\"")));
+        check(result.content == std::string(1, '\0'),
+              where + ": the NUL-literal grammar did not force one NUL byte",
               preview(result.content) + " bytes:" + hex_preview(result.content));
     } catch (const ninfer::RequestError& error) {
         std::printf("matrix %-28s rejected: %s\n", where.c_str(), error.what());
-    } catch (const std::logic_error& error) {
-        // The fail-closed path for a state the mask cannot advance: the engine's divergence
-        // check, not an unrelated failure.
-        const std::string what = error.what();
-        check(what.find("diverged from its grammar") != std::string::npos,
-              where + ": generation failed with an unexpected logic error", what);
-        std::printf("matrix %-28s failed closed during generation: %s\n", where.c_str(),
-                    error.what());
     } catch (const std::exception& error) {
         check(false, where + ": generation failed with an unexpected error", error.what());
     }
@@ -537,10 +520,10 @@ void expect_invalid_grammar(ninfer::Engine& engine, const std::string& where,
                             const std::string& grammar) {
     try {
         (void)engine.generate(engine.prepare_tokens(engine.tokenize_text("Complete the sequence: ")),
-                              greedy_request(8, grammar));
+                              greedy_request(8, ninfer::OutputConstraint::grammar(grammar)));
         check(false, where + ": an invalid grammar was not rejected");
     } catch (const ninfer::RequestError& error) {
-        check(error.kind() == ninfer::RequestErrorKind::InvalidConstraint,
+        check(error.kind() == ninfer::RequestErrorKind::InvalidGrammar,
               where + ": rejected with an unexpected kind");
         std::printf("matrix %-28s rejected: %s\n", where.c_str(), error.what());
     }
@@ -551,26 +534,29 @@ int exercise(const char* artifact) {
     const std::string g1         = read_file(fixtures + "g1_literal_alternation.gbnf");
     const std::string g2         = read_file(fixtures + "g2_bounded_line.gbnf");
     const std::string g3         = read_file(fixtures + "g3_key_value_record.gbnf");
-    const std::string diary      = json_schema_grammar(read_file(fixtures + "diary.json"));
-    const std::string small = json_schema_grammar(
-        R"schema({"type":"object","additionalProperties":false,"required":["a"],"properties":{"a":{"type":"array","maxItems":2,"items":{"type":"string","maxLength":3}}}})schema");
+    const std::string diary = read_file(fixtures + "diary.json");
+    const std::string small =
+        R"schema({"type":"object","additionalProperties":false,"required":["a"],"properties":{"a":{"type":"array","maxItems":2,"items":{"type":"string","maxLength":3}}}})schema";
 
     const std::vector<Case> cases = {
-        {"g1-alternation", g1, 16, verify_g1},
-        {"g2-bounded-line", g2, 384, verify_g2},
-        {"g3-key-value", g3, 512, verify_g3},
-        {"diary-schema", diary, 2048, verify_diary},
-        {"small-schema", small, 128, verify_small_schema},
-        {"cjk-literal", "root ::= \"你好，世界\"", 32, verify_cjk},
-        {"emoji-literal", "root ::= \"🎉🚀\"", 32, verify_emoji},
-        {"empty-root", "root ::= \"\"", 8, verify_empty_root},
-        {"fib-literal", "root ::= \"1, 1, 2, 3, 5\"", 16, verify_fib},
+        {"g1-alternation", ninfer::OutputConstraint::grammar(g1), 16, verify_g1},
+        {"g2-bounded-line", ninfer::OutputConstraint::grammar(g2), 384, verify_g2},
+        {"g3-key-value", ninfer::OutputConstraint::grammar(g3), 512, verify_g3},
+        {"diary-schema", ninfer::OutputConstraint::json_schema(diary), 2048, verify_diary},
+        {"small-schema", ninfer::OutputConstraint::json_schema(small), 128, verify_small_schema},
+        {"cjk-literal", ninfer::OutputConstraint::grammar("root ::= \"你好，世界\""), 32,
+         verify_cjk},
+        {"emoji-literal", ninfer::OutputConstraint::grammar("root ::= \"🎉🚀\""), 32,
+         verify_emoji},
+        {"empty-root", ninfer::OutputConstraint::grammar("root ::= \"\""), 8, verify_empty_root},
+        {"fib-literal", ninfer::OutputConstraint::grammar("root ::= \"1, 1, 2, 3, 5\""), 16,
+         verify_fib},
     };
 
     {
         ninfer::Engine engine(engine_options(artifact, ninfer::SpeculativeBackend::None));
         run_cases(engine, "none", false, cases);
-        expect_unsatisfiable_fail_closed(engine, "none/unsatisfiable", "root ::= \"\\x00\"");
+        expect_nul_literal(engine, "none/nul-literal");
         expect_invalid_grammar(engine, "none/invalid-syntax", "root ::= [");
     }
     {

@@ -170,9 +170,28 @@ requested_reasoning_effort_name(RequestedReasoningEffort effort) noexcept {
     return {};
 }
 
-// Which request field produced GenerationRequest::grammar; a constrained-decoding failure maps
-// back to that field's contract codes (grammar_invalid / json_schema_invalid).
-enum class ConstraintSource : std::uint8_t { None, Grammar, JsonSchema };
+// Which request field produced GenerationRequest::constraint; a constrained-decoding failure maps
+// back to that field's contract codes.
+enum class ConstraintSource : std::uint8_t { None, Grammar, Choice, Regex, JsonSchema };
+
+// The request field a constraint source is attributed to in error params. `grammar` is the
+// llama.cpp-compatible GBNF field; choice and regex are the NInfer `structured_outputs` members.
+[[nodiscard]] constexpr std::string_view
+constraint_source_param(ConstraintSource source) noexcept {
+    switch (source) {
+    case ConstraintSource::Grammar:
+        return "grammar";
+    case ConstraintSource::Choice:
+        return "structured_outputs.choice";
+    case ConstraintSource::Regex:
+        return "structured_outputs.regex";
+    case ConstraintSource::JsonSchema:
+        return "response_format";
+    case ConstraintSource::None:
+        break;
+    }
+    return "messages";
+}
 
 struct GenerationRequest {
     std::vector<ChatTurn> messages;
@@ -194,11 +213,10 @@ struct GenerationRequest {
     ninfer::PromptContinuationMode continuation = ninfer::PromptContinuationMode::NewAssistantTurn;
     bool allow_engine_automatic_shared_prefixes = true;
     SamplingParams sampling;
-    // Resolved GBNF constraint for the answer stream: the client's `grammar` text or the GBNF
-    // the vendored converter produced from `response_format`. The Engine compiles and validates
-    // it at submit; a rejection surfaces as RequestErrorKind::InvalidConstraint and is mapped
-    // back to the originating field through constraint_source.
-    std::optional<std::string> grammar;
+    // Resolved output constraint for the answer stream: the client's GBNF text, JSON object or
+    // schema, choice, or regex. The Engine compiles it at submit; a rejection is mapped back to
+    // the originating field through constraint_source.
+    std::optional<ninfer::OutputConstraint> constraint;
     ConstraintSource constraint_source = ConstraintSource::None;
 
     [[nodiscard]] bool uses_tools() const noexcept {

@@ -3,15 +3,15 @@
 #include "core/nvtx.h"
 #include "ninfer/types.h"
 #include "runtime/contract/execution.h"
-#include "runtime/contract/resources.h"
-#include "runtime/engine/admission_policy.h"
 #include "runtime/engine/generation_budget.h"
+#include "runtime/engine/context_cache/types.h"
 
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <exception>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -98,6 +98,9 @@ enum class EngineRequestState : std::uint8_t {
     Waiting,
     Materializing,
     Prefill,
+    Replay,
+    Pausing,
+    Paused,
     DecodeReady,
     ControlReady,
     ModelFinished,
@@ -110,8 +113,9 @@ struct RequestRecord {
     using OutputSession  = typename ModelContract::OutputSession;
     using BasePlan       = typename ModelContract::RequestBasePlan;
     using SequenceHandle = typename ModelContract::SequenceHandle;
-    using CompiledGrammar = typename ModelContract::CompiledGrammar;
-    using StreamEvent    = std::variant<GenerationTimingObservation, OutputDelta>;
+    using ResumeState    = typename ModelContract::ResumeState;
+    using StreamEvent = std::variant<GenerationTimingObservation, GenerationFirstTokenObservation,
+                                     OutputDelta, std::unique_ptr<GenerationSchedulingObservation>>;
 
     RequestRecord(std::uint64_t request_identity, std::uint64_t publication_sequence,
                   PreparedPrompt input, OutputSession output_session, PromptSummary summary,
@@ -122,18 +126,18 @@ struct RequestRecord {
           id(request_identity), publication_order(publication_sequence), prompt(std::move(input)),
           output(std::move(output_session)), prompt_summary(std::move(summary)),
           prepare_seconds(frontend_seconds), options(std::move(request_options)),
-          consumer_mode(output_consumer), observation(observation), deadline(limit),
+          consumer_mode(output_consumer), observation(std::move(observation)), deadline(limit),
           submitted(submit_time) {}
 
     RequestRecord(const RequestRecord&)            = delete;
     RequestRecord& operator=(const RequestRecord&) = delete;
 
-    [[nodiscard]] bool is_waiting() const noexcept {
-        return model_state == EngineRequestState::Waiting;
-    }
-
     [[nodiscard]] bool is_prefilling() const noexcept {
         return model_state == EngineRequestState::Prefill;
+    }
+
+    [[nodiscard]] bool is_replaying() const noexcept {
+        return model_state == EngineRequestState::Replay;
     }
 
     [[nodiscard]] bool is_materializing() const noexcept {
@@ -161,11 +165,6 @@ struct RequestRecord {
     PromptSummary prompt_summary;
     double prepare_seconds = 0.0;
     ResolvedRequestOptions options;
-    // Compiled grammar constraint shared with the Program; null for an unconstrained request.
-    std::shared_ptr<const CompiledGrammar> grammar;
-    // True when the compiled grammar carries the reasoning stream (the thinking wrapper): the
-    // mask engages from token 0 and the forced thinking-control span advances the grammar.
-    bool grammar_carries_reasoning = false;
     const OutputConsumerMode consumer_mode;
     const GenerationObservationOptions observation;
     Clock::time_point deadline;
@@ -178,7 +177,7 @@ struct RequestRecord {
     std::optional<BeginSummary> admitted_begin;
     std::optional<BeginSummary> begin;
     std::vector<TokenId> generated;
-    // Content-token logprob records accumulated in generation order when the request opted in.
+    // Committed content logprob records, accumulated once per committed token.
     std::vector<TokenLogprob> content_logprobs;
     std::string content;
     std::string reasoning;
@@ -194,14 +193,34 @@ struct RequestRecord {
     std::optional<FinishReason> terminal_reason;
 
     std::optional<BasePlan> base_plan;
-    std::uint64_t remaining_service_work = 0;
-    std::uint64_t backfill_epoch         = 0;
-    BackfillClass backfill_class         = BackfillClass::None;
+    std::optional<ResumeState> suspended;
+    ContinuationOwnerToken continuation_owner = 0;
+    std::uint64_t device_to_host_bytes        = 0;
+    std::uint64_t host_to_device_bytes        = 0;
+    EngineRequestState resume_phase           = EngineRequestState::Prefill;
+    std::uint32_t admission_bypasses          = 0;
+    std::uint64_t admission_generation        = 0;
+    bool admission_observed                   = false;
+    GenerationAdmissionStats admission;
+    std::optional<Clock::time_point> source_wait_started;
+    bool recovery_pending                  = false;
+    std::uint64_t committed_decode_tokens  = 0;
+    GenerationRecoveryRoute recovery_route = GenerationRecoveryRoute::None;
+    std::uint64_t preemption_count         = 0;
+    std::uint64_t replay_restores          = 0;
+    std::uint64_t snapshot_restores        = 0;
+    std::uint64_t replayed_tokens          = 0;
+    std::uint64_t paused_ns                = 0;
+    std::optional<Clock::time_point> paused_at;
     std::uint32_t computed_prompt_tokens = 0;
     GenerationTimings generation_timings;
     RequestHostTiming host_timing;
+    std::uint64_t initial_binding_ns = 0;
+    GenerationWorkTiming prefill_work;
+    GenerationWorkTiming replay_work;
+    std::array<std::array<GenerationTransferTiming, 3>, 3> context_transfers{};
+    std::optional<GenerationFirstOutputTiming> first_output_timing;
     SpeculativeStats speculative_stats;
-    MaterializationDiagnostics materialization_diagnostics;
 
     std::mutex mutex;
     std::condition_variable cv;

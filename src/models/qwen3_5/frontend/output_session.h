@@ -11,6 +11,10 @@
 #include <string>
 #include <vector>
 
+namespace ninfer::text {
+class GrammarSession;
+} // namespace ninfer::text
+
 namespace ninfer::models::qwen3_5 {
 namespace frontend {
 class Tokenizer;
@@ -85,6 +89,9 @@ public:
     void validate_generation_capacity(std::uint32_t effective_output_tokens) const;
     [[nodiscard]] runtime::OutputDecision preview_terminal(FinishReason reason);
     [[nodiscard]] PublishedOutput commit_preview();
+    // Releases the current preview when a round is rolled back; the matcher returns to its last
+    // committed state.
+    void discard_preview() noexcept;
     [[nodiscard]] std::vector<GeneratedToolCall> take_tool_calls() noexcept;
     [[nodiscard]] ToolCallParseDiagnostics tool_call_parse_diagnostics() const noexcept;
     [[nodiscard]] std::uint32_t reasoning_tokens() const noexcept;
@@ -95,12 +102,27 @@ public:
     // opted in. Records carry the tokenizer's decoded bytes for the token.
     [[nodiscard]] std::span<const TokenLogprob> content_logprobs() const noexcept;
 
+    // Request-owned constrained-decoding matcher (ticket #247). `grammar_masks` fills the legal
+    // next-token bitmask for the given draft prefix; the session advances the matcher as tokens
+    // commit and rolls back a discarded preview.
+    [[nodiscard]] bool constrained() const noexcept;
+    [[nodiscard]] std::uint32_t grammar_masks(std::span<const TokenId> drafts,
+                                              std::span<std::uint32_t> words);
+
+    // Constrained-decoding diagnostics. `observe_constraint` enables matcher timing collection
+    // during preparation; `constraint_uploaded` records device mask bytes; the observation is
+    // published (and the matcher's terminal state read) at settlement.
+    void observe_constraint(bool timings, double prepare_seconds) noexcept;
+    void constraint_uploaded(std::size_t bytes) noexcept;
+    [[nodiscard]] std::optional<ConstraintObservation> constraint_observation() const;
+
 private:
     class Impl;
     OutputSession(std::shared_ptr<const frontend::Tokenizer> tokenizer, StopPolicy policy,
                   OutputOptions output, bool starts_in_reasoning, ThinkingControlOptions thinking,
                   std::shared_ptr<const std::vector<TokenId>> thinking_control_tokens,
-                  std::shared_ptr<const frontend::ToolCallOutputContract> tool_call_output);
+                  std::shared_ptr<const frontend::ToolCallOutputContract> tool_call_output,
+                  std::unique_ptr<text::GrammarSession> grammar = {});
     std::unique_ptr<Impl> impl_;
 
     friend class Frontend;

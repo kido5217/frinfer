@@ -346,6 +346,102 @@ int test_standard_field_policy() {
     return failures;
 }
 
+int test_prompt_cache_boundaries() {
+    using Location = ninfer::PromptCacheMarkerLocation;
+    using Evidence = ninfer::SharedCandidateEvidence;
+    int failures   = 0;
+    for (const char* role : {"user", "system", "developer"}) {
+        Json body = base_request();
+        body["messages"].push_back(Json{{"role", role}, {"content", "complete message"}});
+        const auto prepared = prompt(parse(body).generation);
+        const auto& markers = prepared.context_cache.markers;
+        failures += check(
+            markers.size() == 1 && markers[0].location == Location::MessagePartBoundary &&
+                markers[0].after_message_count == 2 && markers[0].after_message_part_count == 1 &&
+                markers[0].evidence == Evidence::DefaultAutomatic,
+            std::string(role) + " automatic cache ends at the final source part");
+    }
+
+    Json multipart                      = base_request();
+    multipart["messages"][0]["content"] = Json::array(
+        {Json{{"type", "text"}, {"text", "first"}}, Json{{"type", "text"}, {"text", "second"}}});
+    multipart["prompt_cache_options"] = Json{{"mode", "implicit"}};
+    const auto requested              = prompt(parse(multipart).generation);
+    failures +=
+        check(requested.context_cache.markers.size() == 1 &&
+                  requested.context_cache.markers[0].location == Location::MessagePartBoundary &&
+                  requested.context_cache.markers[0].after_message_part_count == 2 &&
+                  requested.context_cache.markers[0].evidence == Evidence::RequestedAutomatic,
+              "requested implicit caching uses the final source part");
+    multipart["prompt_cache_options"] = Json{{"mode", "explicit"}};
+    const auto disabled               = prompt(parse(multipart).generation);
+    failures += check(disabled.context_cache.markers.empty() &&
+                          !disabled.context_cache.allow_engine_automatic_shared_prefixes,
+                      "explicit mode without markers disables automatic shared writes");
+
+    Json marked                      = base_request();
+    marked["messages"][0]["content"] = Json::array();
+    for (int index = 0; index < 4; ++index) {
+        marked["messages"][0]["content"].push_back(
+            Json{{"type", "text"},
+                 {"text", "section " + std::to_string(index)},
+                 {"prompt_cache_breakpoint", Json{{"mode", "explicit"}}}});
+    }
+    const auto merged = prompt(parse(marked).generation);
+    failures += check(merged.context_cache.markers.size() == 4,
+                      "automatic caching reuses an explicitly marked final part");
+    for (std::size_t index = 0; index < merged.context_cache.markers.size(); ++index) {
+        const auto& marker = merged.context_cache.markers[index];
+        failures += check(
+            marker.location == Location::MessagePartBoundary &&
+                marker.after_message_part_count == index + 1 &&
+                ninfer::has_shared_candidate_evidence(marker.evidence, Evidence::ExplicitBoundary),
+            "explicit part locations survive automatic merging");
+    }
+    failures +=
+        check(merged.context_cache.markers.size() == 4 &&
+                  ninfer::has_shared_candidate_evidence(
+                      merged.context_cache.markers.back().evidence, Evidence::DefaultAutomatic),
+              "the final explicit part also carries the automatic opportunity");
+    marked["messages"][0]["content"].push_back(Json{{"type", "text"}, {"text", "new tail"}});
+    const auto full = prompt(parse(marked).generation);
+    failures += check(full.context_cache.markers.size() == 4,
+                      "automatic caching yields to four explicit boundaries");
+    for (std::size_t index = 0; index < full.context_cache.markers.size(); ++index) {
+        const auto& marker = full.context_cache.markers[index];
+        failures += check(marker.location == Location::MessagePartBoundary &&
+                              marker.after_message_part_count == index + 1 &&
+                              marker.evidence == Evidence::ExplicitBoundary,
+                          "a later implicit target does not displace an explicit boundary");
+    }
+
+    Json assistant = base_request();
+    assistant["messages"].push_back(Json{{"role", "assistant"}, {"content", "partial answer"}});
+    const auto assistant_prompt = prompt(parse(assistant).generation);
+    failures += check(assistant_prompt.context_cache.markers.size() == 1 &&
+                          assistant_prompt.context_cache.markers[0].location ==
+                              Location::MessagePartBoundary &&
+                          assistant_prompt.context_cache.markers[0].after_message_count == 2,
+                      "assistant content retains its part boundary for continuation");
+
+    Json tool = base_request();
+    tool["messages"].push_back(
+        Json{{"role", "assistant"},
+             {"tool_calls",
+              Json::array({Json{{"id", "call_cache"},
+                                {"type", "function"},
+                                {"function", Json{{"name", "lookup"}, {"arguments", "{}"}}}}})}});
+    tool["messages"].push_back(
+        Json{{"role", "tool"}, {"tool_call_id", "call_cache"}, {"content", "result"}});
+    const auto tool_prompt = prompt(parse(tool).generation);
+    failures +=
+        check(tool_prompt.context_cache.markers.size() == 1 &&
+                  tool_prompt.context_cache.markers[0].location == Location::MessagePartBoundary &&
+                  tool_prompt.context_cache.markers[0].after_message_count == 3,
+              "tool results retain their content boundary when a result group grows");
+    return failures;
+}
+
 int test_constrained_decoding_extensions() {
     int failures = 0;
 
@@ -353,13 +449,16 @@ int test_constrained_decoding_extensions() {
     Json grammar_body       = base_request();
     grammar_body["grammar"] = "root ::= \"yes\" | \"no\"";
     const OpenAIChatRequest constrained = parse(grammar_body);
-    failures += check(constrained.generation.grammar.has_value() &&
-                          *constrained.generation.grammar == "root ::= \"yes\" | \"no\"" &&
+    failures += check(constrained.generation.constraint.has_value() &&
+                          constrained.generation.constraint->kind ==
+                              ninfer::OutputConstraintKind::Grammar &&
+                          constrained.generation.constraint->source ==
+                              "root ::= \"yes\" | \"no\"" &&
                           constrained.generation.constraint_source == ConstraintSource::Grammar,
                       "grammar GBNF text is parsed into the request");
     const ninfer::RequestOptions constrained_options = options(constrained.generation);
     failures += check(constrained_options.constraint.has_value() &&
-                          constrained_options.constraint->gbnf == "root ::= \"yes\" | \"no\"",
+                          constrained_options.constraint->source == "root ::= \"yes\" | \"no\"",
                       "grammar GBNF text reaches the Engine constraint contract");
 
     Json neutral                  = base_request();
@@ -367,7 +466,7 @@ int test_constrained_decoding_extensions() {
     neutral["structured_outputs"] = nullptr;
     neutral["guided_json"]        = nullptr;
     const OpenAIChatRequest plain = parse(neutral);
-    failures += check(!plain.generation.grammar.has_value() &&
+    failures += check(!plain.generation.constraint.has_value() &&
                           !options(plain.generation).constraint.has_value(),
                       "an empty grammar constrains nothing");
 
@@ -384,14 +483,13 @@ int test_constrained_decoding_extensions() {
     failures += check(huge.param == "grammar" && huge.code == "constraint_too_large",
                       "an oversized grammar is rejected");
 
-    const std::vector<std::pair<const char*, Json>> unsupported = {
-        {"structured_outputs", Json{{"json", Json{{"type", "object"}}}}},
+    const std::vector<std::pair<const char*, Json>> retired_aliases = {
         {"guided_json", Json{{"type", "object"}}},
         {"guided_regex", "[a-z]+"},
         {"guided_choice", Json::array({"yes", "no"})},
         {"guided_grammar", "root ::= \"yes\" | \"no\""},
     };
-    for (const auto& [field, value] : unsupported) {
+    for (const auto& [field, value] : retired_aliases) {
         Json body            = base_request();
         body[field]          = value;
         const ApiError error = api_error([&] { (void)parse(body); });
@@ -401,25 +499,96 @@ int test_constrained_decoding_extensions() {
                   std::string(field) + " remains an explicit rejection");
     }
 
+    // The NInfer structured_outputs extension exposes grammar, regex and choice.
+    Json so_grammar                 = base_request();
+    so_grammar["structured_outputs"] = Json{{"grammar", "root ::= \"yes\" | \"no\""}};
+    const OpenAIChatRequest so_grammar_parsed = parse(so_grammar);
+    failures += check(so_grammar_parsed.generation.constraint.has_value() &&
+                          so_grammar_parsed.generation.constraint->kind ==
+                              ninfer::OutputConstraintKind::Grammar &&
+                          so_grammar_parsed.generation.constraint_source ==
+                              ConstraintSource::Grammar,
+                      "structured_outputs.grammar converts to a GBNF constraint");
+
+    Json so_regex                 = base_request();
+    so_regex["structured_outputs"] = Json{{"regex", "(BUG|TASK)-[0-9]{4}"}};
+    const OpenAIChatRequest so_regex_parsed = parse(so_regex);
+    failures += check(so_regex_parsed.generation.constraint.has_value() &&
+                          so_regex_parsed.generation.constraint->kind ==
+                              ninfer::OutputConstraintKind::Regex &&
+                          so_regex_parsed.generation.constraint->source == "(BUG|TASK)-[0-9]{4}" &&
+                          so_regex_parsed.generation.constraint_source == ConstraintSource::Regex,
+                      "structured_outputs.regex converts to a regex constraint");
+    const ninfer::RequestOptions so_regex_options = options(so_regex_parsed.generation);
+    failures += check(so_regex_options.constraint.has_value() &&
+                          so_regex_options.constraint->kind == ninfer::OutputConstraintKind::Regex,
+                      "the regex constraint reaches the Engine constraint contract");
+
+    Json so_choice                 = base_request();
+    so_choice["structured_outputs"] = Json{{"choice", Json::array({"positive", "neutral", "negative"})}};
+    const OpenAIChatRequest so_choice_parsed = parse(so_choice);
+    failures += check(so_choice_parsed.generation.constraint.has_value() &&
+                          so_choice_parsed.generation.constraint->kind ==
+                              ninfer::OutputConstraintKind::Choice &&
+                          so_choice_parsed.generation.constraint->choices ==
+                              std::vector<std::string>({"positive", "neutral", "negative"}) &&
+                          so_choice_parsed.generation.constraint_source == ConstraintSource::Choice,
+                      "structured_outputs.choice converts to a literal-choice constraint");
+
+    // structured_outputs malformed shapes carry the NInfer codes.
+    const std::vector<std::pair<Json, std::string>> structured_malformed = {
+        {Json{{"json", Json{{"type", "object"}}}}, "structured_outputs_invalid"},
+        {Json{{"grammar", "root ::= \"a\""}, {"regex", "a"}}, "structured_outputs_invalid"},
+        {Json{{"choice", Json::array()}}, "invalid_choice"},
+        {Json{{"choice", Json::array({"a", 5})}}, "invalid_choice"},
+        {Json{{"regex", 5}}, "invalid_regex"},
+        {Json{{"grammar", ""}}, "grammar_invalid"},
+    };
+    for (const auto& [value, code] : structured_malformed) {
+        Json body                  = base_request();
+        body["structured_outputs"] = value;
+        const ApiError error       = api_error([&] { (void)parse(body); });
+        failures += check(error.code == code,
+                          "structured_outputs malformed shape: " + value.dump() + " -> " +
+                              error.code);
+    }
+    {
+        Json body                  = base_request();
+        body["structured_outputs"] = 5;
+        const ApiError error       = api_error([&] { (void)parse(body); });
+        failures += check(error.code == "structured_outputs_invalid" &&
+                              error.param == "structured_outputs",
+                          "a non-object structured_outputs is rejected");
+    }
+    {
+        Json body                  = base_request();
+        body["grammar"]            = "root ::= \"a\"";
+        body["structured_outputs"] = Json{{"regex", "a"}};
+        const ApiError error       = api_error([&] { (void)parse(body); });
+        failures += check(error.code == "constrained_decoding_conflict",
+                          "grammar and structured_outputs conflict");
+    }
+
     // response_format: text keeps no constraint; json_object and json_schema convert.
     Json text_format                  = base_request();
     text_format["response_format"]    = Json{{"type", "text"}};
     const OpenAIChatRequest text_only = parse(text_format);
-    failures += check(!text_only.generation.grammar.has_value(),
+    failures += check(!text_only.generation.constraint.has_value(),
                       "response_format text constrains nothing");
 
     Json object_format               = base_request();
     object_format["response_format"] = Json{{"type", "json_object"}};
     const OpenAIChatRequest object_json = parse(object_format);
-    failures += check(object_json.generation.grammar.has_value() &&
-                          object_json.generation.constraint_source == ConstraintSource::JsonSchema &&
-                          object_json.generation.grammar->find("root") != std::string::npos,
+    failures += check(object_json.generation.constraint.has_value() &&
+                          object_json.generation.constraint->kind ==
+                              ninfer::OutputConstraintKind::JsonObject &&
+                          object_json.generation.constraint_source == ConstraintSource::JsonSchema,
                       "response_format json_object converts to a constraint");
     // The llama.cpp quirk of reading an extra `schema` member under json_object is not adopted.
     Json quirk_format               = base_request();
     quirk_format["response_format"] = Json{{"type", "json_object"},
                                            {"schema", Json{{"type", "array"}}}};
-    failures += check(parse(quirk_format).generation.grammar == object_json.generation.grammar,
+    failures += check(parse(quirk_format).generation.constraint == object_json.generation.constraint,
                       "json_object ignores an extra schema member");
 
     const Json diary_schema = Json{
@@ -437,17 +606,20 @@ int test_constrained_decoding_extensions() {
         {"type", "json_schema"},
         {"json_schema", Json{{"name", "diary"}, {"strict", true}, {"schema", diary_schema}}}};
     const OpenAIChatRequest wrapper = parse(wrapper_body);
-    failures += check(wrapper.generation.grammar.has_value() &&
+    failures += check(wrapper.generation.constraint.has_value() &&
+                          wrapper.generation.constraint->kind ==
+                              ninfer::OutputConstraintKind::JsonSchema &&
                           wrapper.generation.constraint_source == ConstraintSource::JsonSchema,
                       "response_format json_schema wrapper converts");
     const ninfer::RequestOptions wrapper_options = options(wrapper.generation);
     failures += check(wrapper_options.constraint.has_value() &&
-                          wrapper_options.constraint->gbnf == *wrapper.generation.grammar,
+                          wrapper_options.constraint->source ==
+                              wrapper.generation.constraint->source,
                       "the converted schema reaches the Engine constraint contract");
 
     Json bare_body               = base_request();
     bare_body["response_format"] = Json{{"type", "json_schema"}, {"json_schema", diary_schema}};
-    failures += check(parse(bare_body).generation.grammar.has_value(),
+    failures += check(parse(bare_body).generation.constraint.has_value(),
                       "a bare schema under json_schema converts");
 
     const std::vector<Json> malformed_formats = {
@@ -477,15 +649,12 @@ int test_constrained_decoding_extensions() {
                       "an unknown response_format type is rejected");
 
     // Keywords the converter would not genuinely enforce are rejected, not silently loosened:
-    // unknown keywords, patterns (degraded to "any string"), formats it ignores, combinators it
-    // drops, and keywords used in a context where the typed model does not read them.
+    // unknown keywords, formats it ignores, combinators it drops, and keywords used in a context
+    // where the adopted compiler does not read them.
     const std::vector<Json> unenforced_schemas = {
-        Json{{"type", "string"}, {"pattern", "^[a-z]+$"}},
         Json{{"type", "object"}, {"minProperties", 1}},
         Json{{"type", "string"}, {"format", "email"}},
         Json{{"type", "string"}, {"format", "uuid5"}},
-        Json{{"type", "number"}, {"minimum", 5}},
-        Json{{"minimum", 5}},
         Json{{"type", "integer"}, {"minimum", 0}, {"exclusiveMinimum", 5}},
         Json{{"type", "integer"}, {"maximum", 9}, {"exclusiveMaximum", 5}},
         Json{{"type", "string"}, {"maxItems", 3}},
@@ -500,17 +669,10 @@ int test_constrained_decoding_extensions() {
              {"oneOf", Json::array({Json{{"required", Json::array({"a"})}}})}},
         Json{{"type", "array"}, {"items", Json::array({Json{{"type", "string"}}})}, {"minItems", 2}},
         Json{{"type", "array"},
-             {"prefixItems", Json::array({Json{{"type", "string"}}})},
-             {"maxItems", 2}},
-        Json{{"type", "array"},
              {"items", Json::array({Json{{"type", "number"}, {"minimum", 5}}})}},
         Json{{"anyOf", Json::array({Json{{"type", "string"}}})}, {"maxLength", 3}},
         Json{{"enum", Json::array({"a"})}, {"maxLength", 3}},
         Json{{"$ref", "#/$defs/x"}, {"minLength", 3}},
-        Json{{"type", Json::array({"integer", "number"})}, {"minimum", 5}},
-        Json{{"type", "array"},
-             {"prefixItems", Json::array({Json{{"type", "string"}}})},
-             {"items", Json{{"type", "integer"}}}},
     };
     for (const Json& schema : unenforced_schemas) {
         Json body               = base_request();
@@ -542,11 +704,23 @@ int test_constrained_decoding_extensions() {
     // The enforced subset still converts in every genuine context.
     const std::vector<Json> supported_schemas = {
         Json{{"type", "integer"}, {"minimum", 0}, {"maximum", 10}},
+        Json{{"type", "string"}, {"pattern", "^[a-z]+$"}},
+        Json{{"type", "number"}, {"minimum", 5}},
+        Json{{"minimum", 5}},
+        Json{{"type", "number"}, {"exclusiveMinimum", 0.5}, {"exclusiveMaximum", 1.5}},
+        Json{{"type", Json::array({"integer", "number"})}, {"minimum", 5}},
         Json{{"type", "array"},
              {"minItems", 1},
              {"maxItems", 3},
              {"items", Json{{"type", "string"}, {"maxLength", 4}}}},
-        Json{{"type", "string"}, {"format", "date-time"}},
+        Json{{"type", "array"},
+             {"prefixItems", Json::array({Json{{"type", "string"}}})},
+             {"items", Json{{"type", "integer"}}},
+             {"minItems", 1},
+             {"maxItems", 3}},
+        Json{{"type", "array"},
+             {"prefixItems", Json::array({Json{{"type", "string"}}})},
+             {"maxItems", 2}},
         Json{{"anyOf", Json::array({Json{{"type", "string"}},
                                     Json{{"type", "integer"}, {"minimum", 0}}})}},
         Json{{"type", "object"},
@@ -609,7 +783,8 @@ int test_constrained_decoding_extensions() {
     text_pair_body["grammar"]         = "root ::= \"x\"";
     text_pair_body["response_format"] = Json{{"type", "text"}};
     const GenerationRequest text_pair = parse(text_pair_body).generation;
-    failures += check(text_pair.grammar.has_value() && *text_pair.grammar == "root ::= \"x\"",
+    failures += check(text_pair.constraint.has_value() &&
+                          text_pair.constraint->source == "root ::= \"x\"",
                       "grammar with response_format text is allowed");
 
     // Tools with structured output stay fail-closed.
@@ -1425,6 +1600,7 @@ int main() {
     int failures = 0;
     failures += test_request_envelope_and_sampling();
     failures += test_standard_field_policy();
+    failures += test_prompt_cache_boundaries();
     failures += test_constrained_decoding_extensions();
     failures += test_constrained_thinking_default();
     failures += test_tools();

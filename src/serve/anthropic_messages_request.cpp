@@ -919,14 +919,14 @@ const Json& parse_output_format(const Json& format) {
     return format.at("schema");
 }
 
-// Converts an admitted JSON Schema document through the shared protocol-neutral constraint
+// Validates an admitted JSON Schema document through the shared protocol-neutral constraint
 // contract and renders its fail-closed error on this route's field path. The contract's own
 // `param` is OpenAI-rooted, so the Anthropic adapter reports `output_config.format` while
 // preserving the contract's message and code (`json_schema_invalid`, `json_schema_unsupported`,
-// `constraint_too_large`).
-std::string schema_to_grammar(const Json& schema) {
+// `constraint_too_large`). The document text is compiled by the Engine's XGrammar converter.
+std::string schema_to_document(const Json& schema) {
     try {
-        return ninfer::constraint::json_schema_constraint_grammar(schema);
+        return ninfer::constraint::json_schema_constraint_source(schema);
     } catch (const ninfer::constraint::ConstraintError& error) {
         bad_request(error.what(), "output_config.format", error.code());
     }
@@ -948,7 +948,8 @@ void parse_output_config(const Json& body, GenerationRequest& request, ParsePurp
             bad_request("output_config.format cannot be combined with output_format",
                         "output_config.format", "constrained_decoding_conflict");
         }
-        request.grammar = schema_to_grammar(parse_output_format(config.at("format")));
+        request.constraint = ninfer::OutputConstraint::json_schema(
+            schema_to_document(parse_output_format(config.at("format"))));
         request.constraint_source = ConstraintSource::JsonSchema;
         // The tool-call parser owns the turn when tools are declared, so a constrained answer and
         // a `tools` field cannot share it (even an empty array), mirroring the OpenAI route.
@@ -1070,6 +1071,83 @@ void apply_anthropic_prompt_cache_policy(const Json& body, GenerationRequest& re
                       .ttl      = *automatic_ttl};
 }
 
+// The NInfer structured_outputs extension on the Anthropic route: exactly one of grammar, regex or
+// choice, alternative to `output_config.format`. A body may not name two constraint sources.
+void parse_structured_outputs(const Json& body, GenerationRequest& request, ParsePurpose purpose) {
+    if (!body.contains("structured_outputs") || body.at("structured_outputs").is_null()) { return; }
+    // count_tokens carries no answer stream, so an output-only constraint is ignored there.
+    if (purpose != ParsePurpose::Messages) { return; }
+    const Json& value = body.at("structured_outputs");
+    if (!value.is_object()) {
+        bad_request("structured_outputs must be an object", "structured_outputs",
+                    "structured_outputs_invalid");
+    }
+    std::vector<std::string> present;
+    for (const auto& [key, entry] : value.items()) {
+        if (!entry.is_null()) { present.push_back(key); }
+    }
+    if (present.size() != 1) {
+        bad_request("structured_outputs requires exactly one of grammar, regex or choice",
+                    "structured_outputs", "structured_outputs_invalid");
+    }
+    if (request.constraint) {
+        bad_request("only one output constraint may be specified", "structured_outputs",
+                    "constrained_decoding_conflict");
+    }
+    const std::string kind  = present.front();
+    const std::string field = "structured_outputs." + kind;
+    const Json& entry       = value.at(kind);
+    if (kind == "grammar") {
+        if (!entry.is_string() || entry.get<std::string>().empty()) {
+            bad_request("structured_outputs.grammar must be a nonempty GBNF string", field,
+                        "grammar_invalid");
+        }
+        std::string text = entry.get<std::string>();
+        if (text.size() > ninfer::constraint::kConstraintPayloadLimit) {
+            bad_request("structured_outputs.grammar exceeds " +
+                            std::to_string(ninfer::constraint::kConstraintPayloadLimit) + " bytes",
+                        field, "constraint_too_large");
+        }
+        request.constraint        = ninfer::OutputConstraint::grammar(std::move(text));
+        request.constraint_source = ConstraintSource::Grammar;
+    } else if (kind == "regex") {
+        if (!entry.is_string()) {
+            bad_request("structured_outputs.regex must be a string", field, "invalid_regex");
+        }
+        std::string pattern = entry.get<std::string>();
+        if (pattern.size() > ninfer::constraint::kConstraintPayloadLimit) {
+            bad_request("structured_outputs.regex exceeds " +
+                            std::to_string(ninfer::constraint::kConstraintPayloadLimit) + " bytes",
+                        field, "constraint_too_large");
+        }
+        request.constraint        = ninfer::OutputConstraint::regex(std::move(pattern));
+        request.constraint_source = ConstraintSource::Regex;
+    } else if (kind == "choice") {
+        if (!entry.is_array() || entry.empty()) {
+            bad_request("structured_outputs.choice requires a nonempty array of strings", field,
+                        "invalid_choice");
+        }
+        std::vector<std::string> choices;
+        choices.reserve(entry.size());
+        for (std::size_t index = 0; index < entry.size(); ++index) {
+            if (!entry.at(index).is_string()) {
+                bad_request("choice entries must be strings", field + "/" + std::to_string(index),
+                            "invalid_choice");
+            }
+            choices.push_back(entry.at(index).get<std::string>());
+        }
+        request.constraint        = ninfer::OutputConstraint::choice(std::move(choices));
+        request.constraint_source = ConstraintSource::Choice;
+    } else {
+        bad_request("unknown structured_outputs option: " + kind, field,
+                    "structured_outputs_invalid");
+    }
+    if (body.contains("tools") && !body.at("tools").is_null()) {
+        bad_request("tools with a constrained response is not supported", field,
+                    "constrained_decoding_not_supported");
+    }
+}
+
 void parse_common_prompt(const Json& body, GenerationRequest& request, ParsePurpose purpose,
                          int effective_max_tokens) {
     lower_tools(body, request);
@@ -1077,6 +1155,7 @@ void parse_common_prompt(const Json& body, GenerationRequest& request, ParsePurp
     parse_messages(body, request);
     parse_thinking(body, request, purpose, effective_max_tokens);
     parse_output_config(body, request, purpose);
+    parse_structured_outputs(body, request, purpose);
     apply_anthropic_prompt_cache_policy(body, request);
     if (body.contains("container") && !body.at("container").is_null()) {
         bad_request("container requires an external execution environment that FrInfer does not "

@@ -1,19 +1,18 @@
 #include "core/layout.h"
 #include "models/qwen3_5/state/decoder_state.h"
 #include "models/qwen3_5/program/speculative/mtp_alignment.h"
-#include "models/qwen3_5/program/mask_transport.h"
 #include "models/qwen3_5/program/round_buffers.h"
 #include "models/qwen3_5/program/vision_control.h"
 
 #include "models/qwen3_5/program/prefix_identity.h"
-#include "models/qwen3_5/program/planning/rebuild_work.h"
+#include "runtime/contract/timing.h"
 
 #include <algorithm>
 #include <array>
 #include <cstdint>
 #include <iostream>
-#include <span>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -26,6 +25,22 @@ void expect(bool condition, std::string_view message) {
     if (condition) { return; }
     ++failures;
     std::cerr << "FAIL: " << message << '\n';
+}
+
+void test_execution_timing_domains() {
+    using namespace ninfer::runtime;
+    ExecutionTimingRecorder recorder(ExecutionTimingPhase::Paused);
+    recorder.include(
+        {.submit_host_ns = 10, .device_wait_ns = 20, .post_host_ns = 30, .gpu_elapsed_ns = 100});
+    recorder.include(
+        {.submit_host_ns = 4, .device_wait_ns = 5, .post_host_ns = 6, .gpu_elapsed_ns = 80});
+    const auto timing = recorder.finish();
+    expect(timing.gpu_elapsed_ns == 180 && timing.host_ns() == 50 && timing.elapsed_ns() == 75,
+           "overlapping GPU intervals must accumulate separately from Host and wall phases");
+    const auto repeated = recorder.finish();
+    expect(repeated.gpu_elapsed_ns == timing.gpu_elapsed_ns &&
+               repeated.elapsed_ns() == timing.elapsed_ns(),
+           "reading a completed execution timing must not accumulate its work again");
 }
 
 q36::DecoderStateSpec decoder_spec(ninfer::KvCacheStorage storage, bool mtp) {
@@ -138,13 +153,11 @@ void test_decoder_layout() {
 void test_round_layout() {
     ninfer::LayoutBuilder builder;
     q36::RoundStateLayout round = q36::begin_round_state_layout(
-        builder, q36::RoundStateSpec{.hidden            = 32,
-                                     .output_rows       = 128,
-                                     .draft_window      = 5,
-                                     .backend           = ninfer::SpeculativeBackend::Mtp,
-                                     .mask_token_domain = 128});
-    const ninfer::TensorRegion exact_prefill =
-        builder.add_tensor(ninfer::DType::BF16, {32, 16}, 256, "exact prefill hidden");
+        builder, q36::RoundStateSpec{.hidden       = 32,
+                                     .output_rows  = 128,
+                                     .draft_window = 5,
+                                     .backend      = ninfer::SpeculativeBackend::Mtp});
+    (void)builder.add_tensor(ninfer::DType::BF16, {32, 16}, 256, "exact prefill hidden");
     q36::complete_round_state_layout(builder, round);
     (void)builder.finish(256);
     expect(round.complete, "round layout completes");
@@ -152,31 +165,18 @@ void test_round_layout() {
     expect(round.mtp.has_value() && round.mtp->draft_tokens.shape[0] == 5 &&
                round.mtp->target_input_ids.shape[0] == 6,
            "MTP prefill scratch shapes");
-    expect(round.logits.region.offset < exact_prefill.region.offset &&
-               exact_prefill.region.offset < round.mtp->draft_tokens.region.offset,
-           "exact prefill extension retains established round-region order");
     expect(round.mtp.has_value() && round.mtp->position.shape[0] == 1,
            "MTP prefill scratch is explicit");
     expect(round.mtp_decode.has_value() && round.mtp_decode->alignment_ids.shape[0] == 6 &&
                round.mtp_decode->alignment_ids.shape[1] == 1,
            "MTP decode frame is explicit");
-    // Derived from the transport, not repeated: the widest lane (DFlash's last column, batch 8)
-    // must fit.
-    constexpr std::int32_t widest_required_rows =
-        static_cast<std::int32_t>(q36::MaskTransport::required_rows(
-            q36::MaskTransport::kColumnCapacity, ninfer::kMaximumConcurrency));
-    expect(round.mask_rows.has_value() && round.mask_rows->shape[0] == 4 &&
-               round.mask_rows->shape[1] >= widest_required_rows &&
-               round.mask_active.has_value() && round.mask_active->shape[0] == 1,
-           "round mask transport reserves the fixed row table and active flag");
 
     ninfer::LayoutBuilder speculative_builder;
     q36::RoundStateLayout dflash = q36::begin_round_state_layout(
-        speculative_builder, q36::RoundStateSpec{.hidden            = 32,
-                                                 .output_rows       = 128,
-                                                 .draft_window      = 15,
-                                                 .backend           = ninfer::SpeculativeBackend::DFlash,
-                                                 .mask_token_domain = 128});
+        speculative_builder, q36::RoundStateSpec{.hidden       = 32,
+                                                 .output_rows  = 128,
+                                                 .draft_window = 15,
+                                                 .backend = ninfer::SpeculativeBackend::DFlash});
     q36::complete_round_state_layout(speculative_builder, dflash);
     (void)speculative_builder.finish(256);
     expect(dflash.logits.shape[1] == 1 && dflash.dflash_prefill.has_value() &&
@@ -186,8 +186,6 @@ void test_round_layout() {
            "K=15 DFlash storage is backend-owned");
     expect(!dflash.mtp.has_value() && !dflash.mtp_decode.has_value(),
            "DFlash layout does not allocate MTP storage");
-    expect(dflash.mask_rows.has_value() && dflash.mask_rows->shape[1] >= widest_required_rows,
-           "DFlash shares the widest mask row geometry");
 
     ninfer::LayoutBuilder scoring_builder;
     auto scoring = q36::begin_round_state_layout(
@@ -198,8 +196,6 @@ void test_round_layout() {
     expect(!scoring.ordinary && !scoring.mtp_decode && !scoring.dflash_decode &&
                scoring.token.region.bytes == 0 && scoring.logits.region.bytes == 0,
            "scoring does not reserve generation frames or sampled output");
-    expect(!scoring.mask_rows.has_value() && !scoring.mask_active.has_value(),
-           "a mask-less spec reserves no mask regions");
 }
 
 void test_mtp_alignment() {
@@ -411,88 +407,95 @@ void test_prefix_identity() {
            "truncated multimodal continuation identity");
 }
 
-void test_rebuild_work_prompt_frontier_boundary() {
-    constexpr std::uint32_t prompt_tokens = 100;
-    constexpr std::uint32_t prefill_chunk = 2048;
-    std::uint32_t tail_begin              = 0;
-    q36::runtime_support::include_rebuild_boundary(tail_begin, prompt_tokens, prompt_tokens);
-    expect(tail_begin == prompt_tokens,
-           "prompt-frontier rebuild boundary was not retained for continuation growth");
-
-    ninfer::runtime::PrefillWork work =
-        ninfer::runtime::make_prefill_work(0, prompt_tokens, 0, 0, prefill_chunk);
-    q36::runtime_support::advance_segmented_rebuild_work(work, tail_begin, prompt_tokens,
-                                                         prompt_tokens + 1, prefill_chunk);
-    const ninfer::runtime::PrefillWork exact =
-        ninfer::runtime::make_prefill_work(0, prompt_tokens + 1, 0, 0, prefill_chunk);
-    expect(work.chunks == 2 && work.tokens == exact.tokens &&
-               work.attention_pairs == exact.attention_pairs,
-           "continuation growth did not preserve the prompt-frontier rebuild split");
-}
-
-void test_mask_transport() {
-    constexpr std::uint32_t words = 4;
-    q36::MaskTransport transport(words);
-    expect(!transport.enabled(), "a host-only transport reports no device table");
-    expect(transport.words() == words, "mask transport staging is sized by the word count");
-    expect(q36::MaskTransport::lane_stride() == 8 && q36::MaskTransport::row_index(2, 3) == 19 &&
-               q36::MaskTransport::required_rows(16, 8) == 128,
-           "mask transport geometry pins the column-major row table");
-
-    constexpr std::uint32_t columns = 3;
-    constexpr std::size_t row_count = 2;
-    transport.begin_round(columns, row_count);
-    for (std::uint32_t column = columns; column < q36::MaskTransport::kColumnCapacity; ++column) {
-        const std::span<const std::uint32_t> row = transport.staged_row(column, 0);
-        expect(row.size() == words &&
-                   std::all_of(row.begin(), row.end(),
-                               [](std::uint32_t value) { return value == 0xFFFFFFFFU; }),
-               "columns outside the round window stay permissive");
-    }
-    // Two batch positions with distinct values, published through the fill block.
-    for (std::size_t position = 0; position < row_count; ++position) {
-        std::span<std::uint32_t> block = transport.fill_block(columns);
-        expect(block.size() == columns * words, "the fill block spans columns x words");
-        for (std::uint32_t column = 0; column < columns; ++column) {
-            for (std::uint32_t word = 0; word < words; ++word) {
-                block[column * words + word] =
-                    static_cast<std::uint32_t>(position) * 0x100U + column * 0x10U + word;
+void test_regular_prefix_identity() {
+    const auto prompt = [](std::size_t count, std::int32_t origin = 0) {
+        q36::PreparedPromptData value;
+        value.token_ids.assign(count, 12);
+        value.token_types.assign(count, 0);
+        value.positions.resize(3 * count);
+        for (std::size_t axis = 0; axis < 3; ++axis) {
+            for (std::size_t i = 0; i < count; ++i) {
+                value.positions[axis * count + i] = origin + static_cast<std::int32_t>(i);
             }
         }
-        transport.publish(static_cast<std::uint32_t>(position), columns);
-    }
-    // The staged table addresses lane (column c, batch b) at row c * lane_stride() + b.
-    for (std::uint32_t column = 0; column < columns; ++column) {
-        for (std::size_t position = 0; position < row_count; ++position) {
-            const std::span<const std::uint32_t> row =
-                transport.staged_row(column, static_cast<std::uint32_t>(position));
-            expect(row.size() == words, "staged rows carry one word per 32 tokens");
-            for (std::uint32_t word = 0; word < words; ++word) {
-                expect(row[word] ==
-                           static_cast<std::uint32_t>(position) * 0x100U + column * 0x10U + word,
-                       "the staged row follows the column x lane_stride + batch mapping");
-            }
+        return value;
+    };
+    auto original = prompt(128, 7);
+    q36::detail::ResidentPrefixIdentity left, right;
+    left.assign(original);
+    right.assign(original);
+    expect(left.equals(right), "independently prepared regular position identities differ");
+    const auto check_against_input = [&](const auto& value, const auto& identity) {
+        // matches reads the stored arrays against the public input, without the prefix shortcut.
+        for (std::size_t count = 0; count <= value.token_ids.size(); ++count) {
+            expect(left.prefix_equals(identity, count) == left.matches(value, count),
+                   "resident identity comparison disagrees with the prepared input");
         }
+    };
+    for (std::size_t axis = 0; axis < 3; ++axis) {
+        auto changed = original;
+        changed.positions[axis * 128 + 64] += 1;
+        right.assign(changed);
+        check_against_input(changed, right);
     }
-    // Batch rows beyond the round window stay permissive: nothing rewrites them this round.
-    const std::span<const std::uint32_t> beyond =
-        transport.staged_row(0, static_cast<std::uint32_t>(row_count));
-    expect(beyond.size() == words &&
-               std::all_of(beyond.begin(), beyond.end(),
-                           [](std::uint32_t value) { return value == 0xFFFFFFFFU; }),
-           "batch rows beyond the round window stay permissive");
+    auto changed            = original;
+    changed.token_types[64] = 1;
+    right.assign(changed);
+    check_against_input(changed, right);
+    changed = prompt(128, 8);
+    right.assign(changed);
+    check_against_input(changed, right);
+    changed                                      = original;
+    changed.identity.rewrite_execution_frontiers = {64};
+    right.assign(changed);
+    check_against_input(changed, right);
+
+    left.append_generated(2, 7);
+    right.assign(prompt(130, 7));
+    expect(left.equals(right), "regular generated positions differ from a full rebuild");
+    left.append_generated(1, 8);
+    right.assign(prompt(131, 7));
+    expect(left.prefix_equals(right, 130) && !left.equals(right),
+           "a changed generated position was ignored");
+    left.truncate(128);
+    left.append_generated(3, 7);
+    expect(left.equals(right), "truncation retained discarded position differences");
+
+    left.truncate(0);
+    left.append_generated(3, -4);
+    right.assign(prompt(3, -4));
+    expect(left.equals(right), "empty truncated identity retained an old position origin");
+    q36::detail::ResidentPrefixIdentity saved = left;
+    right.assign(prompt(3, 11));
+    left.swap(right);
+    expect(right.equals(saved) && !left.equals(saved), "swap lost the exact position identity");
+    left.clear();
+    left.append_generated(3, -4);
+    expect(left.equals(saved), "cleared identity retained its prior position metadata");
+    auto moved = std::move(left);
+    left.append_generated(1, 0);
+    left.append_generated(1, 1);
+    right.assign(prompt(2));
+    expect(moved.equals(saved) && left.prefix_equals(right, 1) && !left.equals(right),
+           "reusing a moved-from identity ignored a new position difference");
+
+    auto vision       = identity_prompt();
+    auto other_vision = identity_prompt(2);
+    left.assign(vision);
+    right.assign(other_vision);
+    check_against_input(other_vision, right);
 }
 
 } // namespace
 
 int main() {
+    test_execution_timing_domains();
     test_decoder_layout();
     test_round_layout();
     test_mtp_alignment();
     test_vision_control();
     test_prefix_identity();
-    test_rebuild_work_prompt_frontier_boundary();
-    test_mask_transport();
+    test_regular_prefix_identity();
     if (failures != 0) {
         std::cerr << failures << " Qwen3.6 runtime mechanism checks failed\n";
         return 1;

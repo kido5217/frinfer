@@ -32,3 +32,29 @@ close semantics unchanged. See `docs/maintainer/constrained-thinking-design.md`.
   special case from the mask lifecycle.
 - Every constrained thinking-enabled request constructs a wrapper around its converted schema; the
   wrapper's rule names and size must stay bounded (measured within the existing budget).
+
+## Amendment (ticket #245): the XGrammar composition is the wrapper authority
+
+Ticket #239 (verdict C) adopts upstream's vendored XGrammar constrained-decoding stack and rebuilds
+this ADR's semantics on it. Upstream already implements the whole-stream wrapper this ADR chose:
+`text::GrammarCompiler::compile(source, reasoning_close, continuation)` concatenates a
+`reasoning_prefix` DFA — a marker-avoiding body that admits any bytes through the first complete
+delimiter — before the answer grammar whenever `reasoning_close` is non-empty
+(`src/text/grammar.cpp`), and `Frontend::make_output_session` supplies the canonical close
+serialization exactly when the rendered prompt starts in reasoning. That construction satisfies R2
+by construction and is covered by upstream's own framing test in `tests/test_grammar.cpp`.
+
+Therefore **upstream's `GrammarCompiler` reasoning-prefix composition is the winning authority**.
+The fork's hand-written wrapper (`src/models/qwen3_5/frontend/grammar/thinking_wrapper.cpp`,
+`Frontend::compile_grammar(..., ConstraintScope::Thinking)`) is superseded and is retired with the
+in-tree trie stack; the fork's separate `thinking_enabled` gate is subsumed by
+`starts_in_reasoning`, which is the exact condition under which upstream inserts the prefix. The
+`reasoning_end` control is unaffected: it is a fork-only model-round control
+(`OutputSession::request_reasoning_close` / `Request::reasoning_end`, consumed at the engine commit
+boundary) that upstream does not have, and it stays on the request-owned matcher. ADR-0002
+(tool-call demotion signaling) is orthogonal to the constraint stack and is unaffected.
+
+Status: this amendment is the authority for the #245 port; the fork wrapper and trie producer are
+removed when that port lands. The upstream grammar core is already in the tree
+(`src/text/grammar.*`, target `ninfer_text_grammar`) and passes its test, but no consumer has
+switched off the fork stack yet.

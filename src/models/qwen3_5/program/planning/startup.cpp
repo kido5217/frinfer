@@ -13,11 +13,11 @@
 #include "ninfer/ops/context_kv_materialize.h"
 #include "ninfer/ops/dynamic_grouped_conv.h"
 #include "ninfer/ops/linear_topk.h"
-#include "ninfer/ops/rope.h"
 #include "ninfer/ops/gdn_gating_proj.h"
 #include "ninfer/ops/gdn_input_proj.h"
 #include "ninfer/ops/linear_add.h"
 #include "ninfer/ops/linear_swiglu.h"
+#include "ninfer/ops/rope.h"
 #include "ninfer/ops/sampling.h"
 #include "ninfer/ops/sliding_window_attention.h"
 #include "ninfer/ops/softmax_attention.h"
@@ -236,7 +236,9 @@ PersistentLayout persistent_layout(const SequencePlanImpl& plan) {
 
     // YaRN context extension: activated when the logical context ceiling exceeds the native
     // position capacity. The per-pair frequency table and the attention magnitude are computed
-    // host-side (fp64) and carried to the persistent layout for the one-shot device upload.
+    // host-side (fp64) and carried to the persistent layout for the one-shot device upload. An
+    // unextended plan (capacity <= native) leaves the table empty, so the power-law path is
+    // structurally unchanged (the `s <= 1` byte-identity invariant).
     std::vector<float> yarn_inv_freq;
     std::uint32_t yarn_rotary_dim = 0;
     float yarn_mscale             = 1.0f;
@@ -252,17 +254,16 @@ PersistentLayout persistent_layout(const SequencePlanImpl& plan) {
         yarn_mscale     = table.mscale;
     }
     out.round = qwen3_5::begin_round_state_layout(
-        builder, qwen3_5::RoundStateSpec{.hidden            = dimension(config.hidden_size),
-                                         .output_rows       = dimension(config.vocab_size),
-                                         .batch_capacity    = plan.max_concurrency,
-                                         .draft_window      = plan.draft_window,
-                                         .backend           = plan.speculative_backend,
-                                         .causal_scoring    = plan.causal_scoring,
-                                         .yarn_inv_freq     = std::move(yarn_inv_freq),
-                                         .yarn_rotary_dim   = yarn_rotary_dim,
-                                         .yarn_mscale       = yarn_mscale,
-                                         .mask_token_domain = dimension(
-                                             parameters.model.resources().public_token_count)});
+        builder, qwen3_5::RoundStateSpec{
+                     .hidden          = dimension(config.hidden_size),
+                     .output_rows     = dimension(config.vocab_size),
+                     .batch_capacity  = plan.max_concurrency,
+                     .draft_window    = plan.draft_window,
+                     .backend         = plan.speculative_backend,
+                     .causal_scoring  = plan.causal_scoring,
+                     .yarn_inv_freq   = std::move(yarn_inv_freq),
+                     .yarn_rotary_dim = yarn_rotary_dim,
+                     .yarn_mscale     = yarn_mscale});
     out.prefill_hidden =
         add_tensor(builder, DType::BF16, {dimension(config.hidden_size), effective_prefill_chunk},
                    "step prefill hidden");
@@ -274,6 +275,12 @@ PersistentLayout persistent_layout(const SequencePlanImpl& plan) {
     }
     qwen3_5::complete_round_state_layout(builder, out.round);
     if (!plan.causal_scoring) {
+        out.grammar_masks =
+            add_tensor(builder, DType::I32,
+                       {dimension((parameters.model.resources().public_token_count + 31) / 32),
+                        static_cast<std::int32_t>(plan.draft_window + 1),
+                        static_cast<std::int32_t>(plan.max_concurrency)},
+                       "grammar token masks");
         out.token_counts        = add_tensor(builder, DType::I32,
                                              {dimension(parameters.model.resources().public_token_count),
                                               static_cast<std::int32_t>(plan.max_concurrency)},
@@ -291,6 +298,7 @@ PersistentLayout persistent_layout(const SequencePlanImpl& plan) {
 }
 
 WorkspacePlan build_workspace_plan(const SequencePlanImpl& plan) {
+    const DeviceExecutionView device_execution{nullptr, plan.multiprocessor_count};
     const auto& parameters = *plan.parameters;
     const auto& config     = parameters.model.config().text;
 
@@ -342,12 +350,12 @@ WorkspacePlan build_workspace_plan(const SequencePlanImpl& plan) {
                     scratch(layout, execution::attention_projection_workspace_bytes(*attention,
                                                                                     first, last));
                     (void)workspace::text_attention_results(layout, config, last);
-                    scratch(layout,
-                            ops::causal_softmax_attention_workspace_capacity_bytes(
-                                {dimension(config.attention->head_dim),
-                                 dimension(config.attention->num_attention_heads),
-                                 dimension(config.attention->num_key_value_heads)},
-                                plan.kv_storage, envelope, batch_size, min_width, max_width));
+                    scratch(layout, ops::causal_softmax_attention_workspace_capacity_bytes(
+                                        {dimension(config.attention->head_dim),
+                                         dimension(config.attention->num_attention_heads),
+                                         dimension(config.attention->num_key_value_heads)},
+                                        plan.kv_storage, envelope, batch_size, min_width, max_width,
+                                        device_execution));
                     add_scratch(layout, attention->output, first, last);
                 } else {
                     const auto& gdn = std::get<execution::GdnParameters>(block.mixer);
@@ -415,7 +423,7 @@ WorkspacePlan build_workspace_plan(const SequencePlanImpl& plan) {
                             {dimension(config.attention->head_dim),
                              dimension(config.attention->num_attention_heads),
                              dimension(config.attention->num_key_value_heads)},
-                            plan.kv_storage, envelope, 1, tokens, tokens));
+                            plan.kv_storage, envelope, 1, tokens, tokens, device_execution));
         (void)workspace::mtp_post_attention(layout, config, tokens);
         mtp_post_mixer(layout, tokens, tokens);
     };
@@ -455,7 +463,7 @@ WorkspacePlan build_workspace_plan(const SequencePlanImpl& plan) {
                             {dimension(config.attention->head_dim),
                              dimension(config.attention->num_attention_heads),
                              dimension(config.attention->num_key_value_heads)},
-                            plan.kv_storage, text_envelope, 1, 1, 1));
+                            plan.kv_storage, text_envelope, 1, 1, 1, device_execution));
         matrix(layout, DType::BF16, dimension(config.hidden_size), 1);
         matrix(layout, DType::BF16, dimension(config.hidden_size), 1);
         mtp_post_mixer(layout, 1, 1);
@@ -544,11 +552,12 @@ WorkspacePlan build_workspace_plan(const SequencePlanImpl& plan) {
                 scratch(layout, execution::mtp_projection_workspace_bytes(
                                     parameters.mtp->projection, tokens, tokens));
                 (void)workspace::mtp_attention_results(layout, config, tokens);
-                scratch(layout, ops::causal_softmax_attention_workspace_capacity_bytes(
-                                    {dimension(config.attention->head_dim),
-                                     dimension(config.attention->num_attention_heads),
-                                     dimension(config.attention->num_key_value_heads)},
-                                    plan.kv_storage, text_envelope, batch, width, width));
+                scratch(layout,
+                        ops::causal_softmax_attention_workspace_capacity_bytes(
+                            {dimension(config.attention->head_dim),
+                             dimension(config.attention->num_attention_heads),
+                             dimension(config.attention->num_key_value_heads)},
+                            plan.kv_storage, text_envelope, batch, width, width, device_execution));
                 (void)workspace::mtp_post_attention(layout, config, tokens);
                 mtp_post_mixer(layout, tokens, tokens);
             };
@@ -761,8 +770,9 @@ void validate_target_options(const execution::Parameters& parameters, DeviceCont
             "loaded components do not match the requested execution options");
     }
     // YaRN context extension: --max-context above the native position capacity activates the
-    // YaRN route (v1 does not read yarn from the artifact config). DFlash draft backends are
-    // out of scope for v1 and produce an explicit startup error.
+    // YaRN route (the artifact config carries no yarn block). DFlash draft backends are out of
+    // scope and produce an explicit startup error; the MTP draft rides the text rope table and
+    // text position capacity, so only the masked backend keeps a draft-native bound.
     const bool yarn_active =
         options.max_context > parameters.model.config().text.max_position_embeddings;
     if (yarn_active && is_masked_draft_backend(options.speculative.backend)) {
@@ -770,9 +780,6 @@ void validate_target_options(const execution::Parameters& parameters, DeviceCont
             "YaRN context extension (--max-context above max_position_embeddings) is not "
             "supported with a DFlash draft backend");
     }
-    // The MTP draft backend rides the text rope table and the text position capacity, so its
-    // native window never bounds an extended context; only the DFlash (masked) backend keeps
-    // the draft-native capacity check (the YaRN case is rejected above).
     if (parameters.draft && is_masked_draft_backend(options.speculative.backend) &&
         options.max_context > parameters.model.config().draft->max_position_embeddings) {
         throw std::invalid_argument("max_context exceeds the selected draft position capacity");
@@ -784,11 +791,17 @@ void validate_target_options(const execution::Parameters& parameters, DeviceCont
     if (options.max_concurrency == 0 || options.max_concurrency > kMaximumConcurrency) {
         throw std::invalid_argument("max_concurrency must be in [1,8]");
     }
+    // Fork contract: active-request preemption is pinned off, so every resident lane must fit at
+    // full context simultaneously. The Main Text KV pool is shared by all lanes and each lane can
+    // reach page_count(max_context) pages, so the pool must cover max_concurrency lanes at full
+    // context. The MTP/DFlash backend pool is sized on top of the Main pool (the per-lane draft
+    // window extra added in persistent_layout) and each lane's backend frontier is also bounded by
+    // max_context, so covering the Main pool covers the backend pool too. The runtime's
+    // "oldest resident cannot obtain its legal unit" branch is unreachable under this bound.
     const std::uint32_t logical_pages = page_count(options.max_context);
-    const std::uint32_t minimum_pages = std::max(logical_pages, options.max_concurrency);
-    const std::uint64_t maximum_pages64 =
+    const std::uint64_t required_pages64 =
         static_cast<std::uint64_t>(options.max_concurrency) * logical_pages;
-    if (maximum_pages64 > std::numeric_limits<std::uint32_t>::max()) {
+    if (required_pages64 > std::numeric_limits<std::uint32_t>::max()) {
         throw std::overflow_error("maximum Main KV page count exceeds uint32");
     }
     switch (options.kv_capacity.mode) {
@@ -797,7 +810,17 @@ void validate_target_options(const execution::Parameters& parameters, DeviceCont
             throw std::invalid_argument("kv_capacity must be at least max_context");
         }
         const std::uint32_t requested_pages = page_count(options.kv_capacity.explicit_tokens);
-        if (requested_pages < minimum_pages || requested_pages > maximum_pages64) {
+        if (requested_pages < required_pages64) {
+            throw std::invalid_argument(
+                "kv_capacity must cover every resident lane at full max_context: " +
+                std::to_string(required_pages64) + " Main KV pages (" +
+                std::to_string(required_pages64 * kPagedKVPageSize) + " tokens) are required for " +
+                std::to_string(options.max_concurrency) + " lanes at " +
+                std::to_string(options.max_context) + " tokens, but kv_capacity supplies " +
+                std::to_string(requested_pages) + " pages (" +
+                std::to_string(options.kv_capacity.explicit_tokens) + " tokens)");
+        }
+        if (requested_pages > required_pages64) {
             throw std::invalid_argument(
                 "kv_capacity is outside the usable range for max_context and max_concurrency");
         }
@@ -844,26 +867,35 @@ std::unique_ptr<SequencePlanImpl> build_sequence_candidate(const SequencePlannin
     if (main_page_groups == 0) {
         throw std::invalid_argument("Main KV physical page count must be positive");
     }
-    auto impl                 = std::make_unique<SequencePlanImpl>();
-    impl->parameters          = inputs.parameters;
-    impl->capacity            = inputs.capacity;
-    impl->main_page_groups    = main_page_groups;
-    impl->kv_capacity         = static_cast<std::uint32_t>(checked_i32(
+    auto impl                  = std::make_unique<SequencePlanImpl>();
+    impl->parameters           = inputs.parameters;
+    impl->capacity             = inputs.capacity;
+    impl->main_page_groups     = main_page_groups;
+    impl->kv_capacity          = static_cast<std::uint32_t>(checked_i32(
         static_cast<std::uint64_t>(main_page_groups) * static_cast<std::uint32_t>(kPagedKVPageSize),
         "resolved Paged KV capacity exceeds int32"));
-    impl->max_concurrency     = inputs.max_concurrency;
-    impl->prefill_chunk       = inputs.prefill_chunk;
-    impl->draft_window        = inputs.draft_window;
-    impl->speculative_backend = inputs.speculative_backend;
-    impl->proposal_head       = inputs.proposal_head;
-    impl->features            = inputs.features;
-    impl->use_cuda_graph      = inputs.use_cuda_graph;
-    impl->causal_scoring      = inputs.causal_scoring;
-    impl->device              = inputs.device;
-    impl->context_cache       = inputs.context_cache;
-    impl->kv_storage          = inputs.kv_storage;
-    impl->persistent          = persistent_layout(*impl);
-    impl->workspace           = build_workspace_plan(*impl);
+    impl->max_concurrency      = inputs.max_concurrency;
+    impl->prefill_chunk        = inputs.prefill_chunk;
+    impl->draft_window         = inputs.draft_window;
+    impl->speculative_backend  = inputs.speculative_backend;
+    impl->proposal_head        = inputs.proposal_head;
+    impl->features             = inputs.features;
+    impl->use_cuda_graph       = inputs.use_cuda_graph;
+    impl->causal_scoring       = inputs.causal_scoring;
+    impl->device               = inputs.device;
+    impl->multiprocessor_count = inputs.multiprocessor_count;
+    impl->context_cache        = inputs.context_cache;
+    impl->kv_storage           = inputs.kv_storage;
+    impl->persistent           = persistent_layout(*impl);
+    if (!impl->context_cache.host_capacity_bytes) {
+        // Default Host capacity covers 8 GiB of KV bytes plus eight complete StateImages.
+        impl->context_cache.host_capacity_bytes =
+            checked_add(8ULL * 1024 * 1024 * 1024,
+                        checked_mul(8, impl->persistent.state_images.host.image_bytes,
+                                    "Host context state default overflow"),
+                        "Host context default overflow");
+    }
+    impl->workspace            = build_workspace_plan(*impl);
     if (impl->use_cuda_graph) {
         // Definitions remain per execution profile, but only one executable is instantiated for
         // each reachable node-topology class. These bounds cover the largest profile installed in
@@ -893,11 +925,16 @@ std::unique_ptr<SequencePlanImpl> build_sequence_candidate(const SequencePlannin
                     const std::uint64_t final_visible = std::min<std::uint64_t>(
                         impl->capacity,
                         static_cast<std::uint64_t>(profile.max) + impl->draft_window + 1ULL);
-                    return (final_visible <= 4096 ? 64ULL : 96ULL) * kMiB;
+                    // Long profiles also materialize driver execution storage; that shared
+                    // cost does not shrink with the number of graph executables.
+                    return (final_visible <= 4096 ? 64ULL : 192ULL) * kMiB;
                 },
                 "DFlash graph allowance");
-            impl->graph_allowance_bytes = checked_mul(per_batch_allowance, impl->max_concurrency,
-                                                      "DFlash exact-b graph allowance");
+            // Forward retains the draft's topology classes; finish has one small executable
+            // per exact B, independently of context length.
+            impl->graph_allowance_bytes =
+                checked_mul(per_batch_allowance + 8ULL * kMiB, impl->max_concurrency,
+                            "DFlash exact-b graph allowance");
         }
     }
 
@@ -914,19 +951,20 @@ make_sequence_planner_impl(const execution::Parameters& parameters, DeviceContex
                            const EngineOptions& options) {
     validate_target_options(parameters, device, options);
     SequencePlanningInputs inputs{
-        .parameters          = &parameters,
-        .capacity            = options.max_context,
-        .max_concurrency     = options.max_concurrency,
-        .prefill_chunk       = std::min(options.prefill_chunk, options.max_context),
-        .draft_window        = options.speculative.draft_tokens,
-        .speculative_backend = options.speculative.backend,
-        .kv_storage          = options.kv_cache,
-        .proposal_head       = options.speculative.proposal_head,
-        .features            = models::load_options(options),
-        .use_cuda_graph      = options.use_cuda_graph,
-        .causal_scoring      = options.purpose == EnginePurpose::CausalScoring,
-        .device              = options.device,
-        .context_cache       = options.context_cache,
+        .parameters           = &parameters,
+        .capacity             = options.max_context,
+        .max_concurrency      = options.max_concurrency,
+        .prefill_chunk        = std::min(options.prefill_chunk, options.max_context),
+        .draft_window         = options.speculative.draft_tokens,
+        .speculative_backend  = options.speculative.backend,
+        .kv_storage           = options.kv_cache,
+        .proposal_head        = options.speculative.proposal_head,
+        .features             = models::load_options(options),
+        .use_cuda_graph       = options.use_cuda_graph,
+        .causal_scoring       = options.purpose == EnginePurpose::CausalScoring,
+        .device               = options.device,
+        .multiprocessor_count = device.multiprocessor_count(),
+        .context_cache        = options.context_cache,
     };
     const std::uint32_t logical_pages = page_count(inputs.capacity);
     const std::uint32_t minimum_pages = std::max(logical_pages, inputs.max_concurrency);

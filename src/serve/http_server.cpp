@@ -32,8 +32,10 @@ bool is_openai_path(std::string_view path) {
     return path.starts_with("/v1/") && !is_anthropic_path(path);
 }
 
-void ensure_openai_request_id(const httplib::Request& request, httplib::Response& response) {
-    if (is_openai_path(request.path) && !response.has_header("x-request-id")) {
+void ensure_http_request_id(const httplib::Request& request, httplib::Response& response) {
+    if (is_anthropic_path(request.path) && !response.has_header("request-id")) {
+        response.set_header("request-id", new_anthropic_request_id());
+    } else if (is_openai_path(request.path) && !response.has_header("x-request-id")) {
         response.set_header("x-request-id", new_openai_request_id());
     }
 }
@@ -55,75 +57,46 @@ ThroughputReport make_throughput_report(const ninfer::RuntimeStats& previous,
 }
 
 bool report_has_activity(const ThroughputReport& report) {
-    return report.computed_prefill_tokens != 0 || report.committed_decode_tokens != 0 ||
-           report.decode_rounds != 0 || report.current.running_requests != 0 ||
-           report.current.waiting_requests != 0 || report.current.materializing_requests != 0 ||
-           report.current.capture_pending_requests != 0 ||
-           report.current.terminal_pending_requests != 0 ||
-           report.current.active_captures_completed != report.previous.active_captures_completed ||
-           report.current.active_captures_aborted != report.previous.active_captures_aborted ||
-           report.current.root_selections != report.previous.root_selections ||
-           report.current.private_endpoint_selections !=
-               report.previous.private_endpoint_selections ||
-           report.current.private_turn_closure_selections !=
-               report.previous.private_turn_closure_selections ||
-           report.current.private_response_replay_selections !=
-               report.previous.private_response_replay_selections ||
-           report.current.private_long_anchor_selections !=
-               report.previous.private_long_anchor_selections ||
-           report.current.shared_stable_prefix_selections !=
-               report.previous.shared_stable_prefix_selections ||
-           report.current.state_moves != report.previous.state_moves ||
-           report.current.state_forks != report.previous.state_forks ||
-           report.current.state_restores != report.previous.state_restores ||
-           report.current.state_d2h_count != report.previous.state_d2h_count ||
-           report.current.state_h2d_count != report.previous.state_h2d_count ||
-           report.current.state_d2d_count != report.previous.state_d2d_count ||
-           report.current.main_kv_d2h_pages != report.previous.main_kv_d2h_pages ||
-           report.current.main_kv_h2d_pages != report.previous.main_kv_h2d_pages ||
-           report.current.main_kv_d2d_pages != report.previous.main_kv_d2d_pages ||
-           report.current.backend_kv_d2h_pages != report.previous.backend_kv_d2h_pages ||
-           report.current.backend_kv_h2d_pages != report.previous.backend_kv_h2d_pages ||
-           report.current.backend_kv_d2d_pages != report.previous.backend_kv_d2d_pages ||
-           report.current.pressure_spill_pages != report.previous.pressure_spill_pages ||
-           report.current.partial_tail_cow_pages != report.previous.partial_tail_cow_pages ||
-           report.current.pressure_private_owners_degraded !=
-               report.previous.pressure_private_owners_degraded ||
-           report.current.pressure_private_owners_evicted !=
-               report.previous.pressure_private_owners_evicted ||
-           report.current.pressure_shared_owners_degraded !=
-               report.previous.pressure_shared_owners_degraded ||
-           report.current.pressure_shared_owners_evicted !=
-               report.previous.pressure_shared_owners_evicted ||
-           report.current.pressure_checkpoints_dropped !=
-               report.previous.pressure_checkpoints_dropped ||
-           report.current.pressure_searches != report.previous.pressure_searches ||
-           report.current.pressure_search_budget_exhaustions !=
-               report.previous.pressure_search_budget_exhaustions ||
-           report.current.pressure_maximal_fallback_selections !=
-               report.previous.pressure_maximal_fallback_selections ||
-           report.current.historical_fork_hits != report.previous.historical_fork_hits ||
+    return report.computed_prefill_tokens != 0  || report.committed_decode_tokens != 0  ||
+           report.decode_rounds != 0  || report.current.running_requests != 0  ||
+           report.current.waiting_requests != 0  || report.current.materializing_requests != 0  ||
+           report.current.capture_pending_requests != 0  ||
+           report.current.terminal_pending_requests != 0  ||
+           report.current.active_captures_completed != report.previous.active_captures_completed  ||
+           report.current.active_captures_aborted != report.previous.active_captures_aborted  ||
+           report.current.root_selections != report.previous.root_selections  ||
+           report.current.state_moves != report.previous.state_moves  ||
+           report.current.state_forks != report.previous.state_forks  ||
+           report.current.state_restores != report.previous.state_restores  ||
+           report.current.state_d2h_count != report.previous.state_d2h_count  ||
+           report.current.state_h2d_count != report.previous.state_h2d_count  ||
+           report.current.state_d2d_count != report.previous.state_d2d_count  ||
+           report.current.main_kv_d2h_pages != report.previous.main_kv_d2h_pages  ||
+           report.current.main_kv_h2d_pages != report.previous.main_kv_h2d_pages  ||
+           report.current.main_kv_d2d_pages != report.previous.main_kv_d2d_pages  ||
+           report.current.backend_kv_d2h_pages != report.previous.backend_kv_d2h_pages  ||
+           report.current.backend_kv_h2d_pages != report.previous.backend_kv_h2d_pages  ||
+           report.current.backend_kv_d2d_pages != report.previous.backend_kv_d2d_pages  ||
+           report.current.pressure_spill_pages != report.previous.pressure_spill_pages  ||
+           report.current.partial_tail_cow_pages != report.previous.partial_tail_cow_pages  ||
            report.current.device_state_occupied_slots !=
-               report.previous.device_state_occupied_slots ||
-           report.current.host_state_occupied_slots != report.previous.host_state_occupied_slots ||
+               report.previous.device_state_occupied_slots  ||
+           report.current.host_state_occupied_slots != report.previous.host_state_occupied_slots  ||
            report.current.device_main_kv_occupied_pages !=
-               report.previous.device_main_kv_occupied_pages ||
+               report.previous.device_main_kv_occupied_pages  ||
            report.current.device_backend_kv_occupied_pages !=
-               report.previous.device_backend_kv_occupied_pages ||
-           report.current.host_kv_occupied_bytes != report.previous.host_kv_occupied_bytes ||
-           report.current.shared_active_references != report.previous.shared_active_references ||
+               report.previous.device_backend_kv_occupied_pages  ||
+           report.current.host_kv_occupied_bytes != report.previous.host_kv_occupied_bytes  ||
            report.current.host_work.engine_boundary_ns !=
-               report.previous.host_work.engine_boundary_ns ||
+               report.previous.host_work.engine_boundary_ns  ||
            report.current.host_work.program_submit_ns !=
-               report.previous.host_work.program_submit_ns ||
-           report.current.host_work.program_post_ns != report.previous.host_work.program_post_ns ||
+               report.previous.host_work.program_submit_ns  ||
+           report.current.host_work.program_post_ns != report.previous.host_work.program_post_ns  ||
            report.current.host_work.engine_commit_output_ns !=
-               report.previous.host_work.engine_commit_output_ns ||
+               report.previous.host_work.engine_commit_output_ns  ||
            report.current.host_work.engine_maintenance_ns !=
-               report.previous.host_work.engine_maintenance_ns ||
-           report.current.host_work.device_wait_ns != report.previous.host_work.device_wait_ns;
-}
-
+               report.previous.host_work.engine_maintenance_ns  ||
+           report.current.host_work.device_wait_ns != report.previous.host_work.device_wait_ns;}
 const char* endpoint_name(std::string_view path) noexcept {
     if (path == "/v1/chat/completions") { return "openai_chat_completions"; }
     if (path == "/v1/chat/completions/control") { return "openai_chat_control"; }
@@ -159,7 +132,7 @@ void write_anthropic_error(httplib::Response& response, const ApiError& api_erro
 httplib::Server::HandlerResponse handle_unrendered_http_error(const ServeOptions& options,
                                                               const httplib::Request& request,
                                                               httplib::Response& response) {
-    ensure_openai_request_id(request, response);
+    ensure_http_request_id(request, response);
     if (!response.body.empty()) { return httplib::Server::HandlerResponse::Unhandled; }
 
     ApiError error;
@@ -177,7 +150,7 @@ httplib::Server::HandlerResponse handle_unrendered_http_error(const ServeOptions
         return httplib::Server::HandlerResponse::Unhandled;
     }
     if (request.path.rfind("/v1/messages", 0) == 0) {
-        write_anthropic_error(response, error, new_anthropic_request_id());
+        write_anthropic_error(response, error, response.get_header_value("request-id"));
     } else {
         write_openai_error(response, error);
     }
@@ -262,29 +235,39 @@ void HttpServer::record_request_start(const RequestLogContext& context) {
 }
 
 void HttpServer::record_request_rejected(const RequestRejectionLogContext& context) {
+    metrics_.rejected();
     request_jsonl_.write_request_rejected(context);
     operational_log_.request_rejected(context);
 }
 
 void HttpServer::record_request_done(const RequestLogContext& context,
                                      const GenerationOutcome& outcome) {
+    metrics_.done(outcome);
     request_jsonl_.write_request_done(context, outcome);
     operational_log_.request_done(context, outcome);
 }
 
 void HttpServer::record_request_failure(const RequestLogContext& context,
                                         const RequestFailure& failure) {
+    metrics_.failed(failure.classification == RequestFailureClass::ClientDisconnected);
     request_jsonl_.write_request_error(context, failure.machine_message);
     operational_log_.request_failure(context, failure);
 }
 
 void HttpServer::record_response_failure(std::uint64_t request_id, const RequestFailure& failure) {
+    metrics_.response_failed();
     operational_log_.response_failure(request_id, failure);
 }
 
 void HttpServer::record_throughput(const ThroughputReport& report) {
     request_jsonl_.write_throughput(report);
     operational_log_.throughput(report);
+}
+
+ninfer::GenerationFirstTokenObserver HttpServer::first_token_observer() {
+    return [this](const ninfer::GenerationFirstTokenObservation& observation) {
+        metrics_.first_token(observation);
+    };
 }
 
 void HttpServer::run_stats_reporter() {
@@ -352,7 +335,7 @@ void HttpServer::register_routes() {
     }
 
     server_.set_pre_routing_handler([this](const httplib::Request& req, httplib::Response& res) {
-        ensure_openai_request_id(req, res);
+        ensure_http_request_id(req, res);
         if (options_.api_key.empty() || req.path == "/health" || req.method == "OPTIONS") {
             return httplib::Server::HandlerResponse::Unhandled;
         }
@@ -381,7 +364,7 @@ void HttpServer::register_routes() {
 
     server_.set_exception_handler(
         [this](const httplib::Request& req, httplib::Response& res, std::exception_ptr ep) {
-            ensure_openai_request_id(req, res);
+            ensure_http_request_id(req, res);
             try {
                 std::rethrow_exception(ep);
             } catch (const ApiException& e) {
@@ -529,10 +512,9 @@ void HttpServer::handle_metrics(const httplib::Request& req, httplib::Response& 
         write_openai_error(res, error);
         return;
     }
-    const PrometheusSnapshot snapshot{.runtime         = service_->runtime_stats(),
-                                     .memory           = service_->memory_summary(),
-                                     .requests_started = request_seq_.load()};
-    res.set_content(render_prometheus_metrics(snapshot), "text/plain; version=0.0.4; charset=utf-8");
+    const RuntimeStats runtime  = service_->runtime_stats();
+    res.set_content(metrics_.render(runtime, service_->is_available(), request_seq_.load()),
+                    "text/plain; version=0.0.4; charset=utf-8");
 }
 
 void HttpServer::handle_models(const httplib::Request&, httplib::Response& res) const {
@@ -564,6 +546,8 @@ void HttpServer::attach(GenerationService& service) {
     const ninfer::LoadSummary load = service.load_summary();
     public_model_id_               = resolve_public_model_id(options_, load.model_name);
     service_                       = &service;
+    metrics_.configure(public_model_id_, service.engine_options(), service.memory_summary(),
+                       service.runtime_stats());
     request_jsonl_.write_server_start(options_, service.engine_options(),
                                       service.sampling_defaults(), public_model_id_, load,
                                       service.memory_summary());

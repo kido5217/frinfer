@@ -140,4 +140,17 @@ KvCapacityResolution resolve_kv_capacity(const KvCapacityPolicy& policy,
     };
 }
 
+void require_full_resident_capacity(const SequenceCapacityCurve& curve, std::uint32_t resolved_pages) {
+    validate_curve(curve);
+    if (resolved_pages >= curve.maximum_main_page_groups) { return; }
+    throw std::invalid_argument(
+        "automatic kv_capacity resolves to " + std::to_string(resolved_pages) +
+        " Main KV pages (" + std::to_string(curve.resolved_tokens(resolved_pages)) +
+        " tokens), but the pinned no-preemption contract requires " +
+        std::to_string(curve.maximum_main_page_groups) + " pages (" +
+        std::to_string(curve.resolved_tokens(curve.maximum_main_page_groups)) +
+        " tokens) so every resident lane can reach max_context; reduce max_context or "
+        "max_concurrency, or free GPU memory");
+}
+
 } // namespace ninfer::runtime

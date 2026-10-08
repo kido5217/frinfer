@@ -28,8 +28,7 @@ ninfer::EngineOptions constrained_engine_options(const char* artifact) {
     options.max_concurrency                      = 1;
     options.max_pending_requests                 = 1;
     options.context_cache.device_state_slots     = 1;
-    options.context_cache.host_state_slots       = 2;
-    options.context_cache.host_kv_capacity_bytes = 256ULL << 20;
+    options.context_cache.host_capacity_bytes    = 1ULL << 30;
     return options;
 }
 
@@ -39,7 +38,7 @@ ninfer::RequestOptions greedy_request(std::uint32_t max_tokens,
     request.execution.requested_output_tokens = max_tokens;
     request.execution.sampling.temperature    = 0.0F;
     if (!grammar.empty()) {
-        request.constraint.emplace(ninfer::GrammarConstraint{std::move(grammar)});
+        request.constraint.emplace(ninfer::OutputConstraint::grammar(std::move(grammar)));
     }
     return request;
 }
@@ -95,7 +94,10 @@ int exercise(const char* artifact) {
         try {
             (void)run(8, "root ::= [");
         } catch (const ninfer::RequestError& error) {
-            rejected = error.kind() == ninfer::RequestErrorKind::InvalidConstraint;
+            // The ported XGrammar path reports the precise upstream kind; the fork's
+            // InvalidConstraint is kept accepted until the constraint contract collapses.
+            rejected = error.kind() == ninfer::RequestErrorKind::InvalidGrammar ||
+                       error.kind() == ninfer::RequestErrorKind::InvalidConstraint;
         }
         if (!rejected) {
             std::cerr << "an invalid grammar was not rejected\n";

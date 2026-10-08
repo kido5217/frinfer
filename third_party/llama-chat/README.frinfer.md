@@ -56,13 +56,13 @@ Include roots: `common/` first (vendored includes resolve to vendored files), th
 
 ## Unused vendored paths
 
-`json-schema-to-grammar.{h,cpp}` serves two consumers. `peg-parser.cpp` and the Qwen3-Coder
-handler reference `build_grammar`/`gbnf_format_literal`, and the shared constraint contract
-(`src/product/constraint/constraint_contract.cpp`) converts `response_format`
-`json_schema`/`json_object` documents with `json_schema_to_grammar` for constrained decoding
-(wayfinder map #45, design #48 — the earlier "constrained decoding stays rejected" stance is
-retired). The converter still degrades a `pattern` it cannot enforce to "any string" and warns on
-stderr; the contract rejects `pattern` before conversion, so no request reaches that path. `common_chat_params::grammar` (the
+`json-schema-to-grammar.{h,cpp}` is referenced only by vendored translation units: `peg-parser.cpp`
+and the Qwen3-Coder handler call `build_grammar`/`gbnf_format_literal`. The shared constraint
+contract (`src/product/constraint/constraint_contract.cpp`) no longer converts `response_format`
+`json_schema`/`json_object` documents with `json_schema_to_grammar` (wayfinder map #45, design #48);
+it validates them and forwards the document text, and the Engine's adopted XGrammar stack
+(`src/text/json_schema.*`) compiles it. `common/chat.cpp:1427` still calls `json_schema_to_grammar()`
+directly for the template-emitted grammar path; that call is vendored-only and unconsumed. `common_chat_params::grammar` (the
 template-emitted grammar) remains unconsumed. Likewise, `chat-auto-parser.h` is needed for
 `autoparser::generation_params`, but the analysis/generator implementations are excluded and
 stubbed.

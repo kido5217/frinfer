@@ -19,10 +19,13 @@ struct ResolvedExecutionOptions {
 };
 
 struct ResolvedRequestOptions {
+    // Retained fork carrier: the resolved request options hold the compiled constraint below; this
+    // string slot is not written or read on any live path (ticket #248 keeps it deliberately).
+    std::optional<std::string> grammar;
     ResolvedExecutionOptions execution;
     StopPolicy stop;
     OutputOptions output;
-    std::optional<GrammarConstraint> constraint;
+    std::optional<OutputConstraint> constraint;
 };
 
 enum class ContinuationAction : std::uint8_t {
@@ -54,12 +57,9 @@ struct CancellationFlagView {
 
 struct RequestPlanSummary {
     std::uint32_t prompt_tokens           = 0;
-    std::uint32_t reusable_prompt_tokens  = 0;
     std::uint32_t requested_output_tokens = 0;
     std::uint32_t effective_output_tokens = 0;
     FinishReason effective_limit_reason   = FinishReason::None;
-    PrefixReusePath prefix_reuse_path     = PrefixReusePath::Root;
-    std::uint64_t service_work_quanta     = 0;
     bool publish_continuation             = true;
 };
 

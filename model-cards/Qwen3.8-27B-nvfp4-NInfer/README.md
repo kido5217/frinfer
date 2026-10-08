@@ -194,22 +194,22 @@ For images, videos, and structured chat history, see the
 ./build/apps/frinfer-serve models/qwen3_8_27b_nvfp4.ninfer \
   --host 127.0.0.1 \
   --port 8080 \
-  --max-context 240000 \
+  --max-context 120000 \
   --kv-capacity 240000 \
   --max-concurrency 2 \
   --kv-dtype fp8 \
   --device-state-slots 2 \
-  --host-state-slots 8 \
-  --host-kv-mib 8192 \
   --spec mtp --draft-tokens 3 \
   --lm-head-draft \
   --preserve-thinking
 ```
 
-Each request has a 240,000-token logical ceiling. The shared 240,000-token Device KV pool admits
-two active requests when their combined completion reservations fit; either request may use the
-full pool while running alone. Two extra Device checkpoint slots, eight pinned Host State slots,
-and 8 GiB of pinned Host KV retain reusable continuations under resource pressure.
+Each request has a 120,000-token logical ceiling. The shared 240,000-token Device KV pool covers
+both lanes, so either may reach its full 120,000-token context while the other is resident. The
+pool grows with resident execution; resource pressure can pause a request for later Snapshot or
+Replay recovery. Two extra Device StateImages
+and the default shared pinned Host budget (8 GiB plus eight model StateImages) retain state, KV
+and pause snapshots.
 
 See the [HTTP serving guide](https://github.com/Neroued/ninfer/blob/master/docs/serving.md) for the
 API surface and the [resource scheduling reference](https://github.com/Neroued/ninfer/blob/master/docs/maintainer/resource-scheduling-and-context-cache.md)
@@ -328,7 +328,7 @@ AIME results.
 
 - NInfer executes on one RTX 5090 and one CUDA device, with a startup-fixed capacity of 1–8 active
   requests per Engine.
-- It does not provide large-scale or preemptive continuous batching, priority/QoS scheduling,
+- It does not provide large-scale continuous batching, priority/QoS scheduling,
   multi-GPU execution, CPU/GPU offload, or distributed serving.
 - Context allocation is subject to GPU memory and the selected KV-cache type.
 - NInfer does not execute generated tool calls.

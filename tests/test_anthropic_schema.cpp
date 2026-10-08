@@ -165,13 +165,15 @@ int test_structured_output() {
                                   Json{{"type", "json_schema"}, {"schema", answer_schema}}}};
     const GenerationRequest constrained = parse(body).generation;
     failures +=
-        check(constrained.grammar.has_value() &&
+        check(constrained.constraint.has_value() &&
+                  constrained.constraint->kind == ninfer::OutputConstraintKind::JsonSchema &&
                   constrained.constraint_source == ConstraintSource::JsonSchema,
               "output_config.format json_schema converts to a constraint");
     const ninfer::RequestOptions constrained_options =
         to_request_options(constrained, ServeOptions{}, semantics(constrained), false);
     failures += check(constrained_options.constraint.has_value() &&
-                          constrained_options.constraint->gbnf == *constrained.grammar,
+                          constrained_options.constraint->source ==
+                              constrained.constraint->source,
                       "the converted Anthropic schema reaches the Engine constraint contract");
     failures += check(semantics(constrained).enable_thinking == false,
                       "a constrained Anthropic request defaults thinking off");
@@ -181,9 +183,33 @@ int test_structured_output() {
     combined["output_config"] =
         Json{{"effort", "high"}, {"format", body["output_config"]["format"]}};
     const GenerationRequest both = parse(combined).generation;
-    failures += check(both.grammar.has_value() &&
+    failures += check(both.constraint.has_value() &&
                           both.reasoning_effort == RequestedReasoningEffort::High,
                       "output_config.format composes with output_config.effort");
+
+    // The NInfer structured_outputs extension is available on this route too.
+    Json so_body                  = base_request();
+    so_body["structured_outputs"] = Json{{"choice", Json::array({"positive", "negative"})}};
+    const GenerationRequest so_choice = parse(so_body).generation;
+    failures += check(so_choice.constraint.has_value() &&
+                          so_choice.constraint->kind == ninfer::OutputConstraintKind::Choice &&
+                          so_choice.constraint_source == ConstraintSource::Choice,
+                      "Anthropic structured_outputs.choice converts to a constraint");
+    Json so_regex_body                  = base_request();
+    so_regex_body["structured_outputs"] = Json{{"regex", "[0-9]+"}};
+    const GenerationRequest so_regex    = parse(so_regex_body).generation;
+    failures += check(so_regex.constraint.has_value() &&
+                          so_regex.constraint->kind == ninfer::OutputConstraintKind::Regex &&
+                          so_regex.constraint_source == ConstraintSource::Regex,
+                      "Anthropic structured_outputs.regex converts to a constraint");
+    {
+        Json request                  = base_request();
+        request["output_config"]      = body["output_config"];
+        request["structured_outputs"] = Json{{"grammar", "root ::= \"a\""}};
+        const ApiError error          = api_error([&] { (void)parse(request); });
+        failures += check(error.code == "constrained_decoding_conflict",
+                          "output_config.format and structured_outputs conflict");
+    }
 
     // Malformed wrappers fail closed on the Anthropic field path, not the OpenAI one.
     const std::vector<Json> malformed_formats = {
@@ -218,7 +244,7 @@ int test_structured_output() {
         request["output_config"] = Json{{"format",
                                          Json{{"type", "json_schema"},
                                               {"schema", Json{{"type", "string"},
-                                                                   {"pattern", "^[a-z]+$"}}}}}};
+                                                                   {"format", "email"}}}}}};
         const ApiError error     = api_error([&] { (void)parse(request); });
         failures += check(error.code == "json_schema_unsupported" &&
                               error.param == "output_config.format",
@@ -285,7 +311,7 @@ int test_structured_output() {
                                                          {"schema", Json{{"type", "object"}}}}}};
         const AnthropicCountTokensRequest counted =
             parse_anthropic_count_tokens_request(request);
-        failures += check(!counted.generation.grammar.has_value(),
+        failures += check(!counted.generation.constraint.has_value(),
                           "count_tokens ignores output_config.format");
     }
     return failures;

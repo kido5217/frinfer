@@ -1,8 +1,5 @@
 #include "product/constraint/constraint_contract.h"
 
-#include "json-schema-to-grammar.h"
-#include "json.h"
-
 #include <cstddef>
 #include <exception>
 #include <initializer_list>
@@ -17,10 +14,10 @@ namespace {
 
 using Json = nlohmann::ordered_json;
 
-// Keywords the vendored typed schema model (third_party/llama-chat common/json-schema.cpp)
-// genuinely enforces in at least one context; the context checks below pin down where. `pattern`
-// is deliberately absent (the converter degrades unsupported patterns to "any string"),
-// `allOf`/`oneOf` too (dropped or approximated as a union by the converter).
+// Keywords the adopted XGrammar compiler (src/text/json_schema.*) genuinely enforces in at least
+// one context; the context checks below pin down where. `allOf`/`oneOf`/`additionalItems` are
+// deliberately absent (see docs/serving.md — rejected rather than approximated), and `format` is
+// absent because the adopted compiler does not enforce it.
 const std::unordered_set<std::string>& schema_keywords() {
     static const std::unordered_set<std::string> keywords = {
         "type",
@@ -33,7 +30,7 @@ const std::unordered_set<std::string>& schema_keywords() {
         "maxItems",
         "minLength",
         "maxLength",
-        "format",
+        "pattern",
         "minimum",
         "exclusiveMinimum",
         "maximum",
@@ -64,13 +61,6 @@ bool is_annotation(std::string_view key) {
         "deprecated", "readOnly",    "writeOnly", "$id",      "$schema",
     };
     return annotations.contains(std::string(key));
-}
-
-// `format` values whose emitted grammar is exact. `uuid1`..`uuid5` are excluded: the converter
-// emits the generic UUID rule and does not enforce the version nibble.
-const std::unordered_set<std::string>& enforced_formats() {
-    static const std::unordered_set<std::string> formats = {"date", "time", "date-time", "uuid"};
-    return formats;
 }
 
 [[noreturn]] void unsupported(std::string message, std::string param) {
@@ -169,7 +159,7 @@ UntypedKind untyped_kind(const Json& schema) {
         return UntypedKind::Object;
     }
     if (schema.contains("items") || schema.contains("prefixItems")) { return UntypedKind::Array; }
-    if (has_any(schema, {"pattern", "minLength", "maxLength", "format"})) {
+    if (has_any(schema, {"pattern", "minLength", "maxLength"})) {
         return UntypedKind::String;
     }
     return UntypedKind::Any;
@@ -215,7 +205,6 @@ void validate_schema_node(const Json& schema, int depth, const std::string& path
     const bool type_union     = typed && schema.at("type").is_array();
     const bool type_string    = typed && schema.at("type").is_string();
     const bool tuple_items    = schema.contains("items") && schema.at("items").is_array();
-    const bool has_prefix     = schema.contains("prefixItems");
     const bool object_typed   = type_is(schema, "object");
     const bool array_typed    = type_is(schema, "array");
     const bool string_typed   = type_is(schema, "string");
@@ -256,6 +245,12 @@ void validate_schema_node(const Json& schema, int depth, const std::string& path
         if (schema.contains("const") || schema.contains("enum")) {
             validate_const_enum_values(schema, path);
         }
+        if (schema.contains("enum")) {
+            const Json& values = schema.at("enum");
+            if (!values.is_array() || values.empty()) {
+                invalid("JSON Schema enum must be a non-empty array", "enum");
+            }
+        }
     } else {
         // Context gates: a keyword is admitted only where the converter's typed model enforces
         // it. A `type` union enforces the keyword in the matching alternative (correct JSON
@@ -271,18 +266,18 @@ void validate_schema_node(const Json& schema, int depth, const std::string& path
             unsupported("JSON Schema item bounds are enforced only with type \"array\"",
                         "maxItems");
         }
-        if (has_any(schema, {"minItems", "maxItems"}) && (tuple_items || has_prefix)) {
-            unsupported("JSON Schema item bounds are not enforced with tuple items or prefixItems",
-                        "maxItems");
-        }
-        if (has_any(schema, {"minLength", "maxLength", "format"}) && !string_context) {
+        if (has_any(schema, {"minLength", "maxLength", "pattern"}) && !string_context) {
             unsupported("JSON Schema string keywords are enforced only with type \"string\"",
                         "maxLength");
         }
+        if (schema.contains("pattern") && !schema.at("pattern").is_string()) {
+            invalid("JSON Schema pattern must be a string", "pattern");
+        }
+        const bool number_context = type_is(schema, "number") || union_contains("number");
         const bool numeric_bounds =
             has_any(schema, {"minimum", "exclusiveMinimum", "maximum", "exclusiveMaximum"});
-        if (numeric_bounds && (!integer_context || union_contains("number"))) {
-            unsupported("JSON Schema numeric bounds are enforced only with type \"integer\"",
+        if (numeric_bounds && typed && !integer_context && !number_context) {
+            unsupported("JSON Schema numeric bounds are enforced only with a numeric type",
                         "minimum");
         }
         if (has_any(schema, {"properties", "required", "additionalProperties"}) &&
@@ -294,20 +289,16 @@ void validate_schema_node(const Json& schema, int depth, const std::string& path
             unsupported("JSON Schema items keywords are enforced only with type \"array\"",
                         "items");
         }
-        if (schema.contains("items") && schema.contains("prefixItems")) {
-            unsupported("JSON Schema items and prefixItems cannot be combined", "prefixItems");
+        if (tuple_items) {
+            unsupported("JSON Schema tuple items arrays are not enforced; use prefixItems and a "
+                        "tail items schema",
+                        "items");
         }
         if (schema.contains("minimum") && schema.contains("exclusiveMinimum")) {
             unsupported("JSON Schema minimum and exclusiveMinimum cannot be combined", "minimum");
         }
         if (schema.contains("maximum") && schema.contains("exclusiveMaximum")) {
             unsupported("JSON Schema maximum and exclusiveMaximum cannot be combined", "maximum");
-        }
-        if (schema.contains("format")) {
-            const Json& value = schema.at("format");
-            if (!value.is_string() || !enforced_formats().contains(value.get<std::string>())) {
-                unsupported("JSON Schema format is not enforced by FrInfer", "format");
-            }
         }
         if (schema.contains("required")) {
             const Json& required = schema.at("required");
@@ -359,7 +350,7 @@ void validate_schema_node(const Json& schema, int depth, const std::string& path
 
 } // namespace
 
-std::string json_schema_constraint_grammar(const Json& schema) {
+std::string json_schema_constraint_source(const Json& schema) {
     const std::string serialized = schema.dump();
     if (serialized.size() > kConstraintPayloadLimit) {
         too_large("JSON Schema payload exceeds " + std::to_string(kConstraintPayloadLimit) +
@@ -367,12 +358,7 @@ std::string json_schema_constraint_grammar(const Json& schema) {
                   "response_format");
     }
     validate_schema_node(schema, 0, "");
-    try {
-        return json_schema_to_grammar(common_json::parse(serialized), /*force_gbnf=*/true);
-    } catch (const std::exception& error) {
-        throw ConstraintError(std::string("JSON Schema conversion failed: ") + error.what(),
-                              "response_format.json_schema", "json_schema_invalid");
-    }
+    return serialized;
 }
 
 } // namespace ninfer::constraint

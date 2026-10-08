@@ -9,10 +9,10 @@
 #include "models/qwen3_5/frontend/processor.h"
 #include "models/qwen3_5/frontend/test_access.h"
 #include "models/qwen3_5/frontend/tokenizer.h"
-#include "models/qwen3_5/frontend/grammar/thinking_wrapper.h"
-#include "models/qwen3_5/frontend/grammar/tokenizer_vocabulary.h"
 #include "models/qwen3_5/frontend/tool_call_parser.h"
 #include "text/unicode.h"
+#include "text/grammar.h"
+#include <mutex>
 
 #include <nlohmann/json.hpp>
 
@@ -410,13 +410,14 @@ bool exact_vision_frontier(std::uint32_t frontier, std::span<const VisionItem> i
     return true;
 }
 
-PreparedContextCache prepare_context_cache(
-    ContextCacheHints hints, std::size_t message_count,
-    std::span<const std::optional<std::uint32_t>> message_boundaries,
-    std::span<const PromptCacheMarker> rendered_markers,
-    std::span<const std::optional<std::uint32_t>> cache_boundaries,
-    std::span<const VisionItem> vision_items, std::optional<std::size_t> engine_tool_marker_index,
-    std::optional<std::uint32_t> leading_boundary, std::uint32_t full_prompt_frontier) {
+PreparedContextCache
+prepare_context_cache(ContextCacheHints hints, std::size_t message_count,
+                      std::span<const std::optional<std::uint32_t>> message_boundaries,
+                      std::span<const PromptCacheMarker> rendered_markers,
+                      std::span<const std::optional<std::uint32_t>> cache_boundaries,
+                      std::span<const VisionItem> vision_items,
+                      std::optional<std::size_t> engine_tool_marker_index,
+                      std::optional<std::uint32_t> leading_boundary) {
     if (hints.markers.size() > kMaximumExplicitPromptCacheMarkers) {
         throw std::invalid_argument("PromptInput supports at most four explicit cache markers");
     }
@@ -433,23 +434,6 @@ PreparedContextCache prepare_context_cache(
         key.size = static_cast<std::uint16_t>(hints.session_key->size());
         std::copy(hints.session_key->begin(), hints.session_key->end(), key.bytes.begin());
         out.session_key = key;
-    }
-    switch (hints.retention) {
-    case CacheRetentionHint::Default:
-        out.retention = out.session_key ? runtime::RetentionClass::LiveSession
-                                        : runtime::RetentionClass::RecentPrivate;
-        break;
-    case CacheRetentionHint::LiveSession:
-        if (!out.session_key) {
-            throw std::invalid_argument("LiveSession retention requires a session_key");
-        }
-        out.retention = runtime::RetentionClass::LiveSession;
-        break;
-    case CacheRetentionHint::Disposable:
-        out.retention = runtime::RetentionClass::Disposable;
-        break;
-    default:
-        throw std::invalid_argument("context cache retention hint is invalid");
     }
     out.update_session_index = hints.update_session_index;
 
@@ -517,14 +501,7 @@ PreparedContextCache prepare_context_cache(
 
     for (std::size_t index = 0; index < hints.markers.size(); ++index) {
         const PromptCacheMarker marker = hints.markers[index];
-        std::optional<std::uint32_t> resolved;
-        if (marker.location == PromptCacheMarkerLocation::MessageBoundary) {
-            if (marker.after_message_count < message_boundaries.size()) {
-                resolved = message_boundaries[marker.after_message_count];
-            }
-        } else {
-            if (index < cache_boundaries.size()) { resolved = cache_boundaries[index]; }
-        }
+        const auto resolved            = cache_boundaries[index];
         if (!resolved) { continue; }
         add_opportunity(marker.kind, marker.evidence, *resolved, static_cast<std::uint32_t>(index));
     }
@@ -543,9 +520,6 @@ PreparedContextCache prepare_context_cache(
                             SharedCandidateEvidence::EngineStructural,
                             *message_boundaries[*leading_boundary], engine_order++);
         }
-        add_opportunity(PromptCacheMarkerKind::SharedStablePrefix,
-                        SharedCandidateEvidence::EngineObserved, full_prompt_frontier,
-                        engine_order);
     }
     return out;
 }
@@ -598,7 +572,8 @@ public:
             throw std::invalid_argument(
                 "Frontend requires the parsed model tokenizer and public token domain");
         }
-        sampling = default_sampling(options.architecture);
+        sampling            = default_sampling(options.architecture);
+        grammar_cache_bytes = options.grammar_cache_bytes;
         for (const int token : tokenizer->default_stop_token_ids()) {
             if (!tokenizer->is_valid_token(token)) {
                 throw std::invalid_argument(
@@ -639,18 +614,26 @@ public:
     StopPolicy defaults;
     ModelSamplingDefaults sampling;
     std::shared_ptr<const std::vector<TokenId>> thinking_control_tokens;
-    // Lazily built grammar vocabulary and the compiled-grammar cache keyed by GBNF text. The
-    // cache holds weak references: a compiled grammar (and its row cache) lives exactly as long
-    // as a request keeps it alive, and expired keys are pruned once the key table grows past
-    // `kGrammarCacheKeys`. The frontend is a shared immutable value used by concurrent request
-    // threads, so the caches are mutable and guarded by `grammar_mutex` (compilation is rare;
-    // row production against a compiled grammar stays on the single serving worker).
-    static constexpr std::size_t kGrammarCacheKeys = 64;
-    mutable std::mutex grammar_mutex;
-    mutable std::shared_ptr<const fi::GrammarVocabulary> grammar_vocabulary;
-    mutable std::unordered_map<std::string, std::weak_ptr<const fi::CompiledGrammar>> grammar_cache;
-    bool vision_enabled       = true;
-    std::uint32_t max_context = 0;
+    // Adopted upstream XGrammar constraint compiler (ticket #245).
+    bool vision_enabled             = true;
+    std::uint32_t max_context       = 0;
+    std::size_t grammar_cache_bytes = 0;
+    mutable std::once_flag grammar_once;
+    mutable std::unique_ptr<text::GrammarCompiler> grammar_compiler;
+
+    text::GrammarCompiler& grammars() const {
+        std::call_once(grammar_once, [&] {
+            std::vector<std::string> vocab(tokenizer->vocab_size());
+            for (std::size_t id = 0; id < vocab.size(); ++id) {
+                if (!tokenizer->is_valid_token(static_cast<TokenId>(id))) { continue; }
+                const auto decoded = tokenizer->decoded_token(static_cast<TokenId>(id));
+                if (!decoded.special) { vocab[id] = decoded.bytes; }
+            }
+            grammar_compiler = std::make_unique<text::GrammarCompiler>(
+                std::move(vocab), defaults.token_ids, grammar_cache_bytes);
+        });
+        return *grammar_compiler;
+    }
 };
 
 std::span<const std::int32_t> PreparedPromptData::position_axis(int axis) const {
@@ -773,6 +756,7 @@ PreparedPrompt Frontend::prepare(PromptInput input, const PreparationControl& co
     auto prepared              = std::make_unique<PreparedPromptData>();
     PreparedPromptData& result = *prepared;
     result.tool_call_output    = tool_call_output;
+    result.has_active_tools    = !options.tool_jsons.empty();
     std::vector<std::optional<std::uint32_t>> message_boundaries;
     std::vector<std::optional<std::uint32_t>> cache_boundaries;
     if (has_media) {
@@ -785,12 +769,13 @@ PreparedPrompt Frontend::prepare(PromptInput input, const PreparationControl& co
                                   control, impl_->max_context);
         } catch (const fi::ProcessorError& error) { throw_processor_error(error); }
         result.token_ids.assign(processed.input_ids.begin(), processed.input_ids.end());
-        result.starts_in_reasoning = processed.starts_in_reasoning;
-        result.rendered_text       = std::move(processed.rendered_text);
-        result.token_types         = std::move(processed.token_types);
-        result.positions           = std::move(processed.positions);
-        result.rope_delta          = processed.rope_delta;
-        result.media_payloads      = std::move(processed.media_payloads);
+        result.starts_in_reasoning  = processed.starts_in_reasoning;
+        result.rendered_text        = std::move(processed.rendered_text);
+        result.continuation_content = std::move(processed.continuation_content);
+        result.token_types          = std::move(processed.token_types);
+        result.positions            = std::move(processed.positions);
+        result.rope_delta           = processed.rope_delta;
+        result.media_payloads       = std::move(processed.media_payloads);
         result.vision_items.reserve(processed.vision_items.size());
         for (fi::VisionItem& item : processed.vision_items) {
             result.vision_items.push_back(convert_vision_item(std::move(item)));
@@ -819,6 +804,7 @@ PreparedPrompt Frontend::prepare(PromptInput input, const PreparationControl& co
         const fi::RenderedChat rendered = impl_->chat_template.render(
             messages, render_options(options, rendered_markers), control);
         result.starts_in_reasoning  = rendered.starts_in_reasoning;
+        result.continuation_content = rendered.continuation_content;
         const auto tokenize_started = Clock::now();
         fi::EncodedChat encoded     = fi::encode_rendered_chat(
             *impl_->tokenizer, rendered, static_cast<std::size_t>(impl_->max_context) + 1U);
@@ -841,8 +827,7 @@ PreparedPrompt Frontend::prepare(PromptInput input, const PreparationControl& co
     result.identity.reusable = true;
     result.context_cache     = prepare_context_cache(
         std::move(cache_hints), message_count, message_boundaries, rendered_markers,
-        cache_boundaries, result.vision_items, engine_tool_marker_index, leading_boundary,
-        checked_token_count(result.token_ids.size()));
+        cache_boundaries, result.vision_items, engine_tool_marker_index, leading_boundary);
     result.prepare.seconds = std::chrono::duration<double>(Clock::now() - start).count();
     return PreparedPrompt(std::move(prepared));
 }
@@ -913,7 +898,6 @@ PreparedPrompt Frontend::prepare_tokens(std::vector<TokenId> token_ids,
     result.token_ids           = std::move(token_ids);
     assign_text_positions(result);
     result.identity.reusable                  = allow_prefix_identity;
-    result.context_cache.retention            = runtime::RetentionClass::RecentPrivate;
     result.context_cache.update_session_index = false;
     result.prepare.seconds = std::chrono::duration<double>(Clock::now() - start).count();
     return PreparedPrompt(std::move(prepared));
@@ -942,67 +926,37 @@ TokenPiece Frontend::token_piece(TokenId id) const {
 OutputSession Frontend::make_output_session(const PreparedPrompt& prompt,
                                             const StopPolicy& caller_stop,
                                             const OutputOptions& output,
-                                            const ThinkingControlOptions& thinking) const {
+                                            const ThinkingControlOptions& thinking,
+                                            const std::optional<OutputConstraint>& constraint) const {
     if (prompt.data_ == nullptr) { throw std::invalid_argument("prepared prompt is empty"); }
     StopPolicy policy = merge_stop_policy(*impl_->tokenizer, caller_stop);
     if (output.raw) { policy.publish_stop_token = true; }
-    return OutputSession(impl_->tokenizer, std::move(policy), output,
-                         prompt.data_->starts_in_reasoning, thinking,
-                         impl_->thinking_control_tokens, prompt.data_->tool_call_output);
+    std::unique_ptr<text::GrammarSession> matcher;
+    if (constraint) {
+        const RequestErrorKind error_kind = text::constraint_error_kind(constraint->kind);
+        if (impl_->defaults.token_ids.empty() || prompt.data_->has_active_tools ||
+            !caller_stop.token_ids.empty() || !caller_stop.strings.empty() ||
+            !caller_stop.include_model_defaults || caller_stop.publish_stop_token || output.raw ||
+            output.preserve_special_tokens) {
+            throw RequestError(error_kind,
+                               "constraints require default EOS, text output, no active tools "
+                               "and no custom stops");
+        }
+        try {
+            matcher = impl_->grammars().compile(
+                *constraint,
+                prompt.data_->starts_in_reasoning ? fi::kCanonicalReasoningCloseSerialization
+                                                  : std::string_view{},
+                prompt.data_->continuation_content);
+        } catch (const std::invalid_argument& error) {
+            throw RequestError(error_kind, error.what());
+        }
+    }
+    return OutputSession(
+        impl_->tokenizer, std::move(policy), output, prompt.data_->starts_in_reasoning, thinking,
+        impl_->thinking_control_tokens, prompt.data_->tool_call_output, std::move(matcher));
 }
 
 const StopPolicy& Frontend::default_stop_policy() const noexcept { return impl_->defaults; }
-
-std::shared_ptr<const frontend::GrammarVocabulary> Frontend::grammar_vocabulary() const {
-    std::lock_guard lock(impl_->grammar_mutex);
-    if (impl_->grammar_vocabulary == nullptr) {
-        impl_->grammar_vocabulary = std::make_shared<const frontend::TokenizerVocabulary>(
-            impl_->tokenizer);
-    }
-    return impl_->grammar_vocabulary;
-}
-
-std::shared_ptr<const frontend::CompiledGrammar>
-Frontend::compile_grammar(std::string_view gbnf, ConstraintScope scope, std::string* error) const {
-    if (error != nullptr) { error->clear(); }
-    std::string wrapped;
-    if (scope == ConstraintScope::Thinking) {
-        const std::string_view close_marker =
-            frontend::ChatParseWireFormat::qwen3_5().thinking_close;
-        const std::optional<std::string> text =
-            frontend::wrap_thinking_constraint_grammar(gbnf, close_marker, error);
-        if (!text) { return nullptr; }
-        wrapped = std::move(*text);
-        gbnf    = wrapped;
-    }
-    const std::shared_ptr<const frontend::GrammarVocabulary> vocabulary = grammar_vocabulary();
-    const std::string key(gbnf);
-    std::lock_guard lock(impl_->grammar_mutex);
-    if (const auto found = impl_->grammar_cache.find(key); found != impl_->grammar_cache.end()) {
-        if (std::shared_ptr<const frontend::CompiledGrammar> cached = found->second.lock()) {
-            return cached;
-        }
-    }
-    std::string diagnostic;
-    std::shared_ptr<const frontend::CompiledGrammar> grammar =
-        frontend::CompiledGrammar::compile(gbnf, vocabulary, &diagnostic);
-    if (grammar == nullptr) {
-        if (error != nullptr) { *error = std::move(diagnostic); }
-        return nullptr;
-    }
-    if (impl_->grammar_cache.size() >= Impl::kGrammarCacheKeys) {
-        for (auto entry = impl_->grammar_cache.begin(); entry != impl_->grammar_cache.end();) {
-            entry = entry->second.expired() ? impl_->grammar_cache.erase(entry)
-                                            : std::next(entry);
-        }
-    }
-    if (impl_->grammar_cache.size() >= Impl::kGrammarCacheKeys) {
-        // Every key is still live: the table is retired rather than grown without bound. A
-        // recompile on the next request is cheap relative to retaining their row caches.
-        impl_->grammar_cache.clear();
-    }
-    impl_->grammar_cache[key] = grammar;
-    return grammar;
-}
 
 } // namespace ninfer::models::qwen3_5

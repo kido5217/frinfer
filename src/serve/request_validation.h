@@ -8,7 +8,22 @@
 #include <string>
 #include <string_view>
 
+namespace ninfer::text {
+struct ParsedJsonNumbers;
+}
+
 namespace ninfer::serve {
+
+// Upstream 2734a56e centralizes protocol output-format parsing here (parse_json_output_format /
+// parse_structured_outputs). This fork parses response_format / text.format / output_config.format
+// inside each protocol route (e.g. anthropic_messages_request.cpp) on top of the shared
+// OutputConstraint surface, so those upstream declarations are intentionally not adopted; only the
+// self-contained bounded-number check below is taken.
+
+// Rejects schema numbers whose decimal spelling the JSON representation cannot preserve
+// (upstream 81c8ce09, "support tuple schemas and bounded numbers"). Applied to every parsed
+// request body by parse_json_body().
+void validate_schema_number_input(const text::ParsedJsonNumbers& parsed);
 
 [[noreturn]] void bad_request(std::string message, std::string param = {}, std::string code = {});
 
