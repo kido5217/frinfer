@@ -534,6 +534,7 @@ GenerationOutcome GenerationService::run(PreparedRequest& prepared, const Stream
 
     outcome.tool_calls      = std::move(result.tool_calls);
     outcome.tool_call_parse = result.tool_call_parse;
+    outcome.constraint      = result.constraint;
     return outcome;
 }
 

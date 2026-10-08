@@ -57,6 +57,8 @@ struct GenerationOutcome {
     std::vector<ninfer::TokenId> generated_token_ids;
     std::vector<ninfer::GeneratedToolCall> tool_calls;
     ninfer::ToolCallParseDiagnostics tool_call_parse;
+    // Constrained-decoding diagnostics for a constrained request; null otherwise.
+    std::optional<ninfer::ConstraintObservation> constraint;
     int prompt_tokens     = 0;
     int completion_tokens = 0;
     int reasoning_tokens  = 0;

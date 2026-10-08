@@ -109,6 +109,13 @@ public:
     [[nodiscard]] std::uint32_t grammar_masks(std::span<const TokenId> drafts,
                                               std::span<std::uint32_t> words);
 
+    // Constrained-decoding diagnostics. `observe_constraint` enables matcher timing collection
+    // during preparation; `constraint_uploaded` records device mask bytes; the observation is
+    // published (and the matcher's terminal state read) at settlement.
+    void observe_constraint(bool timings, double prepare_seconds) noexcept;
+    void constraint_uploaded(std::size_t bytes) noexcept;
+    [[nodiscard]] std::optional<ConstraintObservation> constraint_observation() const;
+
 private:
     class Impl;
     OutputSession(std::shared_ptr<const frontend::Tokenizer> tokenizer, StopPolicy policy,

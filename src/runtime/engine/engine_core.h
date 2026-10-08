@@ -68,6 +68,10 @@ public:
                            std::span<std::uint32_t> words) override {
             return outputs[row]->grammar_masks(drafts, words);
         }
+
+        void uploaded(std::size_t row, std::size_t bytes) noexcept override {
+            outputs[row]->constraint_uploaded(bytes);
+        }
     };
 
     EngineCore(Instance& instance, DeviceContext& device, const EngineOptions& options,
@@ -215,6 +219,7 @@ public:
                                        "grammar constraints need the ordinary or MTP backend");
                 }
             }
+            const auto constraint_started = observation.phase_timings ? Clock::now() : submitted;
             auto output = instance_.frontend.make_output_session(
                 prompt, options.stop, options.output, options.execution.thinking,
                 options.constraint);
@@ -231,6 +236,11 @@ public:
                 throw RequestError(RequestErrorKind::ThinkingBudgetCapacityInsufficient,
                                    error.what());
             }
+            const auto ready = Clock::now();
+            output.observe_constraint(
+                observation.phase_timings,
+                std::chrono::duration<double>(ready - constraint_started).count());
+            prepare_seconds += std::chrono::duration<double>(ready - submitted).count();
             request = std::make_shared<Request>(
                 request_id, publication_order, std::move(prompt), std::move(output), prompt_summary,
                 prepare_seconds, std::move(options), consumer_mode, std::move(observation),
@@ -797,6 +807,7 @@ private:
         result.reasoning                       = std::move(request->reasoning);
         result.tool_calls                      = request->output.take_tool_calls();
         result.tool_call_parse                 = request->output.tool_call_parse_diagnostics();
+        result.constraint                      = request->output.constraint_observation();
         result.reasoning_tokens                = request->output.reasoning_tokens();
         result.finish_reason                   = reason;
         result.matched_stop_string             = request->output.matched_stop_string();

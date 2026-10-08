@@ -304,11 +304,26 @@ struct OutputConstraint {
     bool operator==(const OutputConstraint&) const = default;
 };
 
+// Constrained tool-calling policy (upstream 41e50d0d). Declarations belong to PromptOptions;
+// selection and cardinality affect one generation only.
+enum class ToolChoiceMode : std::uint8_t { Auto, None, Required };
+// Basic protects every tool call. Automatic applies constraints only for strict tools or an
+// explicit selection/count policy.
+enum class ToolConstraintMode : std::uint8_t { Automatic, Basic };
+
+struct ToolChoice {
+    ToolChoiceMode mode = ToolChoiceMode::Auto;
+    std::optional<std::vector<std::string>> allowed_names;
+    bool parallel                  = true;
+    ToolConstraintMode constraints = ToolConstraintMode::Basic;
+};
+
 struct RequestOptions {
     ExecutionOptions execution;
     StopPolicy stop;
     OutputOptions output;
     std::optional<OutputConstraint> constraint;
+    ToolChoice tool_choice;
 };
 
 enum class MediaKind : std::uint8_t {
@@ -939,6 +954,8 @@ struct GenerationResult {
     std::string reasoning;
     std::vector<GeneratedToolCall> tool_calls;
     ToolCallParseDiagnostics tool_call_parse;
+    // Constrained-decoding diagnostics for a constrained request; null otherwise.
+    std::optional<ConstraintObservation> constraint;
     std::uint32_t reasoning_tokens = 0;
     FinishReason finish_reason     = FinishReason::None;
     std::optional<std::string> matched_stop_string;

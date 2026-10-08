@@ -805,6 +805,19 @@ std::uint32_t OutputSession::grammar_masks(std::span<const TokenId> drafts,
     return impl_->grammar->masks(drafts, words);
 }
 
+void OutputSession::observe_constraint(bool timings, double prepare_seconds) noexcept {
+    if (constrained()) { impl_->grammar->observe(timings, prepare_seconds); }
+}
+
+void OutputSession::constraint_uploaded(std::size_t bytes) noexcept {
+    if (constrained()) { impl_->grammar->uploaded(bytes); }
+}
+
+std::optional<ConstraintObservation> OutputSession::constraint_observation() const {
+    if (!constrained()) { return std::nullopt; }
+    return impl_->grammar->observation();
+}
+
 void OutputSession::discard_preview() noexcept {
     if (impl_ == nullptr || !impl_->preview_ready) { return; }
     if (impl_->grammar) { impl_->grammar->discard(); }
