@@ -349,10 +349,14 @@ ninfer::RequestOptions to_request_options(const GenerationRequest& request,
     // stop strings (which would need their own matcher branch) and must not preserve the
     // special-token spellings the grammar licenses explicitly.
     if (request.constrains_tools() && !request.stop_strings.empty()) {
+        // An output-option conflict a constrained tool turn cannot carry. It is reported with the
+        // Engine's own mapping (`tool_constraint_invalid` on `tools`) so the serve fail-fast and
+        // the Engine's `InvalidToolConstraint` path agree on one documented shape.
         ApiError error;
         error.status  = 400;
         error.type    = "invalid_request_error";
-        error.param   = "stop";
+        error.param   = "tools";
+        error.code    = "tool_constraint_invalid";
         error.message = "constrained tools require model EOS and cannot use custom stops";
         throw ApiException(std::move(error));
     }

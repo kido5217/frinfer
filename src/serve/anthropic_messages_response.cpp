@@ -134,8 +134,8 @@ AnthropicResponseIdentity make_anthropic_response_identity(std::string request_i
 
 ApiError normalize_anthropic_error(ApiError error) {
     if (error.param == "reasoning_effort") { error.param = "output_config.effort"; }
-    // A constrained-answer failure surfaces from the shared contract with the OpenAI field path;
-    // this route carries its constraint in output_config.format.
+    // An Engine-rejected output constraint is reported by the Engine constraint-error mapping on
+    // the OpenAI field path; this route carries its constraint in output_config.format.
     if (error.param == "response_format") { error.param = "output_config.format"; }
     if (error.code == "server_overloaded" || error.status == 429) {
         error.status = 529;

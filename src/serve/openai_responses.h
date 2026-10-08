@@ -92,6 +92,11 @@ BuiltOpenAIResponse make_openai_response_object(const std::string& id, std::int6
 
 std::string make_openai_response_input_tokens_body(int input_tokens);
 
+// Rewrites an error root onto its Responses field name before the error is written (`messages`
+// -> `input`, `reasoning_effort` -> `reasoning.effort`, the Engine constraint-error mapping's
+// `response_format` -> `text.format`).
+ApiError responses_error(ApiError error);
+
 struct OpenAIResponsesStreamFinish {
     BuiltOpenAIResponse response;
     std::vector<std::string> events_before_terminal;

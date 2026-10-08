@@ -1060,8 +1060,10 @@ int test_tools() {
                       "tool choice cardinality reaches RequestOptions");
     body["stop"] = Json::array({"done"});
     const ApiError stopped_tools = api_error([&] { (void)options(parse(body).generation); });
-    failures += check(stopped_tools.status == 400 && stopped_tools.param == "stop",
-                      "custom stops are rejected for constrained tools");
+    failures += check(stopped_tools.status == 400 &&
+                          stopped_tools.code == "tool_constraint_invalid" &&
+                          stopped_tools.param == "tools",
+                      "custom stops are rejected for constrained tools as a tool constraint");
     body.erase("tools");
     failures += check(parse(body).generation.tools.empty(),
                       "parallel_tool_calls=false is neutral without tools");

@@ -1184,6 +1184,26 @@ int test_input_tokens_uses_shared_state_path() {
     return failures;
 }
 
+int test_error_field_remap() {
+    int failures = 0;
+    // The Engine constraint-error mapping (generation_service.cpp) reports output-constraint
+    // failures on the OpenAI `response_format` root; the Responses route carries the constraint in
+    // `text.format`.
+    ApiError constraint;
+    constraint.param = "response_format";
+    failures += check(responses_error(constraint).param == "text.format",
+                      "a constraint error was not attributed to text.format");
+    ApiError messages;
+    messages.param = "messages";
+    failures += check(responses_error(messages).param == "input",
+                      "a messages error was not attributed to input");
+    ApiError effort;
+    effort.param = "reasoning_effort";
+    failures += check(responses_error(effort).param == "reasoning.effort",
+                      "an effort error was not attributed to reasoning.effort");
+    return failures;
+}
+
 } // namespace
 
 int main() {
@@ -1203,6 +1223,7 @@ int main() {
     failures += test_logprobs_response();
     failures += test_sse_sequence_and_failures();
     failures += test_input_tokens_uses_shared_state_path();
+    failures += test_error_field_remap();
     if (failures == 0) { std::cout << "ok\n"; }
     return failures == 0 ? 0 : 1;
 }

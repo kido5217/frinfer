@@ -211,7 +211,7 @@ int exercise(const char* artifact) {
               dflash_message.find("dflash2") != std::string::npos,
           "a constrained request on DFlash2 is rejected naming the backend", dflash_message);
 
-    // 7. Anthropic structured outputs: the equivalent json_schema through output_config.format
+    // 7. Anthropic constrained output: the equivalent json_schema through output_config.format
     //    reaches the same constraint pipeline and, at temperature 0, the same answer as the chat
     //    route. This is the ticket's Anthropic-vs-chat round-trip on a real artifact.
     Json anthropic_body = base_request();
