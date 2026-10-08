@@ -60,7 +60,11 @@ void require_tensor_layout(const Tensor& tensor, const char* label, std::int32_t
     }
 }
 
-void require_common(const Tensor& positions, int rotary_dim, float theta) {
+void require_common(const Tensor& positions, int rotary_dim, float theta,
+                    DeviceExecutionView execution) {
+    if (execution.multiprocessor_count <= 0) {
+        throw std::invalid_argument("rope: positive multiprocessor count required");
+    }
     if (positions.dtype != DType::I32) {
         throw std::invalid_argument("rope: positions must be I32");
     }
@@ -109,8 +113,8 @@ void require_model_mode(int axes, int rotary_dim, std::int32_t head_dim) {
 } // namespace
 
 void rope(const Tensor& positions, int rotary_dim, float theta, Tensor& q, Tensor& k,
-          cudaStream_t stream) {
-    require_common(positions, rotary_dim, theta);
+          DeviceExecutionView execution) {
+    require_common(positions, rotary_dim, theta, execution);
     if (q.dtype != DType::BF16 || k.dtype != DType::BF16) {
         throw std::invalid_argument("rope: q/k must be BF16");
     }
@@ -130,11 +134,12 @@ void rope(const Tensor& positions, int rotary_dim, float theta, Tensor& q, Tenso
     if (q.data == nullptr || k.data == nullptr) {
         throw std::invalid_argument("rope: q/k data must be non-null");
     }
-    detail::rope_launch(positions, rotary_dim, theta, q, k, stream);
+    detail::rope_launch(positions, rotary_dim, theta, q, k, execution);
 }
 
-void rope(const Tensor& positions, int rotary_dim, float theta, Tensor& x, cudaStream_t stream) {
-    require_common(positions, rotary_dim, theta);
+void rope(const Tensor& positions, int rotary_dim, float theta, Tensor& x,
+          DeviceExecutionView execution) {
+    require_common(positions, rotary_dim, theta, execution);
     if (x.dtype != DType::BF16) { throw std::invalid_argument("rope: tensor must be BF16"); }
     (void)numel_allow_zero(positions, "positions");
     const std::int64_t x_numel  = numel_allow_zero(x, "tensor");
@@ -147,12 +152,12 @@ void rope(const Tensor& positions, int rotary_dim, float theta, Tensor& x, cudaS
     if (x_numel == 0) { return; }
     require_positions_storage(positions);
     if (x.data == nullptr) { throw std::invalid_argument("rope: tensor data must be non-null"); }
-    detail::rope_single_launch(positions, rotary_dim, theta, x, stream);
+    detail::rope_single_launch(positions, rotary_dim, theta, x, execution);
 }
 
 void rope(const Tensor& positions, int rotary_dim, float theta, const YarnScale& yarn, Tensor& q,
-          Tensor& k, cudaStream_t stream) {
-    require_common(positions, rotary_dim, theta);
+          Tensor& k, DeviceExecutionView execution) {
+    require_common(positions, rotary_dim, theta, execution);
     require_yarn_scale(yarn);
     if (q.dtype != DType::BF16 || k.dtype != DType::BF16) {
         throw std::invalid_argument("rope: q/k must be BF16");
@@ -173,12 +178,12 @@ void rope(const Tensor& positions, int rotary_dim, float theta, const YarnScale&
     if (q.data == nullptr || k.data == nullptr) {
         throw std::invalid_argument("rope: q/k data must be non-null");
     }
-    detail::rope_yarn_launch(positions, rotary_dim, theta, yarn, q, k, stream);
+    detail::rope_yarn_launch(positions, rotary_dim, theta, yarn, q, k, execution);
 }
 
 void rope(const Tensor& positions, int rotary_dim, float theta, const YarnScale& yarn, Tensor& x,
-          cudaStream_t stream) {
-    require_common(positions, rotary_dim, theta);
+          DeviceExecutionView execution) {
+    require_common(positions, rotary_dim, theta, execution);
     require_yarn_scale(yarn);
     if (x.dtype != DType::BF16) { throw std::invalid_argument("rope: tensor must be BF16"); }
     (void)numel_allow_zero(positions, "positions");
@@ -192,7 +197,7 @@ void rope(const Tensor& positions, int rotary_dim, float theta, const YarnScale&
     if (x_numel == 0) { return; }
     require_positions_storage(positions);
     if (x.data == nullptr) { throw std::invalid_argument("rope: tensor data must be non-null"); }
-    detail::rope_yarn_single_launch(positions, rotary_dim, theta, yarn, x, stream);
+    detail::rope_yarn_single_launch(positions, rotary_dim, theta, yarn, x, execution);
 }
 
 YarnTable compute_rope_yarn_table(float theta, int rotary_dim, std::int64_t original_max,

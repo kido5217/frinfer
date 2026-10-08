@@ -1,8 +1,7 @@
 #pragma once
 
+#include "core/device.h"
 #include "core/tensor.h"
-
-#include <cuda_runtime.h> // cudaStream_t
 
 #include <cstdint>
 #include <vector>
@@ -60,24 +59,27 @@ struct YarnTable {
  * BF16 values are promoted and compared directly with that result; output storage rounding belongs
  * to the Op's numerical criterion, not the oracle. Unrotated dimensions remain bit-exact. Private
  * kernel arithmetic is implementation-defined. The Op uses no workspace or persistent state.
+ * `execution` supplies the stream and the selected device's positive physical SM count; the count
+ * selects launch geometry, not the transformation.
  */
 void rope(const Tensor& positions, int rotary_dim, float theta, Tensor& q, Tensor& k,
-          cudaStream_t stream);
+          DeviceExecutionView execution);
 
 // Single-tensor form with the same formula and storage contract. The head count comes directly
 // from x; Q versus K role does not change the transformation.
-void rope(const Tensor& positions, int rotary_dim, float theta, Tensor& x, cudaStream_t stream);
+void rope(const Tensor& positions, int rotary_dim, float theta, Tensor& x,
+          DeviceExecutionView execution);
 
 // YaRN extension pair form: the rotation reads the device-resident per-pair frequency table and
 // applies `yarn.mscale` to cos/sin. `yarn.inv_freq` must be non-null and point to
 // `rotary_dim / 2` device-resident fp32 values. theta is retained for the call signature but the
 // YaRN path keys on table presence, not theta.
 void rope(const Tensor& positions, int rotary_dim, float theta, const YarnScale& yarn, Tensor& q,
-          Tensor& k, cudaStream_t stream);
+          Tensor& k, DeviceExecutionView execution);
 
 // YaRN extension single-tensor form.
 void rope(const Tensor& positions, int rotary_dim, float theta, const YarnScale& yarn, Tensor& x,
-          cudaStream_t stream);
+          DeviceExecutionView execution);
 
 // Host-side YaRN table construction (fp64 math, cast to fp32). Computes the per-pair inverse
 // frequencies (rotary_dim / 2 fp32 values) and the fp32 attention magnitude for the extension

@@ -2,9 +2,8 @@
 
 #include "core/weight.h"
 #include "core/arena.h"
+#include "core/device.h"
 #include "core/tensor.h"
-
-#include <cuda_runtime.h>
 
 #include <cstddef>
 #include <cstdint>
@@ -92,11 +91,13 @@ struct SparseMoeHints {
  * route. Both own routed gate/up, routed down, and the merge with the shared expert.
  *
  * x, destination, all weight planes, and live workspace must be pairwise non-overlapping.
- * Execution is enqueued on stream without host synchronization. Workspace is caller-owned,
- * graph-stable transient storage and carries no state beyond the call.
+ * Execution is enqueued on execution.stream without host synchronization. The positive physical
+ * SM count in execution selects the persistent prefill grid. Workspace is caller-owned,
+ * graph-stable transient storage and carries no state beyond the call; its capacity does not
+ * depend on the grid.
  */
 void sparse_moe(const Tensor& x, const SparseMoeWeights& weights, SparseMoeEpilogue epilogue,
-                Tensor& destination, WorkspaceArena& workspace, cudaStream_t stream);
+                Tensor& destination, WorkspaceArena& workspace, DeviceExecutionView execution);
 
 /**
  * The same Op with caller-supplied execution hints. Semantics, workspace requirement and output
@@ -104,6 +105,6 @@ void sparse_moe(const Tensor& x, const SparseMoeWeights& weights, SparseMoeEpilo
  */
 void sparse_moe(const Tensor& x, const SparseMoeWeights& weights, SparseMoeEpilogue epilogue,
                 Tensor& destination, const SparseMoeHints& hints, WorkspaceArena& workspace,
-                cudaStream_t stream);
+                DeviceExecutionView execution);
 
 } // namespace ninfer::ops
