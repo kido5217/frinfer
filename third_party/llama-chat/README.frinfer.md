@@ -61,7 +61,8 @@ and the Qwen3-Coder handler call `build_grammar`/`gbnf_format_literal`. The shar
 contract (`src/product/constraint/constraint_contract.cpp`) no longer converts `response_format`
 `json_schema`/`json_object` documents with `json_schema_to_grammar` (wayfinder map #45, design #48);
 it validates them and forwards the document text, and the Engine's adopted XGrammar stack
-(`src/text/json_schema.*`) compiles it. `common_chat_params::grammar` (the
+(`src/text/json_schema.*`) compiles it. `common/chat.cpp:1427` still calls `json_schema_to_grammar()`
+directly for the template-emitted grammar path; that call is vendored-only and unconsumed. `common_chat_params::grammar` (the
 template-emitted grammar) remains unconsumed. Likewise, `chat-auto-parser.h` is needed for
 `autoparser::generation_params`, but the analysis/generator implementations are excluded and
 stubbed.

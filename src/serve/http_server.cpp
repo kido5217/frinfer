@@ -32,8 +32,10 @@ bool is_openai_path(std::string_view path) {
     return path.starts_with("/v1/") && !is_anthropic_path(path);
 }
 
-void ensure_openai_request_id(const httplib::Request& request, httplib::Response& response) {
-    if (is_openai_path(request.path) && !response.has_header("x-request-id")) {
+void ensure_http_request_id(const httplib::Request& request, httplib::Response& response) {
+    if (is_anthropic_path(request.path) && !response.has_header("request-id")) {
+        response.set_header("request-id", new_anthropic_request_id());
+    } else if (is_openai_path(request.path) && !response.has_header("x-request-id")) {
         response.set_header("x-request-id", new_openai_request_id());
     }
 }
@@ -130,7 +132,7 @@ void write_anthropic_error(httplib::Response& response, const ApiError& api_erro
 httplib::Server::HandlerResponse handle_unrendered_http_error(const ServeOptions& options,
                                                               const httplib::Request& request,
                                                               httplib::Response& response) {
-    ensure_openai_request_id(request, response);
+    ensure_http_request_id(request, response);
     if (!response.body.empty()) { return httplib::Server::HandlerResponse::Unhandled; }
 
     ApiError error;
@@ -148,7 +150,7 @@ httplib::Server::HandlerResponse handle_unrendered_http_error(const ServeOptions
         return httplib::Server::HandlerResponse::Unhandled;
     }
     if (request.path.rfind("/v1/messages", 0) == 0) {
-        write_anthropic_error(response, error, new_anthropic_request_id());
+        write_anthropic_error(response, error, response.get_header_value("request-id"));
     } else {
         write_openai_error(response, error);
     }
@@ -323,7 +325,7 @@ void HttpServer::register_routes() {
     }
 
     server_.set_pre_routing_handler([this](const httplib::Request& req, httplib::Response& res) {
-        ensure_openai_request_id(req, res);
+        ensure_http_request_id(req, res);
         if (options_.api_key.empty() || req.path == "/health" || req.method == "OPTIONS") {
             return httplib::Server::HandlerResponse::Unhandled;
         }
@@ -352,7 +354,7 @@ void HttpServer::register_routes() {
 
     server_.set_exception_handler(
         [this](const httplib::Request& req, httplib::Response& res, std::exception_ptr ep) {
-            ensure_openai_request_id(req, res);
+            ensure_http_request_id(req, res);
             try {
                 std::rethrow_exception(ep);
             } catch (const ApiException& e) {

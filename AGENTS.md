@@ -79,7 +79,7 @@ changing it. Prefer explicit implementations for supported architectures. Do not
 graphs, family base classes, plugin discovery, string-driven execution, hidden device allocation,
 runtime weight repacking, or placeholders for hypothetical targets without a product requirement.
 
-## Change consistency
+## Change policy
 
 Project-owned APIs, CLIs, Python tools, fixtures, reports, formats, and documentation do not preserve
 backward compatibility. When replacing behavior, remove superseded aliases, fallbacks, transition
@@ -96,7 +96,7 @@ The "This fork" section of `README.md` (fork constraints, changes-from-upstream 
 bug-reporting policy, disclaimer) is maintained documentation: add or update a table row — and
 refresh its last-updated stamp — whenever a fork feature changes or its status changes.
 
-## Verification and completion
+## Verification and reporting
 
 Select evidence to support the changed behavior and material claims. Tests should protect supported
 observable behavior, mathematical or state semantics, and realistic regressions, including plausible
@@ -135,7 +135,7 @@ inventories, and exact probabilistic outputs are not default requirements. Use e
 exact outputs, and appropriate numerical or behavioral criteria otherwise. State checks that could
 not run and their implications.
 
-## Reporting and completion
+### Reporting and completion
 
 Selective reporting and evidence gaming are prohibited, even when every disclosed
 statement is individually true. For every implementation task:
@@ -170,7 +170,7 @@ statement is individually true. For every implementation task:
    Disclose remaining uncertainty without silently making it a new requirement.
    Disclosure does not excuse unmet completion conditions.
 
-## Reference navigation
+## References
 
 Read the authority relevant to the current decision; this is not a mandatory reading list.
 
@@ -186,7 +186,7 @@ Read the authority relevant to the current decision; this is not a mandatory rea
 
 [Documentation map](docs/README.md) routes to narrower authorities when needed.
 
-## Local operations
+## Local environment
 
 The development environment is the nix flake at the repository root: `nix develop` provides the
 CUDA 13.1 toolchain (`cudaPackages_13_1`: nvcc, cudart, nvtx, ncu, nsys), cmake/ninja/pkg-config,

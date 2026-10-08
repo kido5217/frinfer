@@ -109,11 +109,9 @@ PrometheusSnapshot populated_snapshot() {
     snapshot.runtime.host_state_occupied_slots    = 2;
     snapshot.runtime.device_main_kv_occupied_pages = 64;
     snapshot.runtime.device_backend_kv_occupied_pages = 8;
-    snapshot.runtime.pressure_checkpoints_dropped = 2;
-    snapshot.runtime.pressure_searches            = 40;
     snapshot.memory.max_context                   = 8192;
     snapshot.memory.kv_capacity_page_groups       = 128;
-    snapshot.memory.host_kv_capacity_bytes        = 8ULL << 30;
+    snapshot.memory.host_context_capacity_bytes   = 8ULL << 30;
     snapshot.requests_started                     = 11;
     return snapshot;
 }
@@ -168,8 +166,6 @@ int test_snapshot_values() {
     failures += check(value("decode_row_rounds_total") == "99", "decode_row_rounds_total");
     failures += check(value("requests_started_total") == "11", "requests_started_total");
     failures += check(value("main_kv_pages_transferred_d2h_total") == "11", "kv d2h pages");
-    failures += check(value("host_kv_pressure_checkpoints_dropped_total") == "2",
-                      "pressure_checkpoints_dropped_total");
     failures += check(value("requests_running") == "2", "requests_running");
     failures += check(value("requests_waiting") == "4", "requests_waiting");
     failures += check(value("requests_terminal_pending") == "7", "requests_terminal_pending");
