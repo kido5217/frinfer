@@ -23,8 +23,8 @@ The Main KV pool must cover `max_concurrency` lanes at full `max_context`:
 - **Automatic**: the resolved page count is only known after the memory budget is applied, so
   `construct_model` rejects an `auto` resolution below `curve.maximum_main_page_groups` with the
   same contract message.
-- The runtime's error branch becomes unreachable by construction. `engine_core.h` is not modified;
-  the fallback stays upstream's bytes.
+- The runtime's error branch becomes unreachable by construction. `engine_core.h` keeps upstream's
+  bytes; only a NON-CALLABLE comment marks the pinned-off fallback (no behavior change).
 
 ## Considered options
 
@@ -48,4 +48,5 @@ The Main KV pool must cover `max_concurrency` lanes at full `max_context`:
   operator-supplied capacity; the CLI keeps its single-lane `--max-context` default.
 - Low-level Program tests that build deliberately tight pools keep doing so through the
   planner/finalize path, but must now declare a compliant `kv_capacity`. `test_engine_no_preemption_real`
-  pins both the accepted concurrent run and the rejection message.
+  pins the accepted concurrent run, a cached-context restore under the full compliant pool, and both
+  ends of the capacity rejection message.
