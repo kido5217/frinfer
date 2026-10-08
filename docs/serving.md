@@ -138,9 +138,9 @@ guarantee NInfer cannot provide. The retired vLLM `guided_json`/`guided_regex`/`
 `guided_grammar` constrained-decoding aliases are rejected with
 `constrained_decoding_not_supported`; use `grammar` (GBNF), `structured_outputs`, or
 `response_format` instead. A `tools` field combined with an output constraint is rejected because
-the tool-call parser owns the turn; `tool_choice:"none"` (or an empty `tools` array) keeps no
-callable declarations, so the constraint applies alone. Constrained tools require model EOS and
-reject custom stop strings.
+the tool-call parser owns the turn. The rejection keys on the declared `tools` field itself, so an
+empty `tools` array or `tool_choice:"none"` does not make the combination executable: a constrained
+answer has no tools route. Constrained tools require model EOS and reject custom stop strings.
 
 Semantically neutral fields do not make an otherwise executable request fail. All-zero
 `logit_bias`, `logprobs:false`, `top_logprobs:0`, `verbosity:"medium"`, empty legacy tool controls,
@@ -980,8 +980,10 @@ preserved for consumer validation, and a stable text-fallback reason. Fallback r
 `malformed_structure`, `duplicate_parameter`, `invalid_tool_name`, `undeclared_tool`, and
 `trailing_content`. These counters contain no tool arguments or generated text.
 
-`request_done.result.constraint` carries the Engine's terminal constraint observation: the
-committed output branch (`content`, `tools`, or `undecided`), completion and termination state,
+`request_done.result.constraint` carries the Engine's terminal constraint observation. The
+committed output branch is always `undecided`: the adopted session reports completion and
+termination for both output constraints and constrained tool turns, but does not track upstream's
+composition branches. It also carries completion and termination state,
 compile-cache access (`hit`, `built`, or `waited`), and the mask/matcher work attribution
 (`prepare_seconds`, `mask_seconds`, `matcher_seconds`, `mask_positions`, `mask_upload_bytes`,
 plus whether phase timings were collected). It is `null` for unconstrained requests and covers

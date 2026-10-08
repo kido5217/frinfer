@@ -100,11 +100,12 @@ ApiError request_error_to_api_error(const ninfer::RequestError& exception, Const
         error.code   = "constraint_dead_end";
         break;
     case ninfer::RequestErrorKind::InvalidToolConstraint:
+        // Every one of these identifies the declared tool set: an unsatisfiable selection or
+        // cardinality, or a strict schema that cannot be enforced. The parameter is therefore
+        // always `tools`, even when the throw carried the default output-constraint source.
         error.status = 400;
         error.code   = "tool_constraint_invalid";
-        if (exception.source() == ninfer::RequestErrorSource::Tools) {
-            error.param = "tools" + exception.pointer();
-        }
+        error.param  = "tools" + exception.pointer();
         break;
     case ninfer::RequestErrorKind::Overloaded:
         error.param.clear();

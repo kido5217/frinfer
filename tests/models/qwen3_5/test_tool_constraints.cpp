@@ -331,6 +331,28 @@ void run() {
         (void)contract(schema({{"type", {"string", "null"}}}), true, required);
     } catch (const ninfer::RequestError&) { rejected = true; }
     require(rejected, "ambiguous top-level representation accepted");
+
+    // Fork duplicate tolerance: an identical repeat merges into one unambiguous tool; a
+    // conflicting repeat clears the parameters and falls back to the legacy normalizer.
+    const auto duplicates = [](const Json& first, const Json& second) {
+        return std::vector<std::string>{
+            Json{{"type", "function"},
+                 {"function", {{"name", "call"}, {"parameters", first}, {"strict", false}}}}
+                .dump(),
+            Json{{"type", "function"},
+                 {"function", {{"name", "call"}, {"parameters", second}, {"strict", false}}}}
+                .dump()};
+    };
+    const auto identical = frontend::build_tool_call_output_contract(
+        duplicates(schema({{"type", "integer"}}), schema({{"type", "integer"}})));
+    require(identical->tools.size() == 1, "identical duplicate declarations did not merge");
+    require(identical->tools.front().unambiguous && identical->tools.front().parameters.size() == 1,
+            "identical duplicate declarations lost their unambiguous parameter contract");
+    const auto conflicting = frontend::build_tool_call_output_contract(
+        duplicates(schema({{"type", "integer"}}), schema({{"type", "string"}})));
+    require(conflicting->tools.size() == 1, "conflicting duplicate declarations did not merge");
+    require(!conflicting->tools.front().unambiguous && conflicting->tools.front().parameters.empty(),
+            "conflicting duplicate declarations kept an unambiguous parameter contract");
 }
 } // namespace
 

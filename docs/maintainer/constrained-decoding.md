@@ -660,8 +660,8 @@ A/B 使用相同 prompt，分别要求对象字段和有限枚举。编译资源
 - **统一工具合同**：`tool_call_parser.h` 的 fork 私有 `ToolCallOutputContract` 已删除，`tool_contract.h` 为唯一定义（增补 fork 已 pin 的 `unambiguous` 重名合并语义；`enforce_declared_names` 恒为真，原 open-contract 测试辅助改为直接声明被测工具）。`ChatParseCore`、`OutputSession`、`prepare()` 与 chat parsing 语料/归一化测试随之迁移。
 - **工具测试注册**：`ninfer_qwen3_5_tool_constraints_test`（合同选择、工具语法 `accepts` 与经生产流式核心的终端解码；解码器断言相对上游适配：缺 `</tool_call>` 关闭容忍按本 fork B3 规则保留调用）与 `ninfer_qwen3_5_tools_real_test`（artifact 门控，缺件跳过）已注册；`tests/README.md` 记录两者。`test_tool_schema.py` 的 `--probe` 口径保留在单测二进制中，但其 `jsonschema` oracle 未接入 CTest（devShell 无该依赖，见下）。
 - **Responses 路由的 `text.format` 结构化输出**：`src/serve/openai_responses_request.cpp` 接受 `json_object` 与带 `name`/`schema` 的 `json_schema`（经与 Chat/Anthropic 同源的 `json_schema_constraint_source` 校验，错误定位 `text.format`），写入 `GenerationRequest.constraint`；`tools` 与约束同存仍按他路由 fail-closed 拒绝。
-- **ConstraintObservation 请求日志**：`request_done` 的 `result.constraint` 携带 Engine 终态观测（分支、完成/终结、cache 访问、阶段耗时与 mask 位置/上传字节；无约束为 `null`），与 `metrics.cpp` 同源；`docs/serving.md` 记录字段。
-- **Metrics 503 覆盖**：`GET /metrics` 在未 attach Engine 时返回 503 `service_unavailable`（启动期绑定先于 Engine 就绪），由 `ninfer_http_transport_test` 经 loopback 绑定但未 attach 的 server 黑盒覆盖；另覆盖未 `--metrics` 的 404。启动绑定顺序未动。
+- **ConstraintObservation 请求日志**：`request_done` 的 `result.constraint` 携带 Engine 终态观测（完成/终结、cache 访问、阶段耗时与 mask 位置/上传字节；无约束为 `null`），与 `metrics.cpp` 同源；`docs/serving.md` 记录字段。`branch` 恒为 `undecided`：本 fork 的 `GrammarSession` 只报告终结与完成，不跟踪上游的组合分支（见下）。
+- **Metrics 503 覆盖**：`GET /metrics` 在未 attach Engine 时返回 503 `service_unavailable`；`ninfer_http_transport_test` 经 `HttpServerTestAccess` 直接调用 handler（白盒：不开 socket、不 `bind()`）覆盖 503，另有未 `--metrics` 的 404。启动绑定顺序未动。
 - **有界数字输入校验**：`src/serve/request_validation.cpp` 的 `validate_schema_number_input()` 在每个请求体解析后拒绝无法由 JSON 数字表示保真的 schema 数字（上游 `81c8ce09` “support tuple schemas and bounded numbers”；已覆盖 `text.format` 与 strict 工具路径）。
 
 ### 仍未落地
@@ -669,6 +669,7 @@ A/B 使用相同 prompt，分别要求对象字段和有限枚举。编译资源
 - **`test_frontend.cpp` 的 `test_tools_and_json_output`**：该用例断言 body 约束与工具约束组合输出的分支观测（`ConstraintOutputBranch` 的 `Undecided`/`Content`/`Tools` 迁移与 complete-before-EOS 状态），属于上游 `2734a56e` 的组合（composition）机制；本 fork 的 `text::GrammarSession` 不跟踪分支。`make_output_session` 沿 `41e50d0d` 在约束与工具有效声明并存时 fail-closed（serve 层亦拒绝该组合），与未移植组合一致。
 - **`test_tool_schema.py` 的 CTest oracle**：需第三方 `jsonschema`（`tests/text/requirements.txt`），devShell 未提供且本 fork CTest 无 Python 用例先例；`--probe` 二进制口径已随 `tool_constraints_test` 落地，可手动以 `nix shell` 提供依赖的方式运行。
 - **`tool_constraints: auto` 线控**：上游 `request_validation.cpp` 的 `tool_constraints`（`auto`/`basic`）字段未引入；本 fork 默认即 basic 结构约束（见 serving.md 的约束工具调用一节），未提供切回自由解析的开关。
+- **`test_engine_tools_real.cpp` 的 JSON 约束×工具组合段**：`e617e75e` 停用该段（`(void)composed_output`）——该组合在 `make_output_session` 即 fail-closed（前端直接抛错），本 fork 无分支观测可断言。代价：Engine 级「约束 + 工具 → HTTP 400」与工具分支观测（`branch==Tools`、`mask_positions>0`）目前无测试覆盖。
 - **集中式请求解析**：上游把 `response_format`/`text.format`/`output_config.format` 的解析集中在 `src/serve/request_validation.cpp`（`parse_json_output_format`/`parse_structured_outputs`）；本 fork 在各协议路由内各自实现，因此未整文件采用上游的 `request_validation.*`，只补入其中独立可用的有界数字校验。此为刻意分歧，非缺口。
 
 对外合同的宽度以 `docs/serving.md` 与 schema 测试为准：required/named/strict/`parallel_tool_calls:false` 与 Responses 结构化 `text.format` 已从拒绝改为执行；`serving.md` 与 schema 测试随实现一同更新。
