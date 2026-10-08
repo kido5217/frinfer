@@ -100,9 +100,11 @@ ApiError request_error_to_api_error(const ninfer::RequestError& exception, Const
         error.code   = "constraint_dead_end";
         break;
     case ninfer::RequestErrorKind::InvalidToolConstraint:
-        // Every one of these identifies the declared tool set: an unsatisfiable selection or
-        // cardinality, or a strict schema that cannot be enforced. The parameter is therefore
-        // always `tools`, even when the throw carried the default output-constraint source.
+        // Every one of these arises from a constrained tool turn: an unsatisfiable selection or
+        // cardinality, a strict schema that cannot be enforced, or an output-option conflict
+        // (custom stops, raw output, non-default EOS) that only a constrained turn can hit. The
+        // parameter is therefore always `tools`, even when the throw carried the default
+        // output-constraint source.
         error.status = 400;
         error.code   = "tool_constraint_invalid";
         error.param  = "tools" + exception.pointer();

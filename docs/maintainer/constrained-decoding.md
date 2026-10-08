@@ -669,7 +669,7 @@ A/B 使用相同 prompt，分别要求对象字段和有限枚举。编译资源
 - **`test_frontend.cpp` 的 `test_tools_and_json_output`**：该用例断言 body 约束与工具约束组合输出的分支观测（`ConstraintOutputBranch` 的 `Undecided`/`Content`/`Tools` 迁移与 complete-before-EOS 状态），属于上游 `2734a56e` 的组合（composition）机制；本 fork 的 `text::GrammarSession` 不跟踪分支。`make_output_session` 沿 `41e50d0d` 在约束与工具有效声明并存时 fail-closed（serve 层亦拒绝该组合），与未移植组合一致。
 - **`test_tool_schema.py` 的 CTest oracle**：需第三方 `jsonschema`（`tests/text/requirements.txt`），devShell 未提供且本 fork CTest 无 Python 用例先例；`--probe` 二进制口径已随 `tool_constraints_test` 落地，可手动以 `nix shell` 提供依赖的方式运行。
 - **`tool_constraints: auto` 线控**：上游 `request_validation.cpp` 的 `tool_constraints`（`auto`/`basic`）字段未引入；本 fork 默认即 basic 结构约束（见 serving.md 的约束工具调用一节），未提供切回自由解析的开关。
-- **`test_engine_tools_real.cpp` 的 JSON 约束×工具组合段**：`e617e75e` 停用该段（`(void)composed_output`）——该组合在 `make_output_session` 即 fail-closed（前端直接抛错），本 fork 无分支观测可断言。代价：Engine 级「约束 + 工具 → HTTP 400」与工具分支观测（`branch==Tools`、`mask_positions>0`）目前无测试覆盖。
+- **`test_engine_tools_real.cpp` 的 JSON 约束×工具组合段**：`e617e75e` 停用该段（`(void)composed_output`）——该组合在 `make_output_session` 即 fail-closed（前端直接抛错），本 fork 无分支观测可断言。代价：Engine 级「约束 + 工具同存即拒」与工具分支观测（`branch==Tools`、`mask_positions>0`）目前无测试覆盖；serve 侧 HTTP 400 `constrained_decoding_not_supported` 的映射仍由 `test_openai_schema.cpp` 覆盖。
 - **集中式请求解析**：上游把 `response_format`/`text.format`/`output_config.format` 的解析集中在 `src/serve/request_validation.cpp`（`parse_json_output_format`/`parse_structured_outputs`）；本 fork 在各协议路由内各自实现，因此未整文件采用上游的 `request_validation.*`，只补入其中独立可用的有界数字校验。此为刻意分歧，非缺口。
 
 对外合同的宽度以 `docs/serving.md` 与 schema 测试为准：required/named/strict/`parallel_tool_calls:false` 与 Responses 结构化 `text.format` 已从拒绝改为执行；`serving.md` 与 schema 测试随实现一同更新。

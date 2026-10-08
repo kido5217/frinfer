@@ -202,7 +202,8 @@ values against the declared schema: the parameter root must be a single object d
 `additionalProperties:false`, properties emit in declaration order, and unsupported schemas fail
 with HTTP 400 before generation. A tool-constraint violation (undeclared selection, required
 choice without callable tools, unsatisfiable strict schema) fails with HTTP 400
-`tool_constraint_invalid` on the `tools` field. For `auto`, text may precede the first call;
+`tool_constraint_invalid` on the `tools` field, as does an output-option conflict that only a
+constrained tool turn can reach. For `auto`, text may precede the first call;
 required/named choices start directly with calls (after thinking, if enabled). A token limit or
 cancellation still ends the turn: completed calls are published and the unfinished constrained
 suffix is dropped, never leaked as text. Assistant continuation may finish a partial call; a
@@ -377,7 +378,9 @@ malformed `structured_outputs.regex`, `structured_outputs_invalid` for a malform
 `structured_outputs` object, `json_schema_invalid` (param `response_format`,
 `output_config.format`, `text.format`, or `tools` with a declaration-relative pointer) for a
 malformed or unsupported JSON Schema, `tool_constraint_invalid` (param `tools`) for an
-unenforceable tool selection or unsatisfiable strict tool schema, and `constraint_dead_end` when
+unenforceable tool selection, an unsatisfiable strict tool schema, or an output-option conflict
+(custom stop strings, raw output, non-default EOS) that only a constrained tool turn can reach,
+and `constraint_dead_end` when
 a compiled constraint admits no legal next token, so the request fails closed instead of emitting
 unconstrained text.
 
