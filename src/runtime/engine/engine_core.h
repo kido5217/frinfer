@@ -593,6 +593,13 @@ private:
 
     // Attaches fresh content logprob records to the deltas published this commit: the existing
     // content delta when present, otherwise a logprobs-only content delta.
+    //
+    // PublishedOutput stores at most two deltas and every delta is appended through append_delta,
+    // which merges consecutive same-channel text. A commit's output is therefore one of {}, {C},
+    // {R}, {C,R} or {R,C}: it holds at most one Content delta and is never size two without one.
+    // So the first (only) Content delta owns every fresh record, and when none is present the
+    // output is empty or reasoning-only, making the trailing size guard always satisfied when
+    // reached. The two-delta cap can never be exceeded here.
     static void attach_streaming_logprobs(PublishedOutput& output,
                                           std::span<const TokenLogprob> records) {
         if (records.empty()) { return; }
@@ -1632,6 +1639,11 @@ private:
         return false;
     }
 
+    // NON-CALLABLE. Retained verbatim as the upstream-merge reference body: nothing in the fork
+    // may call it, and a future upstream sync should re-merge this original pause implementation
+    // rather than re-derive it. The fork's only pause entry point is pause_resident above, which
+    // never pauses a resident (active-request preemption is pinned off) — do not wire this back in.
+    // See docs/adr/0003-full-resident-capacity-under-pinned-preemption.md.
     bool pause_resident_unreachable(std::uint32_t lane) {
         if (instance_.program->has_context_transaction()) { return false; }
         auto request       = slots_[lane];

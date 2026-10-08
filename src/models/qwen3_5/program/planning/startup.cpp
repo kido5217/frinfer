@@ -822,7 +822,14 @@ void validate_target_options(const execution::Parameters& parameters, DeviceCont
         }
         if (requested_pages > required_pages64) {
             throw std::invalid_argument(
-                "kv_capacity is outside the usable range for max_context and max_concurrency");
+                "kv_capacity must equal the full-resident pool for max_concurrency lanes at full "
+                "max_context: exactly " +
+                std::to_string(required_pages64) + " Main KV pages (" +
+                std::to_string(required_pages64 * kPagedKVPageSize) + " tokens) are required for " +
+                std::to_string(options.max_concurrency) + " lanes at " +
+                std::to_string(options.max_context) + " tokens, but kv_capacity supplies " +
+                std::to_string(requested_pages) + " pages (" +
+                std::to_string(options.kv_capacity.explicit_tokens) + " tokens)");
         }
         break;
     }
