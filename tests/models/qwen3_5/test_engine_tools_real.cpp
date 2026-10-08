@@ -209,7 +209,10 @@ void composed_output(ninfer::Engine& engine) {
 }
 
 void exercise(ninfer::Engine& engine, unsigned concurrency, bool speculative) {
-    composed_output(engine);
+    // Fork adaptation: composed_output() combines a body JSON constraint with tool calls,
+    // which needs the output-branch tracking of upstream's composition stack (unlanded;
+    // the session fails that combination closed). Everything below is tool-only.
+    (void)composed_output;
     const auto coordinates = Json::parse(R"({"type":"object","properties":{
         "position":{"type":"array","prefixItems":[
             {"type":"number","minimum":30,"maximum":31},
@@ -403,8 +406,11 @@ int main(int argc, char** argv) {
         options.artifact_path   = artifact;
         options.max_context     = pressure_mode ? 1024 : 1536;
         options.max_concurrency = argc > 3 ? std::stoul(argv[3]) : 2;
-        options.kv_capacity     = ninfer::KvCapacityPolicy::explicit_capacity(
-            pressure_mode ? 1024 : options.max_concurrency * 1024);
+        // Fork adaptation: active-request preemption is pinned off, so Main KV must cover
+        // every resident lane at full max_context (upstream sizes a partial cache that the
+        // fork's full-resident policy rejects).
+        options.kv_capacity = ninfer::KvCapacityPolicy::explicit_capacity(options.max_concurrency *
+                                                                          options.max_context);
         options.prefill_chunk                     = 128;
         options.kv_cache                          = ninfer::KvCacheStorage::Fp8E4M3Row256;
         options.use_cuda_graph                    = mode != "eager";
