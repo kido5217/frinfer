@@ -62,7 +62,11 @@ older cache policy is replaced; the name alone does not prove a particular victi
 `private-only-working-set-shift` uses explicit mode with no shared markers to isolate private
 continuations; use that control when comparing an older profile that disabled shared storage.
 
-The preemption campaign contains:
+The preemption campaign contains the upstream preemption design, pinned off in this fork. The
+runtime never pauses a resident, and every one of these profiles sizes its Main KV pool below
+`max_concurrency × ceil(max_context/64)` (for example `--max-context 512 --kv-capacity 512
+--max-concurrency 2`), which the compliant-pool startup validator rejects, so the server cannot start
+and the graphs cannot run. `bench/README.md` records the campaign as pinned off.
 
 | Case | Workload and evidence sought |
 |---|---|
@@ -83,6 +87,7 @@ absent interleaving.
 The default artifact is `out/qwen3_8_27b_nvfp4.ninfer`, with FP8 KV. GPU campaigns run serially.
 
 ```bash
+# pinned off: the preemption profiles are rejected by the compliant-pool validator
 python3 tools/bench/run_serve_ttft_campaign.py --campaign preemption --samples 1
 
 python3 tools/bench/run_serve_ttft_campaign.py \
@@ -91,8 +96,9 @@ python3 tools/bench/run_serve_ttft_campaign.py \
   --samples 3
 ```
 
-`smoke` runs one short cold case, `resource` runs cache-pressure workloads, `preemption` runs the
-five graphs above, and `full` runs all cases. The default is `resource` with one sample. Select
+`smoke` runs one short cold case, `resource` runs cache-pressure workloads, `preemption` selects the
+five pinned-off graphs above (their profiles are rejected by the compliant-pool validator, so they
+cannot start), and `full` runs all cases. The default is `resource` with one sample. Select
 `--serve` and `--artifact` explicitly when using another binary or artifact. Fixture token facts
 still need to match the selected tokenizer/template.
 

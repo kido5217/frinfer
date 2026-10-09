@@ -1,6 +1,6 @@
 # Constrained decoding 设计
 
-本文定义 NInfer 约束解码的架构、功能语义与执行合同。当前已实现 GBNF、JSON/JSON Schema、
+本文定义 FrInfer 约束解码的架构、功能语义与执行合同。当前已实现 GBNF、JSON/JSON Schema、
 regex/choice 与严格工具调用，共用同一 token 约束机制：GBNF/regex/choice/JSON Schema 经
 `OutputConstraint`（`RequestOptions::constraint`）、CLI `--grammar`/`--grammar-file`/
 `--json-schema`/`--json-schema-file` 以及三个 HTTP 协议的 `structured_outputs`/`response_format`/
@@ -8,7 +8,7 @@ regex/choice 与严格工具调用，共用同一 token 约束机制：GBNF/rege
 （None）与 MTP 后端；DFlash/DFlash2 等投机后端由 `src/runtime/engine/engine_core.h` fail-closed
 拒绝。已落地范围与协议边界见 §16。
 
-目标是让 GBNF、JSON、JSON Schema 和工具调用共用一套 token 约束机制，接入现有普通采样、MTP、DFlash、DFlash2、thinking、流式输出与抢占恢复。NInfer 保持单 GPU、固定 resident lanes、原生 C++/CUDA 执行。
+目标是让 GBNF、JSON、JSON Schema 和工具调用共用一套 token 约束机制，接入现有普通采样、MTP、DFlash、DFlash2、thinking 与流式输出；上游的抢占恢复机制在本 fork 被 pin 掉（不可达，见 [资源调度与上下文缓存](resource-scheduling-and-context-cache.md)）。FrInfer 保持单 GPU、固定 resident lanes、原生 C++/CUDA 执行。
 
 总体选择：vendor XGrammar 的 CPU 核心；Frontend 构造符合模型输出语义的 grammar；请求拥有 matcher；Program 管理位图缓冲和执行时序；Sampling Ops 在合法集合内建立目标分布。模型状态、语法状态和用户可见输出沿同一提交边界前进。
 
@@ -63,11 +63,11 @@ GBNF 是直接的 grammar 输入，适合作为底层机制的最小完整使用
 
 ### 2.1 Vendor XGrammar
 
-源码位于 `third_party/xgrammar/`，采用与 `third_party/llama-jinja/` 相同的维护方式：固定来源版本，保留来源与许可信息，由 NInfer 维护需要的修改，按需吸收上游变更。
+源码位于 `third_party/xgrammar/`，采用与 `third_party/llama-jinja/` 相同的维护方式：固定来源版本，保留来源与许可信息，由 FrInfer 维护需要的修改，按需吸收上游变更。
 
 起点为 CPU 核心及其依赖，包括 grammar 解析与编译、JSON Schema/regex 转换、词表索引、matcher、bitmask、rollback。保留 GBNF 所需的递归、Unicode 和 token 级规则能力。Python/TVM 绑定、上游 CUDA/Triton 接入、示例和无关构建分支不进入产品 target。
 
-产品构建使用明确的源码列表和独立 CMake target。核心当前需要的 picojson、DLPack 等小型依赖在该边界内管理；DLPack 只用于适配库的 CPU tensor view，不进入 NInfer 公共 API 或 CUDA Op 合同。
+产品构建使用明确的源码列表和独立 CMake target。核心当前需要的 picojson、DLPack 等小型依赖在该边界内管理；DLPack 只用于适配库的 CPU tensor view，不进入 FrInfer 公共 API 或 CUDA Op 合同。
 
 允许直接定制以下部分：
 
@@ -76,14 +76,14 @@ GBNF 是直接的 grammar 输入，适合作为底层机制的最小完整使用
 - 暴露可靠的 mark/rollback/preview 所需能力。
 - 优化真实 workload 中的词表处理、临时状态和编译缓存。
 
-源码裁剪以保留所选 CPU 功能的完整依赖为准。库内部原有类型不需要全部成为 NInfer 的公共合同。
+源码裁剪以保留所选 CPU 功能的完整依赖为准。库内部原有类型不需要全部成为 FrInfer 的公共合同。
 
 ### 2.2 职责划分
 
 | 所有者 | 负责内容 |
 |---|---|
 | 第三方 CPU 核心 | Grammar、tokenizer-aware 编译、matcher、合法集合和回退 |
-| NInfer 公共请求合同 | 用户约束类型、正文约束、工具选择与 strict 意图；不暴露第三方类型 |
+| FrInfer 公共请求合同 | 用户约束类型、正文约束、工具选择与 strict 意图；不暴露第三方类型 |
 | 通用文本约束适配 | C++ 库封装、编译诊断、共享编译资源、CPU 位图和临时 matcher 操作 |
 | 模型 Frontend | 原始词表与控制 token；thinking/content/tool 封装；continuation 前缀；工具值表示 |
 | 请求 OutputSession | 可变 matcher、输出解析、preview 与正式提交 |
@@ -142,7 +142,7 @@ submit 仍同步建立请求并返回 handle，冷编译可能延长这次调用
 - EOS 是完成控制；thinking 等必要特殊 token 只在相应模型规则中允许。
 - 相同可见字符串的普通 token 拼写和 special token 身份分别处理。
 
-NInfer 显式提供这些分类。上游 `TokenizerInfo` 对 special token 的默认判断不能代替模型 Frontend 的事实。适配可以通过 vendor 接口接收显式分类；不靠把所有控制 token 当作普通字符串来推断语义。
+FrInfer 显式提供这些分类。上游 `TokenizerInfo` 对 special token 的默认判断不能代替模型 Frontend 的事实。适配可以通过 vendor 接口接收显式分类；不靠把所有控制 token 当作普通字符串来推断语义。
 
 ### 3.4 编译共享与内存
 
@@ -166,7 +166,7 @@ GBNF 解析后以规范化 grammar 和模型输出封装作为编译键，contin
 
 GBNF 使用 vendor 版本支持的 EBNF/GBNF 文本语法，以 `root` 为入口。支持字面量、字符类、序列、分支、重复和递归。语法错误携带行列定位。
 
-首个公开 grammar 合同采用语言约束本身。库中能够改变 temperature、额外 token budget 或生成行为的扩展不作为隐式运行参数；这些能力继续由 NInfer 的采样与预算合同控制。token 级终结符经当前模型 token domain 和控制 token 规则校验。
+首个公开 grammar 合同采用语言约束本身。库中能够改变 temperature、额外 token budget 或生成行为的扩展不作为隐式运行参数；这些能力继续由 FrInfer 的采样与预算合同控制。token 级终结符经当前模型 token domain 和控制 token 规则校验。
 
 Token 终结符采用 vendor 的 `Token(id, ...)` / `ExcludeToken(id, ...)` 写法。
 GBNF 入口不暴露上游的 `TagDispatch`、`TokenTagDispatch`、`Regex`、`Substring` 构造器。
@@ -213,7 +213,7 @@ oneOf 的类型域判定要计入 integer 是 number 的子域；对象 discrimi
 
 `pattern` 的 schema 语义是对字符串值的匹配，不能直接套用全文 regex 入口的匹配方式。长度按解码后的 Unicode 字符计数，转义形式不改变值的长度；JSON 字符串的控制字符、引号和反斜杠必须合法转义。Finite const/enum 候选筛选后为空、递归定义明显无生成分支等，在编译或初始 mask 检查处返回不可满足，而不是移除该约束。
 
-这些规则同时用于响应 schema、工具参数以及 NInfer 构造的 structural tag 内嵌 schema。允许后续扩展支持范围，每项扩展同时补齐语义和独立验证；不需要改变运行时结构。
+这些规则同时用于响应 schema、工具参数以及 FrInfer 构造的 structural tag 内嵌 schema。允许后续扩展支持范围，每项扩展同时补齐语义和独立验证；不需要改变运行时结构。
 
 ### 4.3 Strict tools
 
@@ -287,7 +287,7 @@ Frontend 拥有 Qwen 的输出阶段规则，grammar 和 OutputSession 的发布
 
 ### 6.1 请求拥有状态
 
-Matcher 属于 OutputSession，随 Request 从等待、resident、paused 到终态。只有 Engine worker 推进活跃请求的 matcher。准备阶段创建的 matcher 在 submit 后移交，不被 consumer 或编译线程继续修改。
+Matcher 属于 OutputSession，随 Request 从等待、resident 到终态（本 fork 固定不抢占已激活请求，paused 状态不可达）。只有 Engine worker 推进活跃请求的 matcher。准备阶段创建的 matcher 在 submit 后移交，不被 consumer 或编译线程继续修改。
 
 CompiledGrammar 共享；matcher、decoder 与临时预览均不跨请求共享。Lane、KV row、compact row 只是当前执行映射，不能作为 grammar 状态身份。
 
@@ -325,7 +325,7 @@ Program 产生 PendingBatch
 
 请求结束时释放 matcher 及请求引用；编译缓存可以继续保留 compiled grammar。普通前缀缓存只保存原有模型状态，不保存可变 matcher。
 
-XGrammar 当前 Earley 实现保留解析历史，`max_rollback_tokens` 参数已不能当作内存上限。NInfer 只请求有限 lookahead/preview 回退，但不据此宣称 matcher 内存为 O(K)。活跃解析状态按请求输出长度及 grammar 复杂度增长；不每轮 fork 整段历史，也不随意删除仍被解析状态引用的旧 chart。
+XGrammar 当前 Earley 实现保留解析历史，`max_rollback_tokens` 参数已不能当作内存上限。FrInfer 只请求有限 lookahead/preview 回退，但不据此宣称 matcher 内存为 O(K)。活跃解析状态按请求输出长度及 grammar 复杂度增长；不每轮 fork 整段历史，也不随意删除仍被解析状态引用的旧 chart。
 
 ## 7. 位图与采样数据合同
 
@@ -413,7 +413,7 @@ for i in 0..K:
 rollback 到 mark
 ```
 
-Lookahead 只能沿 proposal 的实际链推进。不同请求独立推演；当前 NInfer 的后端使用有限长度 chain，不引入通用 tree planner。
+Lookahead 只能沿 proposal 的实际链推进。不同请求独立推演；当前 FrInfer 的后端使用有限长度 chain，不引入通用 tree planner。
 
 一次受约束 token 推演包含 reasoning/content/tool 规则，不能仅让最内层 JSON matcher 回退而保留外层已切换的状态。
 
@@ -554,9 +554,9 @@ Runtime integrity 错误不被包装成用户 schema 错误。例如 row members
 | OpenAI Chat | `response_format` 的 json_object/json_schema；工具 strict 与 tool_choice |
 | OpenAI Responses | `text.format` 的 JSON Schema；工具 strict 与 tool_choice |
 | Anthropic Messages | 将现有工具定义、strict 和 tool_choice 翻译到共同工具合同 |
-| NInfer HTTP 扩展 | `structured_outputs` 中的 grammar、regex、choice，用于没有标准协议字段的直接语言约束 |
+| FrInfer HTTP 扩展 | `structured_outputs` 中的 grammar、regex、choice，用于没有标准协议字段的直接语言约束 |
 
-正文约束只允许一个来源。标准 response format 与 NInfer 扩展同时指定时返回错误。HTTP 扩展明确使用 NInfer 自己的合同，不宣称为 OpenAI/Anthropic 标准字段；不增加 guided_* 等重复别名。
+正文约束只允许一个来源。标准 response format 与 FrInfer 扩展同时指定时返回错误。HTTP 扩展明确使用 FrInfer 自己的合同，不宣称为 OpenAI/Anthropic 标准字段；不增加 guided_* 等重复别名。
 
 一个显式 JSON Schema 响应请求执行其受支持断言。协议中的 strict 标志不作为“允许忽略部分关键字”的开关。工具 strict=false 则按第4节保留现有非严格参数语义，两种用途区分处理。
 
@@ -650,7 +650,7 @@ A/B 使用相同 prompt，分别要求对象字段和有限枚举。编译资源
 
 需要新增的执行合同集中在 mask 数据流、受约束采样、调用期 provider、matcher 事务和单行约束失败。Artifact、权重绑定、模型公式和 KV/GDN 缓存身份没有新增约束配置职责。
 
-源码调研基线为 NInfer `abb7f14f`、vLLM `00b7847c`、SGLang `28c5e7f5`、llama.cpp `53ed051c`。XGrammar API/行为检查基线为 `8262b5c94161f4cd0e2c356ab3b62de16b919873`；vendor 导入时固定明确来源，本文规定的是 NInfer 目标合同，不能以库默认行为替代。
+源码调研基线为 NInfer `abb7f14f`、vLLM `00b7847c`、SGLang `28c5e7f5`、llama.cpp `53ed051c`。XGrammar API/行为检查基线为 `8262b5c94161f4cd0e2c356ab3b62de16b919873`；vendor 导入时固定明确来源，本文规定的是 FrInfer 目标合同，不能以库默认行为替代。
 
 主要参考：[XGrammar C++ compiler](https://github.com/mlc-ai/xgrammar/blob/8262b5c94161f4cd0e2c356ab3b62de16b919873/include/xgrammar/compiler.h)、[matcher](https://github.com/mlc-ai/xgrammar/blob/8262b5c94161f4cd0e2c356ab3b62de16b919873/include/xgrammar/matcher.h)、[EBNF/GBNF](https://xgrammar.mlc.ai/docs/latest/defining_structures/ebnf_grammar.html)、[引擎接入](https://xgrammar.mlc.ai/docs/latest/using_xgrammar/engine_integration.html)。
 
