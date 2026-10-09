@@ -375,6 +375,7 @@ ninfer::RequestOptions to_request_options(const GenerationRequest& request,
         runtime::ConstrainedTurnOptions turn;
         turn.constrained             = request.constraint.has_value();
         turn.constrained_tools       = request.constrains_tools();
+        turn.tool_contract           = request.constrains_tools();
         turn.include_default_stops   = options.stop.include_model_defaults;
         turn.publish_stop_token      = options.stop.publish_stop_token;
         turn.custom_stop_tokens      = !options.stop.token_ids.empty();

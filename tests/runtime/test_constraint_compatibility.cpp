@@ -54,9 +54,19 @@ int main() {
         ConstrainedTurnOptions options;
         options.constrained       = true;
         options.constrained_tools = true;
+        options.tool_contract     = true;
         const auto violation      = validate_constrained_turn(options);
         failures += check(violation.has_value() && violation->tools,
-                          "a body constraint with tools is one output-language violation");
+                          "a body constraint with a constrained tool grammar is a tool violation");
+    }
+    {
+        ConstrainedTurnOptions options;
+        options.constrained   = true;
+        options.tool_contract = true;
+        const auto violation  = validate_constrained_turn(options);
+        failures += check(violation.has_value() && !violation->tools,
+                          "a body constraint with a non-constrained tool contract is a body "
+                          "violation");
     }
     {
         ConstrainedTurnOptions options;

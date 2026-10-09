@@ -228,7 +228,10 @@ GrammarCompiler::compile_model(std::string_view identity,
     auto compiled = impl_->compiler.CompileCachedGrammar(
         key,
         [&] {
-            ModelGrammar model        = build();
+            ModelGrammar model = build();
+            if (!model.impl_->grammar) {
+                throw std::logic_error("model grammar factory returned an unfinished grammar");
+            }
             xgrammar::Grammar grammar = std::move(*model.impl_->grammar);
             return close.empty() ? grammar
                                  : xgrammar::Grammar::Concat({reasoning_prefix(close), grammar});

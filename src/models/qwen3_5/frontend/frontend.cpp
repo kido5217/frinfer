@@ -946,6 +946,7 @@ OutputSession Frontend::make_output_session(
         runtime::ConstrainedTurnOptions turn;
         turn.constrained             = constraint.has_value();
         turn.constrained_tools       = tool_constraint;
+        turn.tool_contract           = tool_contract != nullptr;
         turn.model_default_eos       = !impl_->defaults.token_ids.empty();
         turn.include_default_stops   = caller_stop.include_model_defaults;
         turn.publish_stop_token      = caller_stop.publish_stop_token;

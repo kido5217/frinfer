@@ -15,12 +15,13 @@ struct ParsedJsonNumbers;
 namespace ninfer::serve {
 
 // Upstream 2734a56e centralizes protocol output-format parsing here (parse_json_output_format /
-// parse_structured_outputs). This fork instead keeps the protocol wire shapes in each route and
-// moves the shared constraint logic — the NInfer `structured_outputs` extension, the schema
-// contract, and the single-constraint / tools rules — into the protocol-neutral
-// `ninfer::constraint` module (src/product/constraint/constraint_contract.*). Upstream's
-// declarations are therefore intentionally not adopted; only the self-contained bounded-number
-// check below is taken.
+// parse_structured_outputs). This fork instead keeps the protocol wire shapes and the
+// cross-language orchestration (which field wins, in what order) in each route, and moves the
+// shared constraint languages — the NInfer `structured_outputs` extension and the JSON Schema
+// contract — plus the rejection message/code factories into the protocol-neutral
+// `ninfer::constraint` module (src/product/constraint/constraint_contract.*). Each route supplies
+// its own error attribution (`param`). Upstream's declarations are therefore intentionally not
+// adopted; only the self-contained bounded-number check below is taken.
 
 // Rejects schema numbers whose decimal spelling the JSON representation cannot preserve
 // (upstream 81c8ce09, "support tuple schemas and bounded numbers"). Applied to every parsed

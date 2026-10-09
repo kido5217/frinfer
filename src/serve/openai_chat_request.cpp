@@ -235,18 +235,25 @@ void parse_constraints(const Json& body, GenerationRequest& output) {
                     field, "constrained_decoding_not_supported");
     }
 
-    std::vector<ninfer::constraint::ConstraintSlot> slots;
+    std::optional<ninfer::OutputConstraint> constraint;
+    ConstraintSource source = ConstraintSource::None;
+    const auto set_constraint = [&](ninfer::constraint::AdmittedConstraint admitted) {
+        if (constraint) { ninfer::constraint::reject_second_constraint(admitted.field); }
+        source     = constraint_source_of(admitted.origin);
+        constraint = std::move(admitted.value);
+    };
     try {
         // llama.cpp-compatible GBNF text; empty means no constraint.
         if (body.contains("grammar") && !body.at("grammar").is_null()) {
-            if (auto slot = ninfer::constraint::admit_grammar(body.at("grammar"), "grammar")) {
-                slots.push_back(std::move(*slot));
+            if (auto admitted =
+                    ninfer::constraint::admit_grammar(body.at("grammar"), "grammar")) {
+                set_constraint(std::move(*admitted));
             }
         }
 
         // The NInfer structured_outputs extension: exactly one of grammar, regex or choice.
         if (body.contains("structured_outputs") && !body.at("structured_outputs").is_null()) {
-            slots.push_back(
+            set_constraint(
                 ninfer::constraint::admit_structured_outputs(body.at("structured_outputs")));
         }
 
@@ -261,14 +268,14 @@ void parse_constraints(const Json& body, GenerationRequest& output) {
             }
             const std::string type = format.at("type").get<std::string>();
             if (type == "json_object") {
-                slots.push_back(ninfer::constraint::admit_json_object("response_format"));
+                set_constraint(ninfer::constraint::admit_json_object("response_format"));
             } else if (type == "json_schema") {
                 if (!format.contains("json_schema") || format.at("json_schema").is_null()) {
                     bad_request("response_format.json_schema is required for type json_schema",
                                 "response_format.json_schema", "json_schema_invalid");
                 }
                 // The Chat contract reports a schema rejection on the contract's own field path.
-                slots.push_back(ninfer::constraint::admit_json_schema(
+                set_constraint(ninfer::constraint::admit_json_schema(
                     parse_json_schema_wrapper(format), "response_format", ""));
             } else if (type != "text") {
                 bad_request(
@@ -278,14 +285,17 @@ void parse_constraints(const Json& body, GenerationRequest& output) {
             }
         }
 
+        if (constraint) {
+            output.constraint        = std::move(constraint);
+            output.constraint_source = source;
+        }
         // A `tools` field together with structured output is a fail-closed rejection (design #48):
         // the tool-call parser owns the turn when tools are declared, so even an empty tools array
-        // is rejected rather than interpreted.
+        // is rejected rather than interpreted. Chat attributes the conflict to the originating
+        // constraint source (e.g. "grammar"), not the structured_outputs sub-field.
         const bool declares_tools = body.contains("tools") && !body.at("tools").is_null();
-        const auto admitted = ninfer::constraint::admit_constraint(std::move(slots), declares_tools);
-        if (admitted.constraint) {
-            output.constraint        = std::move(admitted.constraint);
-            output.constraint_source = constraint_source_of(admitted.origin);
+        if (output.constraint && declares_tools) {
+            ninfer::constraint::reject_constraint_with_tools(constraint_source_param(source));
         }
     } catch (const ninfer::constraint::ConstraintError& error) {
         bad_request(error.what(), error.param(), error.code());

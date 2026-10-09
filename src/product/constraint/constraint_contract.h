@@ -57,45 +57,45 @@ enum class ConstraintOrigin : std::uint8_t {
     JsonSchema,
 };
 
-// One admitted constraint language and the protocol field it came from. `field` is the full field
-// path used for error attribution (e.g. "structured_outputs.regex", "response_format",
+// One admitted constraint language and the protocol field that carried it. `field` is the full
+// field path used for error attribution (e.g. "structured_outputs.regex", "response_format",
 // "output_config.format").
-struct ConstraintSlot {
-    std::string field;
-    ConstraintOrigin origin = ConstraintOrigin::None;
+struct AdmittedConstraint {
     ninfer::OutputConstraint value;
-};
-
-// The single output constraint a request carries, or none.
-struct ConstraintAdmission {
-    std::optional<ninfer::OutputConstraint> constraint;
     ConstraintOrigin origin = ConstraintOrigin::None;
+    std::string field;
 };
 
-// Adopts one route's already-validated constraint fields in protocol order and enforces the
-// cross-language rules every gateway shares: at most one constraint language, and never a
-// constrained turn alongside a declared `tools` field. Throws ConstraintError with the offending
-// field as `param` (`constrained_decoding_conflict` / `constrained_decoding_not_supported`).
-[[nodiscard]] ConstraintAdmission admit_constraint(std::vector<ConstraintSlot> slots,
-                                                   bool has_tools);
+// The single selected option of a well-formed NInfer `structured_outputs` object ("grammar",
+// "regex" or "choice"). Throws ConstraintError with the `structured_outputs.*` shape codes.
+[[nodiscard]] std::string structured_outputs_option(const nlohmann::ordered_json& value);
 
-// The protocol-neutral `structured_outputs` extension: exactly one of grammar, regex or choice,
-// with the shared payload limit and codes. Throws ConstraintError on any violation.
-[[nodiscard]] ConstraintSlot admit_structured_outputs(const nlohmann::ordered_json& value);
+// Parses the option `structured_outputs_option` selected into an admitted constraint, with the
+// shared payload limit and codes. Throws ConstraintError on any violation.
+[[nodiscard]] AdmittedConstraint
+admit_structured_outputs_option(const nlohmann::ordered_json& value, std::string_view option);
+
+// The whole `structured_outputs` extension: shape then option in one call.
+[[nodiscard]] AdmittedConstraint admit_structured_outputs(const nlohmann::ordered_json& value);
 
 // The llama.cpp-compatible top-level GBNF field. Empty text carries no constraint and yields no
-// slot; malformed or oversized text throws ConstraintError on `field`.
-[[nodiscard]] std::optional<ConstraintSlot> admit_grammar(const nlohmann::ordered_json& value,
-                                                          std::string_view field);
+// result; malformed or oversized text throws ConstraintError on `field`.
+[[nodiscard]] std::optional<AdmittedConstraint> admit_grammar(const nlohmann::ordered_json& value,
+                                                              std::string_view field);
 
 // A `{"type":"json_object"}` response format.
-[[nodiscard]] ConstraintSlot admit_json_object(std::string_view field);
+[[nodiscard]] AdmittedConstraint admit_json_object(std::string_view field);
 
-// Adopts a JSON Schema document through the shared allowlist and returns the slot carrying the
-// document text the Engine compiles. A contract rejection is reported with `error_param`; an empty
-// `error_param` keeps the contract's own (schema-relative) path.
-[[nodiscard]] ConstraintSlot admit_json_schema(const nlohmann::ordered_json& schema,
-                                               std::string_view field,
-                                               std::string_view error_param);
+// Adopts a JSON Schema document through the shared allowlist and returns the admitted constraint
+// carrying the document text the Engine compiles. A contract rejection is reported with
+// `error_param`; an empty `error_param` keeps the contract's own (schema-relative) path.
+[[nodiscard]] AdmittedConstraint admit_json_schema(const nlohmann::ordered_json& schema,
+                                                   std::string_view field,
+                                                   std::string_view error_param);
+
+// The two cross-language rejections, with one message and code each. The route supplies the exact
+// protocol field for `param` (chat and anthropic attribute these differently).
+[[noreturn]] void reject_second_constraint(std::string_view param);
+[[noreturn]] void reject_constraint_with_tools(std::string_view param);
 
 } // namespace ninfer::constraint

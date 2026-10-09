@@ -989,7 +989,6 @@ void parse_text(const Json& body, GenerationRequest& request) {
             bad_request("text.format must be a typed object", "text");
         }
         const std::string type = format.at("type").get<std::string>();
-        std::vector<ninfer::constraint::ConstraintSlot> slots;
         try {
             if (type == "text") {
                 if (format.size() != 1) { bad_request("text format has no options", "text.format"); }
@@ -997,10 +996,14 @@ void parse_text(const Json& body, GenerationRequest& request) {
                 if (format.size() != 1) {
                     bad_request("json_object format has no options", "text.format");
                 }
-                slots.push_back(ninfer::constraint::admit_json_object("text.format"));
+                request.constraint = ninfer::constraint::admit_json_object("text.format").value;
+                request.constraint_source = ConstraintSource::JsonSchema;
             } else if (type == "json_schema") {
-                slots.push_back(ninfer::constraint::admit_json_schema(
-                    parse_text_format_schema(format), "text.format", "text.format"));
+                request.constraint = ninfer::constraint::admit_json_schema(
+                                         parse_text_format_schema(format), "text.format",
+                                         "text.format")
+                                         .value;
+                request.constraint_source = ConstraintSource::JsonSchema;
             } else {
                 bad_request("this text.format requires constrained output, which FrInfer cannot "
                             "guarantee; only text, json_object, and json_schema are available",
@@ -1008,11 +1011,8 @@ void parse_text(const Json& body, GenerationRequest& request) {
             }
             // The tool-call parser owns the turn when tools are declared, so a constrained
             // answer and a `tools` field cannot share it, mirroring the other routes.
-            const bool has_tools = body.contains("tools") && !body.at("tools").is_null();
-            const auto admitted = ninfer::constraint::admit_constraint(std::move(slots), has_tools);
-            if (admitted.constraint) {
-                request.constraint        = std::move(admitted.constraint);
-                request.constraint_source = constraint_source_of(admitted.origin);
+            if (request.constraint && body.contains("tools") && !body.at("tools").is_null()) {
+                ninfer::constraint::reject_constraint_with_tools("text.format");
             }
         } catch (const ninfer::constraint::ConstraintError& error) {
             bad_request(error.what(), error.param(), error.code());
