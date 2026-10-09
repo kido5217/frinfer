@@ -11,16 +11,12 @@ target_link_libraries(ninfer_chat_parsing PUBLIC ninfer_llama_chat ninfer::json)
 
 add_library(ninfer_model_runtime STATIC)
 ninfer_internal_includes(ninfer_model_runtime)
-# The frontend's constraint grammar builders (tool_grammar.cpp, ticket #242) compile against the
-# vendored XGrammar C++ sources directly, so the model runtime needs the same private include
-# path ninfer_text_grammar uses.
-target_include_directories(ninfer_model_runtime PRIVATE
-  ${PROJECT_SOURCE_DIR}/third_party/xgrammar/cpp)
-target_include_directories(ninfer_model_runtime SYSTEM PRIVATE
-  ${PROJECT_SOURCE_DIR}/third_party/xgrammar/3rdparty/picojson)
+# Constraint grammar composition (tool_grammar.cpp) goes through the vendor-neutral text-constraint
+# adapter (text/model_grammar.h); the model runtime no longer compiles against the vendored
+# XGrammar sources.
 target_link_libraries(ninfer_model_runtime
   PUBLIC ninfer_model_loading ninfer_ops ninfer_runtime_support ninfer_text_grammar
-  PRIVATE ninfer_media_decode ninfer_jinja ninfer_chat_parsing ninfer_xgrammar)
+  PRIVATE ninfer_media_decode ninfer_jinja ninfer_chat_parsing)
 
 
 include(qwen3_5/loading_sources.cmake)

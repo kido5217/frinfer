@@ -16,6 +16,7 @@ target_link_libraries(ninfer_jinja PRIVATE ninfer_text ninfer::json)
 # constraint compiler; the fork's in-tree trie stack and GBNF runtime are retired with ticket #248.
 add_library(ninfer_text_grammar STATIC
   grammar.cpp
+  model_grammar.cpp
   json_schema.cpp
   schema_composition.cpp
   json_input.cpp)
