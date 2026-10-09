@@ -1,4 +1,5 @@
 #include "models/qwen3_5/frontend/tool_grammar.h"
+#include "models/qwen3_5/frontend/chat_parse_core.h"
 #include "text/json_schema.h"
 
 #include <nlohmann/json.hpp>
@@ -54,10 +55,15 @@ Rule arguments(Builder& builder, const Contract::Tool& tool) {
 }
 
 text::ModelGrammar build(const Contract& contract) {
+    const ChatParseWireFormat& wire = ChatParseWireFormat::qwen3_5();
+    const std::string tool_call_open(wire.tool_call_open);
+    const std::string function_open(wire.function_open);
+    const std::string function_close(wire.function_close);
+    const std::string tool_call_close(wire.tool_call_close);
     Builder builder;
     if (contract.tools.empty()) {
-        return builder.get(builder.rule(
-            "root", builder.tag_dispatch({}, false, {"<tool_call>"})));
+        return builder.get(
+            builder.rule("root", builder.tag_dispatch({}, false, {tool_call_open})));
     }
     std::vector<Rule> choices;
     std::optional<Rule> basic_arguments;
@@ -66,20 +72,20 @@ text::ModelGrammar build(const Contract& contract) {
             !tool.strict && basic_arguments ? *basic_arguments : arguments(builder, tool);
         if (!tool.strict) { basic_arguments = body; }
         choices.push_back(builder.sequence(
-            {builder.literal("\n<function=" + tool.name + ">\n"), builder.reference(body),
-             builder.literal("</function>\n</tool_call>")}));
+            {builder.literal("\n" + function_open + tool.name + ">\n"), builder.reference(body),
+             builder.literal(function_close + "\n" + tool_call_close)}));
     }
     const Rule call_body = builder.rule("call_body", builder.choice(choices));
     const Rule next_call =
-        builder.sequence({builder.literal("\n<tool_call>"), builder.reference(call_body)});
+        builder.sequence({builder.literal("\n" + tool_call_open), builder.reference(call_body)});
     const Rule tail =
         contract.parallel ? builder.repeat("calls", next_call, 0, -1) : builder.empty();
     const Rule first =
         builder.rule("calls", builder.sequence({builder.reference(call_body), tail}));
     const Rule root =
         contract.required
-            ? builder.sequence({builder.literal("<tool_call>"), builder.reference(first)})
-            : builder.tag_dispatch({{"<tool_call>", first}}, false, {});
+            ? builder.sequence({builder.literal(tool_call_open), builder.reference(first)})
+            : builder.tag_dispatch({{tool_call_open, first}}, false, {});
     return builder.normalize(builder.rule("root", root));
 }
 } // namespace
