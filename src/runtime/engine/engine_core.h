@@ -11,6 +11,7 @@
 #include "runtime/engine/context_cache/resource_manager.h"
 #include "runtime/engine/scheduler.h"
 #include "runtime/engine/generation_budget.h"
+#include "runtime/engine/preemption_policy.h"
 
 #include <algorithm>
 #include <array>
@@ -1623,20 +1624,20 @@ private:
     }
 
     bool pause_reclaim_victim(std::optional<std::uint64_t> priority_ticket) {
+        // PreemptionPolicy is the single owner of the pin; with it on, no resident victim is even
+        // scanned, so admission waits for capacity instead of reclaiming an active request.
+        if (!PreemptionPolicy::may_pause_resident()) { return false; }
         const auto victim = scheduler_.youngest_victim(slots_, max_concurrency_, priority_ticket);
         if (!victim) { return false; }
         return pause_resident(*victim);
     }
 
     bool pause_resident(std::uint32_t lane) {
-        // Fork product contract: one GPU, one resident model, startup-fixed concurrency of one to
-        // eight requests, bounded FIFO ingress, and NO active-request preemption (one compact
-        // decode batch per round). Upstream's scheduler may select a resident victim under
-        // resource pressure; the fork never pauses a resident request, so admission waits for
-        // capacity instead of reclaiming an active request. Inactive cache/snapshot reclaim
-        // remains enabled above this point. See docs/maintainer/engine-architecture.md section 1.
+        // The fork never pauses a resident request; PreemptionPolicy answers the question for
+        // admission, reclaim, and here. Inactive cache/snapshot reclaim remains enabled above this
+        // point. See docs/maintainer/engine-architecture.md section 1.
         (void)lane;
-        return false;
+        return PreemptionPolicy::may_pause_resident();
     }
 
     // NON-CALLABLE. Retained verbatim as the upstream-merge reference body: nothing in the fork
@@ -1725,7 +1726,8 @@ private:
         if (instance_.program->has_context_transaction()) { return false; }
         const auto lane = free_lane();
         if (!lane && restoring) {
-            if (!paused_.empty() && !has_older_resident(paused_.front()->id)) {
+            if (PreemptionPolicy::may_pause_resident() && !paused_.empty() &&
+                !has_older_resident(paused_.front()->id)) {
                 if (const auto victim =
                         scheduler_.youngest_victim(slots_, max_concurrency_, paused_.front()->id)) {
                     return pause_resident(*victim);
