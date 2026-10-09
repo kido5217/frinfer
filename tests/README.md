@@ -37,7 +37,7 @@ weight decoding.
 ## Build and run
 
 Select a Python environment with the dependencies for the tests first. The maintained environment
-uses Python 3.11; CMake finds Python 3 without restricting its minor version.
+uses Python 3.13; CMake finds Python 3 without restricting its minor version.
 `Python3_EXECUTABLE` selects the interpreter used by interop and frontend tests explicitly.
 
 ```bash
@@ -129,7 +129,9 @@ compiler: they drive the built CPU test binaries (`build/tests/ninfer_json_schem
 `ninfer_regex_choice_test`, `ninfer_qwen3_5_tool_constraints_test`) through their `--probe`
 interface and compare against the third-party `jsonschema` validator and Python `re.fullmatch`
 semantics, so they are not a mirror of the implementation. `just verify` runs this same set after
-the CTest step, so the C++ binaries are already built. The devShell's Python 3.13 provides
+the CTest build, so the CPU test binaries the suites drive are already built; the remaining paths
+(`tests/artifact`, `tests/convert`, `tests/bench/ttft`, `tests/test_serve_corpus.py`) are pure
+Python and need neither a model artifact nor a GPU. The devShell's Python 3.13 provides
 `jsonschema` (see `flake.nix`; `tests/text/requirements.txt` pins the standalone version). C++
 binding and Engine tests cover consumption of their resulting representation.
 

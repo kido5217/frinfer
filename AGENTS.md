@@ -200,7 +200,10 @@ The root `justfile` wraps the documented build, test and benchmark commands: `ju
 configures with the `dev` preset and builds, `just test` runs `ctest --preset dev` (extra arguments
 forward to ctest), `just test-one <target>` builds and re-runs a single test, and
 `just bench <target> [args]` builds and runs one benchmark executable. `just verify` runs the whole
-verification (configure + build, the CTest suite, then `pytest tests/convert`) as one bounded
+verification (configure + build, the CTest suite, then the hermetic Python suites — `pytest
+tests/artifact tests/convert tests/bench/ttft tests/text
+tests/models/qwen3_5/test_tool_schema.py tests/test_serve_corpus.py` — including the independent
+`jsonschema`, Python `re.fullmatch` grammar and Qwen tool-schema constraint oracles) as one bounded
 command. These are conveniences; the underlying commands documented in `tests/README.md` and
 `bench/README.md` remain authoritative.
 
