@@ -55,31 +55,40 @@ reservation taken at admission. Shared content, partial-page COW, speculative pe
 slots must also be accounted for. The profiler's observed allocations and transfers establish
 which resource actually became scarce.
 
-The resource campaign covers hot continuations, changing private/shared working sets, interference,
-two-session 64K swaps and six-session 55K rotations. Cases retain their workload names when an
+The resource campaign covers hot continuations, changing private/shared working sets and
+interference. Cases retain their workload names when an
 older cache policy is replaced; the name alone does not prove a particular victim or placement.
 `private-state-working-set-shift` retains the protocol's default automatic shared writes.
 `private-only-working-set-shift` uses explicit mode with no shared markers to isolate private
 continuations; use that control when comparing an older profile that disabled shared storage.
 
-The preemption campaign contains the upstream preemption design, pinned off in this fork. The
-runtime never pauses a resident, and every one of these profiles sizes its Main KV pool below
-`max_concurrency × ceil(max_context/64)` (for example `--max-context 512 --kv-capacity 512
---max-concurrency 2`), which the compliant-pool startup validator rejects, so the server cannot start
-and the graphs cannot run. `bench/README.md` records the campaign as pinned off.
+### Retired cases
 
-| Case | Workload and evidence sought |
-|---|---|
-| `preemption-replay` | Two fixed arrivals grow beyond shared Device capacity with Host disabled; require actual preemption and replay. |
-| `preemption-snapshot` | The same arrivals with Host capacity; require snapshot restoration. |
-| `shared-growth-fairness` | Three shared-prefix branches and two short arrivals; measure waiting, pauses and replay alongside other progress. |
-| `snapshot-history-cancel` | Retained history competes with snapshots; cancel a stream during observed pressure, then probe the history. |
-| `vision-growth-replay` | Text and Vision requests grow together; require the Vision request itself to be preempted and replayed. |
+The fork pins active-request preemption off, so the upstream preemption campaign and the cases that
+need a Main KV pool below `max_concurrency × ceil(max_context/64)` cannot run: the compliant-pool
+startup validator rejects their servers before any request. They are retired with their reasons in
+[profiles.py](profiles.py) (`RETIRED_PROFILES`); the campaign controller refuses them by name. They
+remain in [cases.py](cases.py) only as the upstream design reference.
+
+| Retired case(s) | Profile | Why it cannot run |
+|---|---|---|
+| `preemption-replay`, `preemption-snapshot` | `preemption-*` | require active-request preemption and replay |
+| `shared-growth-fairness` | `shared-growth-fairness` | requires preemption and replay copresence |
+| `snapshot-history-cancel` | `snapshot-history-cancel` | requires a paused resident (snapshot restore) |
+| `vision-growth-replay` | `vision-growth-replay` | requires Vision preemption/replay |
+| `resume-after-interference-kv-host` | `cache-pressure-kv-host` | Host-KV restore pressure needs a pool below the compliant bound |
+| `resume-after-interference-both-host` | `cache-pressure-both-host` | State+KV restore pressure needs a pool below the compliant bound |
+| `resume-after-interference-evicted` | `cache-pressure-evict` | checkpoint eviction needs a pool below the compliant bound |
+| `session-alternating-64k-host-swap` | `cache-swap-64k-host` | Host KV swap needs a pool below two near-capacity lanes |
+| `session-rotation-55k-host`, `session-rotation-55k-two-cohort-stream` | `cache-rotation-55k-host` | rotation needs a pool below every lane at full context |
+
+`resume-after-interference-device` and `resume-after-interference-state-host` remain: their profiles
+are already compliant.
 
 Fixed-arrival graphs prepare bodies first and record planned arrival offsets and actual send
 lateness. Token facts and reached output limits are checked against actual usage. Normal EOS is
 retained, so an output limit is not a promise that the model will generate that many tokens.
-Sampled phase overlap can miss a short replay window; an unobserved sample is not evidence of
+Sampled phase overlap can miss a short overlap window; an unobserved sample is not evidence of
 absent interleaving.
 
 ## Run a campaign
@@ -87,20 +96,22 @@ absent interleaving.
 The default artifact is `out/qwen3_8_27b_nvfp4.ninfer`, with FP8 KV. GPU campaigns run serially.
 
 ```bash
-# pinned off: the preemption profiles are rejected by the compliant-pool validator
-python3 tools/bench/run_serve_ttft_campaign.py --campaign preemption --samples 1
-
 python3 tools/bench/run_serve_ttft_campaign.py \
   --case session-hot-continuation \
   --case private-state-working-set-shift \
   --samples 3
 ```
 
-`smoke` runs one short cold case, `resource` runs cache-pressure workloads, `preemption` selects the
-five pinned-off graphs above (their profiles are rejected by the compliant-pool validator, so they
-cannot start), and `full` runs all cases. The default is `resource` with one sample. Select
-`--serve` and `--artifact` explicitly when using another binary or artifact. Fixture token facts
-still need to match the selected tokenizer/template.
+`smoke` runs one short cold case, `resource` runs the cache-pressure and working-set cases, and `full`
+runs every runnable case; retired cases are excluded and refused by name. The default is `resource`
+with one sample. Select `--serve` and `--artifact` explicitly when using another binary or artifact.
+Fixture token facts still need to match the selected tokenizer/template.
+
+Every selected profile is validated before the controller stages a server: an explicit
+`--kv-capacity` must equal `max_concurrency × ceil(max_context/64)` -- the full-resident bound in
+`src/models/qwen3_5/program/planning/startup.cpp`. A violation fails fast naming the profile, the
+requested pool and the required pool. A profile that omits `--kv-capacity` uses the automatic policy
+and cannot be checked statically.
 
 `--profile-config FILE` replaces the built-in profile catalog. This allows a preserved baseline
 binary to use its own CLI without compatibility flags in the candidate:

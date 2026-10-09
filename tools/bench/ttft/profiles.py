@@ -30,7 +30,7 @@ COMMON_ARGS = _args(
 )
 
 
-PROFILE_ARGS: dict[str, tuple[str, ...]] = {
+_ALL_PROFILE_ARGS: dict[str, tuple[str, ...]] = {
     "text-cold-8k": _args(
         "--max-context", 8192,
         "--kv-capacity", 8192,
@@ -189,7 +189,8 @@ PROFILE_ARGS: dict[str, tuple[str, ...]] = {
     ),
     "scheduler-kv-pressure": _args(
         "--max-context", 7744,
-        "--kv-capacity", 7808,
+        # Compliant full-resident pool: 2 lanes * ceil(7744/64)=121 pages = 242 pages.
+        "--kv-capacity", 15488,
         "--max-concurrency", 2,
         "--pending-timeout-ms", 120000,
         "--no-prefix-reuse",
@@ -321,3 +322,79 @@ PROFILE_ARGS: dict[str, tuple[str, ...]] = {
         "--media-live-mib", 64,
     ),
 }
+
+# The pinned no-preemption contract requires an explicit Main KV pool to equal
+# max_concurrency * ceil(max_context / 64) -- the full-resident bound enforced by
+# src/models/qwen3_5/program/planning/startup.cpp. Profiles that predate the bound and cannot be
+# reframed under it are retired here with their reason; the campaign runner refuses them and
+# validates every runnable profile against the bound before it starts a server.
+KV_PAGE_TOKENS = 64
+
+RETIRED_PROFILES: dict[str, str] = {
+    "preemption-replay": "active-request preemption is pinned off",
+    "preemption-snapshot": "active-request preemption is pinned off",
+    "shared-growth-fairness": "active-request preemption is pinned off",
+    "snapshot-history-cancel": "needs a paused resident (snapshot restore); preemption is pinned off",
+    "vision-growth-replay": "needs Vision preemption/replay; preemption is pinned off",
+    "cache-pressure-kv-host":
+        "Host-KV restore pressure needs a pool below max_concurrency * full context",
+    "cache-pressure-evict":
+        "checkpoint eviction needs a pool below max_concurrency * full context",
+    "cache-pressure-both-host":
+        "State+KV restore pressure needs a pool below max_concurrency * full context",
+    "cache-swap-64k-host":
+        "Host KV swap across two near-capacity 64K lanes; the compliant pool holds both on Device",
+    "cache-rotation-55k-host":
+        "rotation under Device/Host KV pressure; the compliant pool holds every lane at full context",
+}
+
+PROFILE_ARGS: dict[str, tuple[str, ...]] = {
+    name: arguments for name, arguments in _ALL_PROFILE_ARGS.items()
+    if name not in RETIRED_PROFILES
+}
+
+
+def page_count(capacity: int) -> int:
+    """Physical Main KV pages for a token capacity, matching startup.cpp's ceil rule."""
+
+    if capacity <= 0:
+        raise ValueError("capacity must be positive")
+    return 1 + (capacity - 1) // KV_PAGE_TOKENS
+
+
+def _option_value(arguments: tuple[str, ...], option: str) -> str | None:
+    result = None
+    for index, argument in enumerate(arguments):
+        if argument == option and index + 1 < len(arguments):
+            result = arguments[index + 1]
+        elif argument.startswith(f"{option}="):
+            result = argument.partition("=")[2]
+    return result
+
+
+def kv_capacity_error(common_args: tuple[str, ...], profile_args: tuple[str, ...]) -> str | None:
+    """Diagnostic when an explicit --kv-capacity violates the full-resident bound.
+
+    Returns None when the pool is compliant or when --kv-capacity is omitted; the automatic
+    policy is resolved from the memory budget at startup and cannot be checked statically.
+    """
+
+    arguments = (*common_args, *profile_args)
+    capacity = _option_value(arguments, "--kv-capacity")
+    max_context = _option_value(arguments, "--max-context")
+    if capacity is None or max_context is None:
+        return None
+    try:
+        requested = page_count(int(capacity))
+        context = int(max_context)
+        concurrency = int(_option_value(arguments, "--max-concurrency") or "1")
+    except (TypeError, ValueError):
+        return None
+    required = concurrency * page_count(context)
+    if int(capacity) >= context and requested == required:
+        return None
+    return (
+        f"kv_capacity={capacity} ({requested} pages) must equal the full-resident pool "
+        f"{required} pages ({required * KV_PAGE_TOKENS} tokens) for {concurrency} lanes at "
+        f"max_context={context}"
+    )
