@@ -1,5 +1,6 @@
 #pragma once
 
+#include "product/constraint/constraint_contract.h"
 #include "product/media_acquire/source.h"
 
 #include <ninfer/types.h>
@@ -191,6 +192,25 @@ constraint_source_param(ConstraintSource source) noexcept {
         break;
     }
     return "messages";
+}
+
+// Maps an admitted constraint's protocol-neutral origin to this gateway's error attribution.
+[[nodiscard]] constexpr ConstraintSource
+constraint_source_of(ninfer::constraint::ConstraintOrigin origin) noexcept {
+    switch (origin) {
+    case ninfer::constraint::ConstraintOrigin::Grammar:
+        return ConstraintSource::Grammar;
+    case ninfer::constraint::ConstraintOrigin::Choice:
+        return ConstraintSource::Choice;
+    case ninfer::constraint::ConstraintOrigin::Regex:
+        return ConstraintSource::Regex;
+    case ninfer::constraint::ConstraintOrigin::JsonObject:
+    case ninfer::constraint::ConstraintOrigin::JsonSchema:
+        return ConstraintSource::JsonSchema;
+    case ninfer::constraint::ConstraintOrigin::None:
+        break;
+    }
+    return ConstraintSource::None;
 }
 
 struct GenerationRequest {

@@ -75,6 +75,10 @@ bool is_annotation(std::string_view key) {
     throw ConstraintError(std::move(message), std::move(param), "json_schema_invalid");
 }
 
+[[noreturn]] void reject(std::string message, std::string param, std::string code) {
+    throw ConstraintError(std::move(message), std::move(param), std::move(code));
+}
+
 std::string join_path(const std::string& path, const std::string& key) {
     return path.empty() ? key : path + "/" + key;
 }
@@ -359,6 +363,114 @@ std::string json_schema_constraint_source(const Json& schema) {
     }
     validate_schema_node(schema, 0, "");
     return serialized;
+}
+
+ConstraintAdmission admit_constraint(std::vector<ConstraintSlot> slots, bool has_tools) {
+    if (slots.empty()) { return {}; }
+    if (slots.size() > 1) {
+        reject("only one output constraint may be specified", slots[1].field,
+               "constrained_decoding_conflict");
+    }
+    if (has_tools) {
+        reject("tools with a constrained response is not supported", slots[0].field,
+               "constrained_decoding_not_supported");
+    }
+    return {std::move(slots[0].value), slots[0].origin};
+}
+
+ConstraintSlot admit_structured_outputs(const Json& value) {
+    if (!value.is_object()) {
+        reject("structured_outputs must be an object", "structured_outputs",
+               "structured_outputs_invalid");
+    }
+    std::vector<std::string> present;
+    for (const auto& [key, entry] : value.items()) {
+        if (!entry.is_null()) { present.push_back(key); }
+    }
+    if (present.size() != 1) {
+        reject("structured_outputs requires exactly one of grammar, regex or choice",
+               "structured_outputs", "structured_outputs_invalid");
+    }
+    const std::string kind  = present.front();
+    const std::string field = "structured_outputs." + kind;
+    const Json& entry       = value.at(kind);
+    if (kind == "grammar") {
+        if (!entry.is_string() || entry.get<std::string>().empty()) {
+            reject("structured_outputs.grammar must be a nonempty GBNF string", field,
+                   "grammar_invalid");
+        }
+        std::string text = entry.get<std::string>();
+        if (text.size() > kConstraintPayloadLimit) {
+            reject("structured_outputs.grammar exceeds " +
+                       std::to_string(kConstraintPayloadLimit) + " bytes",
+                   field, "constraint_too_large");
+        }
+        return {field, ConstraintOrigin::Grammar,
+                ninfer::OutputConstraint::grammar(std::move(text))};
+    }
+    if (kind == "regex") {
+        if (!entry.is_string()) {
+            reject("structured_outputs.regex must be a string", field, "invalid_regex");
+        }
+        std::string pattern = entry.get<std::string>();
+        if (pattern.size() > kConstraintPayloadLimit) {
+            reject("structured_outputs.regex exceeds " +
+                       std::to_string(kConstraintPayloadLimit) + " bytes",
+                   field, "constraint_too_large");
+        }
+        return {field, ConstraintOrigin::Regex,
+                ninfer::OutputConstraint::regex(std::move(pattern))};
+    }
+    if (kind == "choice") {
+        if (!entry.is_array() || entry.empty()) {
+            reject("structured_outputs.choice requires a nonempty array of strings", field,
+                   "invalid_choice");
+        }
+        std::vector<std::string> choices;
+        choices.reserve(entry.size());
+        for (std::size_t index = 0; index < entry.size(); ++index) {
+            if (!entry.at(index).is_string()) {
+                reject("choice entries must be strings",
+                       field + "/" + std::to_string(index), "invalid_choice");
+            }
+            choices.push_back(entry.at(index).get<std::string>());
+        }
+        return {field, ConstraintOrigin::Choice,
+                ninfer::OutputConstraint::choice(std::move(choices))};
+    }
+    reject("unknown structured_outputs option: " + kind, field, "structured_outputs_invalid");
+}
+
+std::optional<ConstraintSlot> admit_grammar(const Json& value, std::string_view field) {
+    if (!value.is_string()) {
+        reject("grammar must be GBNF text", std::string(field), "grammar_invalid");
+    }
+    std::string text = value.get<std::string>();
+    if (text.empty()) { return std::nullopt; }
+    if (text.size() > kConstraintPayloadLimit) {
+        reject("grammar exceeds " + std::to_string(kConstraintPayloadLimit) + " bytes",
+               std::string(field), "constraint_too_large");
+    }
+    return ConstraintSlot{std::string(field), ConstraintOrigin::Grammar,
+                          ninfer::OutputConstraint::grammar(std::move(text))};
+}
+
+ConstraintSlot admit_json_object(std::string_view field) {
+    return {std::string(field), ConstraintOrigin::JsonObject,
+            ninfer::OutputConstraint::json_object()};
+}
+
+ConstraintSlot admit_json_schema(const Json& schema, std::string_view field,
+                                 std::string_view error_param) {
+    std::string source;
+    try {
+        source = json_schema_constraint_source(schema);
+    } catch (const ConstraintError& error) {
+        if (error_param.empty()) { throw; }
+        throw ConstraintError(error.what(), std::string(error_param), error.code());
+    }
+    return {std::string(field), ConstraintOrigin::JsonSchema,
+            ninfer::OutputConstraint::json_schema(std::move(source))};
 }
 
 } // namespace ninfer::constraint
