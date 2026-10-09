@@ -329,7 +329,7 @@ artifact unchanged:
   applies the inverse tiling to restore HF order (including on NVFP4 code/scale words).
 - NVFP4 tensors import encoded: the `.scale`/`.input_scale` sidecars hold inference-time
   multipliers (the reciprocals of the checkpoint global scales), so the stored divisors are the
-  sidecar reciprocals, and the ggml code packing is reframed into NInfer words.
+  sidecar reciprocals, and the ggml code packing is reframed into FrInfer words.
 
 ## Write a conversion method
 

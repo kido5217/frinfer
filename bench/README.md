@@ -6,8 +6,12 @@ implementation selection behind those contracts. Model benchmarks measure Progra
 composition. Correctness lives in the affected test suites; development rules are in
 [`../docs/maintainer/op-development.md`](../docs/maintainer/op-development.md).
 
-The [Serve TTFT campaign](../tools/bench/ttft/README.md) measures public-HTTP latency, streaming gaps,
-prefix reuse and preemption. Its frozen request corpus is documented under
+The [Serve TTFT campaign](../tools/bench/ttft/README.md) measures public-HTTP latency, streaming gaps
+and prefix reuse. Cases that need active-request preemption, or whose frozen workloads were sized
+for a Main KV pool below `max_concurrency × ceil(max_context/64)`, are retired with their reasons in
+the campaign's
+`profiles.RETIRED_PROFILES`; the controller refuses them by name and validates every runnable profile
+against that bound before starting a server. Its frozen request corpus is documented under
 [`fixtures/ttft/`](fixtures/ttft/README.md). That client does not call the benchmark executables or
 Engine directly.
 

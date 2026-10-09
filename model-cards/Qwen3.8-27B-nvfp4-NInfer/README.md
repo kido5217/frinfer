@@ -206,10 +206,10 @@ For images, videos, and structured chat history, see the
 
 Each request has a 120,000-token logical ceiling. The shared 240,000-token Device KV pool covers
 both lanes, so either may reach its full 120,000-token context while the other is resident. The
-pool grows with resident execution; resource pressure can pause a request for later Snapshot or
-Replay recovery. Two extra Device StateImages
+pool grows with resident execution; when it is exhausted, admission waits for capacity instead of
+pausing a resident request (active-request preemption is pinned off). Two extra Device StateImages
 and the default shared pinned Host budget (8 GiB plus eight model StateImages) retain state, KV
-and pause snapshots.
+and checkpoint snapshots.
 
 See the [HTTP serving guide](https://github.com/Neroued/ninfer/blob/master/docs/serving.md) for the
 API surface and the [resource scheduling reference](https://github.com/Neroued/ninfer/blob/master/docs/maintainer/resource-scheduling-and-context-cache.md)

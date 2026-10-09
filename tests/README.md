@@ -226,26 +226,27 @@ KV choices are `bf16`, `int8`, `fp8`, `nvfp4`, and `k8v4`; backend choices are `
 integration executable also accepts all five KV names as its fifth positional argument and rejects
 unknown names.
 
-Continuation and pressure recovery have dedicated entries:
+Continuation and no-preemption capacity have dedicated entries:
 
 ```bash
 NINFER_TEST_ARTIFACT=$PWD/out/qwen3_8_27b_nvfp4.ninfer \
   ctest --test-dir build -R ninfer_qwen3_5_agent_continuation_real_test --output-on-failure
 
 NINFER_TEST_ARTIFACT=$PWD/out/qwen3_8_27b_nvfp4.ninfer \
-NINFER_TEST_BACKEND=dflash2 \
-  ctest --test-dir build -R ninfer_qwen3_5_preemption_real_test --output-on-failure
+  ctest --test-dir build -R ninfer_qwen3_5_no_preemption_real_test --output-on-failure
 
 NINFER_TEST_ARTIFACT=$PWD/out/qwen3_8_27b_nvfp4.ninfer \
   ./build/tests/ninfer_qwen3_5_native_transactions_test dflash2
 ```
 
-The agent entry checks multi-turn continuation and branching. The preemption entry exercises
-Snapshot/Replay recovery and cancellation while paused or replaying; `NINFER_PREEMPTION_REAL_SCENARIO`
-selects `all`, `snapshot`, `replay`, `cancel-paused` or `cancel-replay`. Native transaction tests cover
-physical state/KV ownership, binding, capture, reclamation and abort; their positional backend is
-`none`, `mtp`, `dflash` or `dflash2`. Each backend requires an artifact containing that component.
-Public-HTTP latency and output gaps are measured separately by the
+The agent entry checks multi-turn continuation and branching. The no-preemption entry pins the fork's
+no-active-request-preemption contract: two concurrent requests run to completion on a compliant pool
+with request- and Engine-level preemption/recovery counters at zero, a cached context is restored once
+a lane frees without pausing or preempting a resident, and the startup validator rejects both an
+undersized and an oversized `kv_capacity` with a message naming the required and supplied capacity.
+Native transaction tests cover physical state/KV ownership, binding, capture, reclamation and abort;
+their positional backend is `none`, `mtp`, `dflash` or `dflash2`. Each backend requires an artifact
+containing that component. Public-HTTP latency and output gaps are measured separately by the
 [TTFT campaign](../tools/bench/ttft/README.md).
 
 The capability-evaluation coordinator has its own environment and unittest entry point:

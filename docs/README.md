@@ -51,7 +51,7 @@ other references own narrower contracts:
 | [Storage layouts](maintainer/storage-layouts.md) | packing, plane offsets, padding, encoded sizes and view addressing |
 | [Qwen3.5 model](maintainer/qwen3_5-model.md) | Dense/MoE mathematics, instance config, logical parameters, MTP, Vision and state semantics |
 | [DFlash and DFlash2](maintainer/dflash.md) | conditioning, masked draft computation, proposal distributions and backend state |
-| [Resource scheduling and context cache](maintainer/resource-scheduling-and-context-cache.md) | core design for continuation, retention, incremental resources, preemption and recovery |
+| [Resource scheduling and context cache](maintainer/resource-scheduling-and-context-cache.md) | core design for continuation, retention, incremental resources and inactive-cache reclaim; the upstream preemption/recovery route is pinned off |
 | [Paged KV context store](maintainer/paged-kv-cache.md) | typed pools, pages, replicas, address spaces, reservations and consumer views |
 | [ReplaySSM GDN](maintainer/replayssm-gdn.md) | raw transition records and faithful commitment of the verified state prefix |
 | [Op development](maintainer/op-development.md) | semantic boundaries, source ownership, numerical qualification and performance evidence |
@@ -69,3 +69,13 @@ Model cards contain official artifact facts and source provenance. The
 [conversion guide](weight-conversion.md) is the entry point for making an artifact. Exact config
 fields, parameter expansion and native supported domains are maintained by the code linked from
 these references.
+
+## Architecture decision records
+
+[`adr/`](adr/) records point-in-time decisions:
+
+| ADR | Subject |
+|---|---|
+| [0001](adr/0001-wrapper-grammar-for-constrained-reasoning.md) | wrapper grammar for constrained reasoning (amended; shipped semantics in [Constrained decoding](maintainer/constrained-decoding.md)) |
+| [0002](adr/0002-g1-demotion-recovery-and-signaling.md) | demotion recovery and signaling for tool-call parsing |
+| [0003](adr/0003-full-resident-capacity-under-pinned-preemption.md) | full worst-case Main KV capacity under pinned preemption |

@@ -1,4 +1,4 @@
-# NInfer Engine 架构
+# FrInfer Engine 架构
 
 本文定义模型实例、执行所有权、请求生命周期及跨模块提交关系。
 [资源调度与上下文缓存](resource-scheduling-and-context-cache.md)定义缓存与资源压力策略；
@@ -83,9 +83,12 @@ response event 和 Engine availability。它编排 admission、资源事务、�
 
 Scheduler 拥有执行成员与公平性规则：fresh admission 的有限绕过、prefill 轮转、紧凑 decode/control
 批次、抢占受害请求及恢复机会。它使用请求状态和提交顺序做决定，暂停请求局部等待容量事件。
+本 fork 固定不抢占已激活请求（§1）：`pause_resident` 恒返回 false，抢占受害与暂停/恢复分支
+不可达，资源不足时请求等待容量；这部分机制保留为上游合并参考。
 
 Lane 是 resident 请求位置；StateImage slot、KV execution row 和 compact batch row 是独立身份。
-暂停释放 lane 后，请求仍由 EngineCore 拥有；恢复可以取得另一 lane。
+上游机制中暂停会释放 lane、请求仍归 EngineCore 拥有并在恢复时取得另一 lane；本 fork 的 pin 下
+暂停从不发生，该路径不可达。
 
 ### 2.3 ResourceManager
 
@@ -159,12 +162,20 @@ stateDiagram-v2
     ModelFinished --> [*]: 资源与输出结算
 ```
 
+本图描述上游请求生命周期；本 fork 固定不抢占已激活请求，`Pausing`/`Paused` 状态及其入边与
+Snapshot/Replay 恢复入口属于 pinned-off 的抢占路径，在合规容量下不可达（见 §1 与 ADR
+[0003](../adr/0003-full-resident-capacity-under-pinned-preemption.md)）。
+
 `Materializing` 包含 source lease、必要传输和 destination 安装；完整绑定采用后才暴露 SequenceHandle。
 Capture 是 resident 请求上的暂时执行门，capture 未完成的请求不进入模型 unit。
 `ModelFinished` 表示模型已经结束，Engine 仍持有 lane，直到 finish/release 和缓存索引更新完成。
 取消与失败可以从相应稳定边界进入终态。
 
 ### 3.1 暂停与恢复
+
+本 fork 固定不抢占已激活请求：`pause_resident` 恒返回 false，暂停与恢复绑定在合规容量下不可达
+（ADR [0003](../adr/0003-full-resident-capacity-under-pinned-preemption.md)）。以下描述上游的
+pause/replay 机制，保留为上游合并参考。
 
 暂停由 Program 在已提交 GPU 边界完成，返回 owning `ResumeState`：
 
@@ -210,8 +221,9 @@ transport 通过队列、原子 cancellation flag 和 response event 交互。
 
 Program 的 `reserve_units` 原子取得一个调用集合的 typed 增量需求；Engine 逐行调用，组成可运行
 子集。一行缺资源不会阻止其他已许可行执行。普通 unit 结算释放未用 reservation 与 provisional
-suffix；恢复许可保留未来重建及首新单元尚需的 reservation。压力可以回收 optional cache、撤销
-paused Snapshot 或暂停年轻 resident，具体准入与公平性见核心缓存文档。
+suffix；恢复许可保留未来重建及首新单元尚需的 reservation。压力可以回收 optional cache 与 inactive
+checkpoint；本 fork 固定不抢占已激活请求，paused 队列恒为空，撤销 paused Snapshot 与暂停年轻
+resident 的路径不可达。具体准入与公平性见核心缓存文档。
 
 一次资源事务可以与不受影响的 resident 执行交错，但同一 sequence、source/destination lease、
 block table 和 transfer buffer 的依赖由 Program 冻结。任意时刻只有一个上下文资源事务，任意 GPU unit
@@ -334,5 +346,5 @@ continuation 或 checkpoint。
 | 输入转换、media acquisition 与 HTTP Gateway | `src/product/`, `src/media/decode/`, `src/serve/` |
 | Converter 与 Python 容器工具 | `tools/convert/`, `tools/artifact/` |
 
-公共 C++ 接口服务仓库内应用；NInfer 不安装或导出 C++ SDK。V3 `.ninfer` 是唯一 C++ 产品 artifact，
+公共 C++ 接口服务仓库内应用；FrInfer 不安装或导出 C++ SDK。V3 `.ninfer` 是唯一 C++ 产品 artifact，
 CLI、server 和 inference benchmark 均通过公共 Engine，converter 不提供 Python model-inference 路径。

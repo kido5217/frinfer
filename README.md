@@ -178,10 +178,10 @@ Start a long-running text/agent server with two active-request lanes:
 
 Each request has a 120,000-token logical ceiling. A shared 240,000-token Device KV pool covers both
 lanes, so each may reach its full 120,000-token context while the other is resident. Requests
-acquire KV pages as execution advances; under pressure, the scheduler can pause a request and
-resume it later. The profile provides two extra
-Device StateImages and the default shared pinned Host budget: 8 GiB plus eight model StateImages,
-used for retained state, KV and pause snapshots.
+acquire KV pages as execution advances; when the pool is exhausted, admission waits for capacity
+instead of pausing a resident request (active-request preemption is pinned off). The profile provides
+two extra Device StateImages and the default shared pinned Host budget: 8 GiB plus eight model
+StateImages, used for retained state, KV and checkpoint snapshots.
 
 Send an OpenAI-style request:
 
@@ -220,13 +220,13 @@ diagnostics. Use `--messages FILE` and `--vision` for structured image/video inp
 
 A reusable checkpoint combines KV with the complete continuation state at an exact token frontier.
 The engine retains completed conversation endpoints and stable input boundaries for multi-turn and
-agent reuse. Inactive checkpoints share Device and pinned Host capacity; pressure reclaims retained
-resources before pausing resident requests. Paused requests resume from a snapshot or rebuild their
-state by replaying already committed tokens.
+agent reuse. Inactive checkpoints share Device and pinned Host capacity; pressure reclaims those
+inactive cached contexts and checkpoints. Resident requests are never paused: active-request
+preemption is pinned off, so admission waits for capacity instead.
 
 See [Resource scheduling and context cache](docs/maintainer/resource-scheduling-and-context-cache.md)
 for the algorithm and [Serve TTFT benchmark](tools/bench/ttft/) for public-HTTP coverage of hot
-reuse, Host resume, eviction, shared prefixes, scheduling boundaries, and multimodal load.
+reuse, Host State resume, shared prefixes, scheduling boundaries, and multimodal load.
 
 ## Performance
 
