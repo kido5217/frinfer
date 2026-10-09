@@ -315,11 +315,10 @@ void HttpServer::handle_responses(const httplib::Request& req, httplib::Response
             return;
         }
         lifecycle->done(outcome);
-        if (tool_call_demotion_signals(outcome.tool_call_parse.fallback_reason,
-                                       outcome.tool_call_parse.call_attempted)) {
+        if (auto error = tool_call_demotion_signal(outcome.tool_call_parse.fallback_reason,
+                                                   outcome.tool_call_parse.call_attempted)) {
             res.set_header("x-should-retry", "true");
-            write_openai_error(res, responses_error(tool_call_demotion_error(
-                                       outcome.tool_call_parse.fallback_reason)));
+            write_openai_error(res, responses_error(*error));
             return;
         }
 
@@ -428,11 +427,11 @@ void HttpServer::handle_responses(const httplib::Request& req, httplib::Response
                     StreamSink output;
                     output.on_tool_call_demoted = [&](const std::string& text,
                                                       const ninfer::ToolCallDemotion& demotion) {
-                        if (tool_call_demotion_signals(demotion.fallback_reason,
-                                                       demotion.call_attempted)) {
+                        if (auto error = tool_call_demotion_signal(demotion.fallback_reason,
+                                                                   demotion.call_attempted)) {
                             // ADR-0002: the lost call is signaled in-band; the region bytes are
                             // withheld from the stream (the Engine aggregate keeps them).
-                            demotion_signal = tool_call_demotion_error(demotion.fallback_reason);
+                            demotion_signal = *error;
                             return;
                         }
                         render_and_write(transport,
