@@ -1,6 +1,6 @@
 # Serve TTFT and scheduling benchmark
 
-The runner sends public HTTP requests to an already-running `ninfer-serve`. It records the whole
+The runner sends public HTTP requests to an already-running `frinfer-serve`. It records the whole
 stream: first output, subsequent output events, completion, errors and cancellation. Optional
 structured Serve logs explain cache and scheduling actions. A separate campaign controller starts
 a fresh server for each sample and records its effective configuration.

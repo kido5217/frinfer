@@ -1,14 +1,14 @@
 # HTTP serving
 
-`build/apps/ninfer-serve` loads one v3 `.ninfer` artifact and exposes OpenAI- and
-Anthropic-compatible HTTP endpoints over one resident NInfer Engine.
+`build/apps/frinfer-serve` loads one v3 `.ninfer` artifact and exposes OpenAI- and
+Anthropic-compatible HTTP endpoints over one resident FrInfer Engine.
 
 ## Start the server
 
 See [CUDA synchronization](cli.md#cuda-synchronization) for the shared `NINFER_CUDA_SYNC` setting.
 
 ```bash
-./build/apps/ninfer-serve models/qwen3_8_27b_nvfp4.ninfer \
+./build/apps/frinfer-serve models/qwen3_8_27b_nvfp4.ninfer \
   --host 127.0.0.1 \
   --port 8080 \
   --max-context 120000 \
@@ -24,11 +24,11 @@ See [CUDA synchronization](cli.md#cuda-synchronization) for the shared `NINFER_C
 The command uses Qwen3.8-27B NVFP4. Each request has a 120,000-token logical ceiling. A shared
 240,000-token Main Text KV pool admits two lanes at full context, so either request may reach its
 full 120,000-token ceiling while the other is resident. Requests acquire KV pages as execution
-advances; if concurrent growth exhausts the pool, the scheduler can pause a request and restore it
-later.
+advances; if concurrent growth exhausts the pool, admission waits for capacity instead of pausing a
+resident request (active-request preemption is pinned off).
 
 With `C=2` and two extra Device slots, the process owns four Device StateImages. The default shared
-pinned Host budget is 8 GiB plus eight model StateImages. It holds retained state, KV and pause
+pinned Host budget is 8 GiB plus eight model StateImages. It holds retained state, KV and checkpoint
 snapshots, including in-flight destinations; `--host-context-mib` sets an explicit total instead.
 
 Other artifacts use the same command shape with their own path. For 35B-A3B DFlash, replace the MTP
@@ -865,7 +865,7 @@ The table lists executable defaults. The startup example selects a long-context 
 | `--no-cuda-graph` | disable CUDA Graph decode | graphs on |
 | `--no-prefix-reuse` | disable compatible-prefix caching | prefix reuse on |
 | `--device-state-slots N` | extra Device StateImages beyond `max-concurrency` | `max-concurrency` |
-| `--host-context-mib N` | shared pinned Host budget for StateImages, KV and pause snapshots, including in-flight destinations | `8192 MiB + 8 native StateImages` |
+| `--host-context-mib N` | shared pinned Host budget for StateImages, KV and checkpoint snapshots, including in-flight destinations | `8192 MiB + 8 native StateImages` |
 | `--no-thinking` | disable thinking by default | thinking on |
 | `--preserve-thinking` | preserve closed-turn assistant reasoning by default | off |
 | `--cors` | permissive browser CORS headers | off |
@@ -895,10 +895,10 @@ request fields override process flags, and `--greedy` finally forces temperature
 For `C=--max-concurrency` and `H=--device-state-slots`, total Device StateImage capacity is `C+H`.
 Host state and Main/Backend KV share one startup-fixed byte budget; this is context storage, not a
 limit on total process RAM. `--host-context-mib 0` disables Host context backing.
-`--no-prefix-reuse` disables cross-request history reads and writes; pause/replay recovery remains
-available, and the capacity flags may still be specified.
+`--no-prefix-reuse` disables cross-request history reads and writes; the capacity flags may still be
+specified.
 
-Run `./build/apps/ninfer-serve --help` for the exact option contract.
+Run `./build/apps/frinfer-serve --help` for the exact option contract.
 
 Serve writes human-readable operational records to stderr using
 `YYYY-MM-DD HH:MM:SS.mmm  LEVEL  message`. Normal output covers material startup milestones,
@@ -1115,9 +1115,10 @@ CPU/media preparation and completed model results whose response has not yet bee
 capacity returns HTTP 429 with code `server_overloaded`. The absolute
 `--pending-timeout-ms` deadline starts before preparation, covers media acquisition and Engine FIFO
 waiting, and returns HTTP 503 with code `request_queue_timeout` if admission does not occur in time.
-Once admitted, a request may pause for resource pressure without restarting this initial-admission
-deadline. Fresh requests enter in FIFO order with a bounded bypass allowance when an earlier request
-cannot fit. There is no admission ETA or unbounded overflow queue.
+Once admitted, a request holds its lane until it completes or is cancelled; the runtime never pauses
+a resident request, so this initial-admission deadline is not restarted by resource pressure. Fresh
+requests enter in FIFO order with a bounded bypass allowance when an earlier request cannot fit.
+There is no admission ETA or unbounded overflow queue.
 
 Input memory is bounded by the outstanding-request count and the per-request
 `--max-request-mib` limit. Media preparation uses a shared permit pool sized from `--media-live-mib`
@@ -1137,16 +1138,12 @@ capacity. The MTP/DFlash backend KV pool is sized on top of the Main pool and co
 bound.
 
 Before each prefill, decode or replay unit, the runtime reserves the additional pages and temporary
-storage required by that unit. It first reclaims inactive cache resources when capacity is short.
-If resident requests still cannot advance together, it pauses a younger request while preserving
-progress for the oldest resident request. A paused request does not block fresh requests that fit
-the remaining capacity. Restoration follows original request order and reserves enough space to
-rebuild the saved frontier and complete one new execution unit.
-
-A paused request keeps its committed output and protocol state. With sufficient Host backing, it
-can restore a snapshot; otherwise it rebuilds model state from retained input and committed tokens.
-Replay does not resample or republish those tokens, but it consumes compute and can increase gaps in
-the output stream. The policy and ownership rules are defined in
+storage required by that unit. When capacity is short it first reclaims inactive cached contexts and
+checkpoints; that reclaim stays enabled. Resident requests are never paused to make room, because
+active-request preemption is pinned off: admission waits for capacity instead. The upstream runtime's
+pause/replay recovery mechanism is retained for the upstream merge but is unreachable under the
+compliant pool, which covers `--max-concurrency` lanes each at full `--max-context`. The policy and
+ownership rules are defined in
 [Resource scheduling and context cache](maintainer/resource-scheduling-and-context-cache.md).
 
 Compatible prefixes are reused for both text and multimodal histories unless the server starts with

@@ -54,7 +54,8 @@ llama.cpp engine, plus a client-visible, retryable signal for residual call loss
 - All three advertised routes (OpenAI chat, OpenAI Responses, Anthropic Messages) implement the
   signal in their native error shapes, with schema tests and `docs/serving.md` updated together.
 - Diagnostics: `fallback_reason` is demotion-only; add `call_attempted` and `salvaged_calls`
-  (JSONL schema v23).
+  (JSONL schema v23 at the time of this decision; the fork's current request-log schema is v25, see
+  `src/serve/request_log.h`).
 
 ## Considered options
 

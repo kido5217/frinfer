@@ -20,8 +20,9 @@ Growing KV 使用一组启动时固定的 homogeneous pools。每个 pool：
 - 由 consumer 通过 block table 直接寻址。
 
 一个 request 的 KV 不要求物理连续，也不与 control lane 固定绑定。所有 active 与 inactive address spaces
-共享 pool capacity。普通 reservation 保障下一单元增量；暂停恢复的 reservation 覆盖重建至旧
-frontier 及首个真实新单元，并跨 chunk 持有。
+共享 pool capacity。普通 reservation 保障下一单元增量；上游机制中暂停恢复的 reservation 覆盖重建至旧
+frontier 及首个真实新单元，并跨 chunk 持有。本 fork 固定不抢占已激活请求，暂停恢复路径不可达
+（见 [资源调度与上下文缓存](resource-scheduling-and-context-cache.md)）。
 
 Paged storage 覆盖按上下文增长的 KV。DFlash local cyclic state、Vision/query temporary K/V 和其他固定
 state 具有不同 lifetime，由其各自的 StateImage 或 workspace contract 管理。
@@ -470,7 +471,8 @@ Execution row 不拥有 logical pages、frontier 或 reservation。
 ### 7.1 绑定
 
 从 root 或 checkpoint 初次绑定时，Program 统一准备 State、全部 enabled KV pools 及首个合法 unit。
-暂停恢复则准备完整恢复覆盖：旧 frontier、后端规范化/bridge 与首个真实新单元所需的峰值。
+上游机制中暂停恢复则准备完整恢复覆盖：旧 frontier、后端规范化/bridge 与首个真实新单元所需的峰值；
+本 fork 固定不抢占已激活请求，该路径不可达。
 
 ```text
 lease source and acquire destination
@@ -515,6 +517,8 @@ suffix；partial page 中残留 bytes 不扩大有效范围。
 coverage 不会触发裁剪。
 
 ### 7.4 暂停、结束与释放
+
+本 fork 固定不抢占已激活请求，暂停路径不可达；以下保留结束与释放的正常语义。
 
 暂停或结束时释放 execution row、active references 和未用 growth reservation。需要保留的恢复点
 继续持有完整 State/KV coverage；Snapshot 可以迁移至 Host，或在放弃物理加速副本后通过 Replay 恢复。

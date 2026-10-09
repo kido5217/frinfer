@@ -69,3 +69,13 @@ Model cards contain official artifact facts and source provenance. The
 [conversion guide](weight-conversion.md) is the entry point for making an artifact. Exact config
 fields, parameter expansion and native supported domains are maintained by the code linked from
 these references.
+
+## Architecture decision records
+
+[`adr/`](adr/) records point-in-time decisions:
+
+| ADR | Subject |
+|---|---|
+| [0001](adr/0001-wrapper-grammar-for-constrained-reasoning.md) | wrapper grammar for constrained reasoning (amended; shipped semantics in [Constrained decoding](maintainer/constrained-decoding.md)) |
+| [0002](adr/0002-g1-demotion-recovery-and-signaling.md) | demotion recovery and signaling for tool-call parsing |
+| [0003](adr/0003-full-resident-capacity-under-pinned-preemption.md) | full worst-case Main KV capacity under pinned preemption |

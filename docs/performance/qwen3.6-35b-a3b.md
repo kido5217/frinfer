@@ -211,7 +211,8 @@ per profile; each category has fifteen. All output-limit samples remain in the r
 
 ## Reproduction and reports
 
-Run from the repository root using Python 3.11 and the explicit artifact above.
+Run from the repository root with the explicit artifact above. The recorded campaign used a Python 3.11
+conda environment (`NINFER_BENCH_PYTHON` below); the maintained devShell now provides `python3.13`.
 Campaign reports: `profiles/bench/qwen3_6_35b_a3b_retest_20260907_130244/`.
 Select an unused `NINFER_PERF_OUTPUT` directory for a new run.
 

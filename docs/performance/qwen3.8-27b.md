@@ -248,7 +248,9 @@ C=1 corpus responses and phase summaries are in `corpus/<point>/`.
 | GD / ND | `groupwise-int/dflash2-corpus/`, `nvfp4/dflash2-corpus/` |
 | GS / NS | `groupwise-int/mtp3-saturation/c{1,2,4,8}/`, `nvfp4/mtp3-saturation/c{1,2,4,8}/` |
 
-Build `frinfer-serve`, then run from the repository root with Python 3.11 and a fresh output directory:
+Build `frinfer-serve`, then run from the repository root with a fresh output directory. The recorded
+campaign used a Python 3.11 conda environment (`NINFER_BENCH_PYTHON` below); the maintained devShell
+now provides `python3.13`:
 
 ```bash
 export NINFER_BENCH_PYTHON=/home/neroued/miniconda3/envs/py311/bin/python

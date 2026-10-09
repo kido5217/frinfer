@@ -139,7 +139,9 @@ comparison. MTP0 and MTP3 use different workloads; no per-scenario speculative s
 
 ## Reproduction and reports
 
-Build [frinfer-serve](../../README.md#quick-start) and run from the repository root with Python 3.11:
+Build [frinfer-serve](../../README.md#quick-start) and run from the repository root. The recorded
+campaign used a Python 3.11 conda environment (`NINFER_BENCH_PYTHON` below); the maintained devShell
+now provides `python3.13`, so substitute its interpreter when rerunning:
 
 ```bash
 export NINFER_BENCH_PYTHON=/home/neroued/miniconda3/envs/py311/bin/python
