@@ -55,6 +55,15 @@ constexpr ReductionCriterion kFusedTolerance{
     /*gross_relative_to_max_reference*/ 0.0,
 };
 
+int device_multiprocessor_count() {
+    int device = 0;
+    cuda_check(cudaGetDevice(&device), "cudaGetDevice");
+    int count = 0;
+    cuda_check(cudaDeviceGetAttribute(&count, cudaDevAttrMultiProcessorCount, device),
+               "cudaDeviceGetAttribute(MultiProcessorCount)");
+    return count;
+}
+
 std::uint32_t lcg(std::uint32_t& state) {
     state = state * 1664525u + 1013904223u;
     return state;
@@ -444,7 +453,8 @@ int check_down_multi_job(Bank& bank) {
         act_t, bank.weights, static_cast<const int*>(off_dev.p),
         static_cast<const int*>(je_dev.p), static_cast<const int*>(jc_dev.p),
         static_cast<const int*>(jn_dev.p), static_cast<std::uint8_t*>(codes.p),
-        static_cast<std::uint8_t*>(scales.p), static_cast<__nv_bfloat16*>(out.p), nullptr);
+        static_cast<std::uint8_t*>(scales.p), static_cast<__nv_bfloat16*>(out.p),
+        device_multiprocessor_count(), nullptr);
     cuda_synchronize();
 
     const auto plane = decode_down_plane(from_device<std::uint8_t>(codes.p, M * 256),

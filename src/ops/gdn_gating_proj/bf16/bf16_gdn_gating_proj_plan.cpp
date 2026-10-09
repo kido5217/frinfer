@@ -449,7 +449,7 @@ void bf16_gdn_norm_gating_dispatch(const Tensor& x, const Tensor& norm_weight, f
         return;
     }
     if (plan.schedule == Bf16GdnNormGatingScheduleId::Composed) {
-        rmsnorm(x, norm_weight, eps, true, h, execution.stream);
+        rmsnorm(x, norm_weight, eps, true, h, execution);
         execute_resolved(plan.control, problem, h, a_weight, b_weight, A_log, dt_bias, ws, g, beta,
                          execution);
         return;
@@ -461,7 +461,7 @@ void bf16_gdn_norm_gating_dispatch(const Tensor& x, const Tensor& norm_weight, f
     if (!bf16_gdn_norm_gating_proj_35_mma_split32_launch(
             plan.control.token_variant, x, norm_weight, eps, h, a_weight, b_weight, A_log, dt_bias,
             scratch.data, g, beta, execution.multiprocessor_count, execution.stream)) {
-        rmsnorm(x, norm_weight, eps, true, h, execution.stream);
+        rmsnorm(x, norm_weight, eps, true, h, execution);
         const Bf16GdnGatingPlan fallback =
             bf16_gdn_gating_resolve_candidate(Bf16GdnGatingScheduleId::MmaUnsplit, problem);
         execute_resolved(fallback, problem, h, a_weight, b_weight, A_log, dt_bias, ws, g, beta,

@@ -48,6 +48,10 @@ ninfer_add_op_test(ninfer_softmax_attention_test
           "${CMAKE_CURRENT_LIST_DIR}/softmax_attention/context.cpp"
   LIBRARIES ninfer_ops)
 
+ninfer_add_op_test(ninfer_causal_partition_test
+  SOURCES "${CMAKE_CURRENT_LIST_DIR}/test_causal_partition.cpp"
+  LIBRARIES ninfer_ops)
+
 ninfer_add_op_test(ninfer_sliding_window_attention_test
   SOURCES "${CMAKE_CURRENT_LIST_DIR}/test_sliding_window_attention.cpp"
   LIBRARIES ninfer_ops)

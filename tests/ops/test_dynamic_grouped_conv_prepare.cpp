@@ -241,6 +241,12 @@ int run() {
     WorkspaceArena workspace(capacity);
     cudaStream_t stream = nullptr;
     cuda_check(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking), "create stream");
+    int device = 0;
+    cuda_check(cudaGetDevice(&device), "query active device");
+    int multiprocessor_count = 0;
+    cuda_check(cudaDeviceGetAttribute(&multiprocessor_count, cudaDevAttrMultiProcessorCount,
+                                      device),
+               "query multiprocessor count");
     Tensor norm(norm_device.p, DType::BF16, {kHidden});
     Tensor base(base_device.p, DType::BF16, {kHidden, kTaps, kSides});
     const Weight weight = projection_weight.view();
@@ -264,8 +270,9 @@ int run() {
                 cuda_check(cudaStreamSynchronize(nullptr), "fixture fill synchronize");
                 workspace.reset_peak();
                 const auto launch = [&] {
-                    ops::rmsnorm_dynamic_grouped_conv_prepare(residual, norm, kEps, base, weight,
-                                                              prepared, finish, workspace, stream);
+                    ops::rmsnorm_dynamic_grouped_conv_prepare(
+                        residual, norm, kEps, base, weight, prepared, finish, workspace,
+                        DeviceExecutionView{stream, multiprocessor_count});
                 };
                 if (replay) {
                     DecodeGraphDefinition definition;

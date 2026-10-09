@@ -70,6 +70,9 @@ void rmsnorm_impl(const Tensor& x, const Tensor& weight, float eps, bool unit_of
         throw std::invalid_argument("rmsnorm: weight must be 1-D with ne[0] == x.ne[0]");
     }
     if (n == 0) { return; }
+    if (multiprocessor_count <= 0) {
+        throw std::invalid_argument("rmsnorm: positive multiprocessor count required");
+    }
     const std::int64_t rows = n / x.ne[0];
     if (rows > std::numeric_limits<int>::max()) {
         throw std::overflow_error("rmsnorm: row count exceeds CUDA grid limit");
@@ -90,15 +93,13 @@ void rmsnorm_impl(const Tensor& x, const Tensor& weight, float eps, bool unit_of
 } // namespace
 
 void rmsnorm(const Tensor& x, const Tensor& weight, float eps, bool unit_offset, Tensor& out,
-             cudaStream_t stream) {
-    rmsnorm_impl(x, weight, eps, unit_offset, nullptr, out, 0, stream);
+             DeviceExecutionView execution) {
+    rmsnorm_impl(x, weight, eps, unit_offset, nullptr, out, execution.multiprocessor_count,
+                 execution.stream);
 }
 
 void gated_rmsnorm(const Tensor& x, const Tensor& weight, const Tensor& z, float eps, Tensor& out,
                    DeviceExecutionView execution) {
-    if (execution.multiprocessor_count <= 0) {
-        throw std::invalid_argument("gated_rmsnorm: positive multiprocessor count required");
-    }
     rmsnorm_impl(x, weight, eps, false, &z, out, execution.multiprocessor_count, execution.stream);
 }
 

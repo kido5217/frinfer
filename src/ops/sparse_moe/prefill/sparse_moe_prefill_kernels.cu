@@ -1313,7 +1313,7 @@ void sparse_moe_prefill_launch(const Tensor& x, const SparseMoeWeights& weights,
                 route_job_count,
                 static_cast<std::uint8_t*>(workspace.nvfp4_activation_codes.data),
                 static_cast<std::uint8_t*>(workspace.nvfp4_activation_scales.data),
-                routed_activation, stream);
+                routed_activation, execution.multiprocessor_count, stream);
         } else if (weights.routed_gate_up.qtype == QType::Q8_G32_FP16) {
             sparse_moe_prefill_q8_gate_up_kernel<true>
                 <<<routed_gate_grid, kExpertThreads, 0, stream>>>(
@@ -1382,7 +1382,8 @@ void sparse_moe_prefill_launch(const Tensor& x, const SparseMoeWeights& weights,
                 Tensor(routed_activation, DType::BF16, {kIntermediate, assignments}), weights,
                 offsets, route_job_experts, route_job_columns, route_job_count,
                 static_cast<std::uint8_t*>(workspace.nvfp4_down_codes.data),
-                static_cast<std::uint8_t*>(workspace.nvfp4_down_scales.data), grouped_io, stream);
+                static_cast<std::uint8_t*>(workspace.nvfp4_down_scales.data), grouped_io,
+                execution.multiprocessor_count, stream);
             break;
         default:
             throw std::invalid_argument("sparse_moe prefill: unsupported down codec");

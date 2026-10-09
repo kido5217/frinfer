@@ -36,12 +36,14 @@ struct Nvfp4GateUpBases {
 //
 // expert_offsets [257], route_job_experts/columns [jobs] and route_job_count [2] are the prefill
 // route's packed-route maps (route_job_count[0] is the job count). activation_codes/scales are the
-// compact FP4 plane scratch (tokens * 2048/2 and tokens * 2048/16 bytes).
+// compact FP4 plane scratch (tokens * 2048/2 and tokens * 2048/16 bytes). multiprocessor_count
+// sizes the persistent grid cap (32 queued CTAs per SM), mirroring the packed prefill seam.
 void sparse_moe_nvfp4_gate_up_launch(const Tensor& x, const SparseMoeWeights& weights,
                                      const int* packed_token, const int* expert_offsets,
                                      const int* route_job_experts,
                                      const int* route_job_columns, const int* route_job_count,
                                      std::uint8_t* activation_codes, std::uint8_t* activation_scales,
-                                     __nv_bfloat16* routed_activation, cudaStream_t stream);
+                                     __nv_bfloat16* routed_activation,
+                                     std::int32_t multiprocessor_count, cudaStream_t stream);
 
 } // namespace ninfer::ops::detail
