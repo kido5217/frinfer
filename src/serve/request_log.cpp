@@ -1,6 +1,7 @@
 #include "serve/request_log.h"
 #include "product/logging/pretty_format.h"
 #include "product/speculative_options.h"
+#include "serve/request_observation.h"
 
 #include <spdlog/logger.h>
 
@@ -24,11 +25,6 @@ namespace ninfer::serve {
 namespace {
 
 using Json = nlohmann::json;
-
-template <class T>
-T monotonic_delta(T previous, T current) noexcept {
-    return current >= previous ? current - previous : T{};
-}
 
 std::uint64_t unix_time_ms() {
     const auto now = std::chrono::system_clock::now().time_since_epoch();
@@ -469,41 +465,6 @@ Json first_output_timing_json(const ninfer::GenerationFirstOutputTiming& timing)
                 {"scheduling", scheduling_json(timing.scheduling)},
                 {"computed_prefill_tokens", timing.computed_prefill_tokens},
                 {"context_transfers", std::move(transfers)}};
-}
-
-ninfer::RuntimeHostWorkStats host_work_delta(const ninfer::RuntimeHostWorkStats& previous,
-                                             const ninfer::RuntimeHostWorkStats& current) {
-    return ninfer::RuntimeHostWorkStats{
-        .engine_boundary_ns =
-            monotonic_delta(previous.engine_boundary_ns, current.engine_boundary_ns),
-        .program_submit_ns = monotonic_delta(previous.program_submit_ns, current.program_submit_ns),
-        .program_post_ns   = monotonic_delta(previous.program_post_ns, current.program_post_ns),
-        .engine_commit_output_ns =
-            monotonic_delta(previous.engine_commit_output_ns, current.engine_commit_output_ns),
-        .engine_maintenance_ns =
-            monotonic_delta(previous.engine_maintenance_ns, current.engine_maintenance_ns),
-        .device_wait_ns = monotonic_delta(previous.device_wait_ns, current.device_wait_ns),
-        .decode_host_ns = monotonic_delta(previous.decode_host_ns, current.decode_host_ns),
-        .decode_device_wait_ns =
-            monotonic_delta(previous.decode_device_wait_ns, current.decode_device_wait_ns),
-        .prefill_host_ns = monotonic_delta(previous.prefill_host_ns, current.prefill_host_ns),
-        .prefill_device_wait_ns =
-            monotonic_delta(previous.prefill_device_wait_ns, current.prefill_device_wait_ns),
-        .control_host_ns = monotonic_delta(previous.control_host_ns, current.control_host_ns),
-        .control_device_wait_ns =
-            monotonic_delta(previous.control_device_wait_ns, current.control_device_wait_ns),
-        .prefill_units = monotonic_delta(previous.prefill_units, current.prefill_units),
-        .control_units = monotonic_delta(previous.control_units, current.control_units),
-        .stats_publication_ns =
-            monotonic_delta(previous.stats_publication_ns, current.stats_publication_ns),
-        .stats_publication_invocations = monotonic_delta(previous.stats_publication_invocations,
-                                                         current.stats_publication_invocations),
-    };
-}
-
-std::uint64_t host_active_ns(const ninfer::RuntimeHostWorkStats& timing) noexcept {
-    return timing.engine_boundary_ns + timing.program_submit_ns + timing.program_post_ns +
-           timing.engine_commit_output_ns + timing.engine_maintenance_ns;
 }
 
 Json microseconds_per(std::uint64_t nanoseconds, std::uint64_t count) {
