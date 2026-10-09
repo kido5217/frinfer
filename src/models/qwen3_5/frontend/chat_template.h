@@ -1,11 +1,13 @@
 #pragma once
 
+#include "models/qwen3_5/frontend/chat_parse_core.h"
 #include "models/qwen3_5/frontend/tokenizer.h"
 #include "text/jinja.h"
 
 #include "models/qwen3_5/frontend/prepared_prompt.h"
 #include <ninfer/types.h>
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -15,8 +17,29 @@
 #include <vector>
 
 namespace ninfer::models::qwen3_5::frontend {
+namespace detail {
 
-inline constexpr std::string_view kCanonicalReasoningCloseSerialization = "\n</think>\n\n";
+// Composes the canonical close serialization `"\n" + thinking_close + "\n\n"` at compile time.
+// The bytes live in a constexpr variable with static storage so the view below stays valid; the
+// close is derived from the single wire-format owner instead of a second copy of the marker.
+constexpr auto canonical_reasoning_close_bytes() noexcept {
+    constexpr std::string_view close = ChatParseWireFormat::qwen3_5().thinking_close;
+    std::array<char, close.size() + 3U> bytes{};
+    bytes[0] = '\n';
+    for (std::size_t index = 0; index < close.size(); ++index) {
+        bytes[1U + index] = close[index];
+    }
+    bytes[close.size() + 1U] = '\n';
+    bytes[close.size() + 2U] = '\n';
+    return bytes;
+}
+
+inline constexpr auto kCanonicalReasoningCloseBytes = canonical_reasoning_close_bytes();
+
+} // namespace detail
+
+inline constexpr std::string_view kCanonicalReasoningCloseSerialization{
+    detail::kCanonicalReasoningCloseBytes.data(), detail::kCanonicalReasoningCloseBytes.size()};
 
 struct ToolCall {
     std::string id;

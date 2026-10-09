@@ -29,7 +29,21 @@ struct ChatParseWireFormat {
     // `<think>`/`</think>` reasoning, `<tool_call>`/`</tool_call>` regions,
     // `<function=NAME>` and `<parameter=NAME>` blocks. The template's JSON mode is rejected at
     // configuration time; it is not this format and must never reach this parser.
-    [[nodiscard]] static const ChatParseWireFormat& qwen3_5() noexcept;
+    //
+    // This is the single owner of the wire-format markers. It is defined here (not in the .cpp)
+    // so consumers can read the markers every time, including in constant expressions.
+    [[nodiscard]] static constexpr ChatParseWireFormat qwen3_5() noexcept {
+        return ChatParseWireFormat{
+            .thinking_open   = "<think>",
+            .thinking_close  = "</think>",
+            .tool_call_open  = "<tool_call>",
+            .tool_call_close = "</tool_call>",
+            .function_open   = "<function=",
+            .function_close  = "</function>",
+            .parameter_open  = "<parameter=",
+            .parameter_close = "</parameter>",
+        };
+    }
 };
 
 struct ChatParseOptions {

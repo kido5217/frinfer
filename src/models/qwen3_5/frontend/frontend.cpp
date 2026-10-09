@@ -44,10 +44,28 @@ using Json   = nlohmann::json;
 using Clock  = std::chrono::steady_clock;
 namespace fi = frontend;
 
-constexpr std::string_view kThinkClose = "</think>";
-constexpr std::string_view kThinkingControl =
+constexpr std::string_view kThinkClose = fi::ChatParseWireFormat::qwen3_5().thinking_close;
+constexpr std::string_view kThinkingControlPrefix =
     "\n\n Considering the limited time by the user, I have to give the solution based on the "
-    "thinking directly now.\n</think>\n\n";
+    "thinking directly now.";
+
+// The control suffix is the fixed preamble plus the canonical reasoning close, both composed
+// from the single wire-format owner; the bytes live in a constexpr array with static storage.
+constexpr auto thinking_control_bytes() noexcept {
+    constexpr std::string_view suffix = fi::kCanonicalReasoningCloseSerialization;
+    std::array<char, kThinkingControlPrefix.size() + suffix.size()> bytes{};
+    for (std::size_t index = 0; index < kThinkingControlPrefix.size(); ++index) {
+        bytes[index] = kThinkingControlPrefix[index];
+    }
+    for (std::size_t index = 0; index < suffix.size(); ++index) {
+        bytes[kThinkingControlPrefix.size() + index] = suffix[index];
+    }
+    return bytes;
+}
+
+constexpr auto kThinkingControlBytes = thinking_control_bytes();
+constexpr std::string_view kThinkingControl{kThinkingControlBytes.data(),
+                                            kThinkingControlBytes.size()};
 static_assert(kThinkingControl.ends_with(fi::kCanonicalReasoningCloseSerialization));
 constexpr double kRescaleFactor = 1.0 / 255.0;
 constexpr double kVideoFps      = 2.0;

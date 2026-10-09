@@ -1,5 +1,7 @@
 #include "models/qwen3_5/frontend/prompt_layout.h"
 
+#include "models/qwen3_5/frontend/chat_parse_core.h"
+
 #include <algorithm>
 #include <stdexcept>
 
@@ -61,6 +63,8 @@ PromptLayout inspect_prompt_layout(const text::TemplateOutput& output,
                                    std::span<const Modality> media) {
     PromptLayout result;
     const std::string_view source = output.text;
+    const std::string_view thinking_open = ChatParseWireFormat::qwen3_5().thinking_open;
+    const std::string_view thinking_close = ChatParseWireFormat::qwen3_5().thinking_close;
     for (auto pos = find_marker(output, kStart, 0); pos != std::string::npos;) {
         const auto header_end = source.find('\n', pos + kStart.size());
         if (header_end == std::string::npos) break;
@@ -90,7 +94,7 @@ PromptLayout inspect_prompt_layout(const text::TemplateOutput& output,
         result.messages.push_back({parsed, pos, header_end + 1, content_end, end, closed});
         if (parsed == ChatRole::Assistant) {
             result.execution_boundaries.push_back(header_end + 1);
-            constexpr std::string_view open = "<think>\n";
+            const std::string open = std::string(thinking_open) + "\n";
             const auto body = source.substr(header_end + 1, content_end - header_end - 1);
             if (body.starts_with(open) &&
                 template_bytes(output, header_end + 1, header_end + 1 + open.size())) {
@@ -105,13 +109,14 @@ PromptLayout inspect_prompt_layout(const text::TemplateOutput& output,
             if (!closed && next == std::string::npos) {
                 // Only the final assistant prefix controls the initial output channel.
                 const auto open_end =
-                    body.starts_with("<think>") &&
-                            template_bytes(output, header_end + 1, header_end + 1 + 7)
-                        ? header_end + 1 + 7
+                    body.starts_with(thinking_open) &&
+                            template_bytes(output, header_end + 1,
+                                           header_end + 1 + thinking_open.size())
+                        ? header_end + 1 + thinking_open.size()
                         : std::string::npos;
                 const auto close_think = open_end == std::string::npos
                                              ? std::string::npos
-                                             : find_marker(output, "</think>", open_end);
+                                             : find_marker(output, thinking_close, open_end);
                 result.starts_in_reasoning =
                     open_end != std::string::npos && close_think == std::string::npos;
             }

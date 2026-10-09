@@ -631,14 +631,22 @@ public:
     enum class Status { Complete, Incomplete, Invalid };
 
     ConstrainedToolRegionParser(std::string_view input, const Contract& contract,
-                                std::size_t max_name_length)
-        : input_(input), contract_(contract), max_name_length_(max_name_length) {}
+                                const ChatParseWireFormat& format, std::size_t max_name_length)
+        : input_(input),
+          contract_(contract),
+          format_(format),
+          max_name_length_(max_name_length),
+          call_open_(std::string(format.tool_call_open) + "\n" + std::string(format.function_open)),
+          parameter_close_line_("\n" + std::string(format.parameter_close)),
+          parameter_close_line_terminated_(parameter_close_line_ + "\n"),
+          call_close_(std::string(format.function_close) + "\n" +
+                      std::string(format.tool_call_close)) {}
 
     Status parse(std::vector<GeneratedToolCall>& calls, ToolCallParseDiagnostics& diagnostics) {
         while (position_ < input_.size()) {
             if (!calls.empty() && !take("\n")) return status_;
             RawToolCall raw;
-            if (!take("<tool_call>\n<function=")) return status_;
+            if (!take(call_open_)) return status_;
             const auto end = input_.find('>', position_);
             if (end == std::string_view::npos) return Status::Incomplete;
             raw.name.assign(input_.substr(position_, end - position_));
@@ -648,10 +656,10 @@ public:
             position_ = end + 1;
             if (!take("\n")) return status_;
             std::ptrdiff_t previous = -1;
-            while (!input_.substr(position_).starts_with("</function>")) {
-                if (std::string_view("</function>").starts_with(input_.substr(position_)))
+            while (!input_.substr(position_).starts_with(format_.function_close)) {
+                if (format_.function_close.starts_with(input_.substr(position_)))
                     return Status::Incomplete;
-                if (!take("<parameter=")) return status_;
+                if (!take(format_.parameter_open)) return status_;
                 const auto name_end = input_.find('>', position_);
                 if (name_end == std::string_view::npos) return Status::Incomplete;
                 const std::string name(input_.substr(position_, name_end - position_));
@@ -671,12 +679,12 @@ public:
                     parameter->encoding == Contract::Encoding::Json) {
                     if (!json_value()) return status_;
                 } else {
-                    const auto close = input_.find("\n</parameter>", position_);
+                    const auto close = input_.find(parameter_close_line_, position_);
                     if (close == std::string_view::npos) return Status::Incomplete;
                     position_ = close;
                 }
                 const std::string value(input_.substr(value_begin, position_ - value_begin));
-                if (!take("\n</parameter>\n")) return status_;
+                if (!take(parameter_close_line_terminated_)) return status_;
                 // Non-strict arguments use the last value for a repeated name, as JSON object
                 // consumers do. Strict order is grammar-licensed, so repeats cannot occur there.
                 const auto existing =
@@ -689,7 +697,7 @@ public:
                 else
                     existing->value = value;
             }
-            if (!take("</function>\n</tool_call>")) return status_;
+            if (!take(call_close_)) return status_;
             if (!contract_.parallel && !calls.empty()) return Status::Invalid;
             std::string arguments = "{";
             bool first            = true;
@@ -766,7 +774,16 @@ private:
 
     std::string_view input_;
     const Contract& contract_;
+    // Owned copy, not a reference: qwen3_5() now returns by value, so a stored reference could
+    // outlive its temporary at a future call site. The table is eight string_views.
+    const ChatParseWireFormat format_;
     std::size_t max_name_length_;
+    // Composed framing: the bare markers from the wire-format table plus the literal whitespace,
+    // interpolated name and closing `>` this parser frames around them.
+    const std::string call_open_;
+    const std::string parameter_close_line_;
+    const std::string parameter_close_line_terminated_;
+    const std::string call_close_;
     std::size_t position_ = 0;
     Status status_        = Status::Incomplete;
 };
@@ -812,7 +829,8 @@ void resolve_tool_region(ParseState& state, const ParseContext& context, const C
     if (contract.constrained) {
         const std::size_t marker = region.find(tool_open);
         if (marker != std::string_view::npos) {
-            ConstrainedToolRegionParser parser(region.substr(marker), contract, max_name_length);
+            ConstrainedToolRegionParser parser(region.substr(marker), contract, *context.format,
+                                                max_name_length);
             std::vector<GeneratedToolCall> calls;
             ToolCallParseDiagnostics diagnostics;
             if (parser.parse(calls, diagnostics) ==
@@ -1097,20 +1115,6 @@ void terminalize(ParseState& state, const ParseContext& context, const Contract*
 
 } // namespace
 
-const ChatParseWireFormat& ChatParseWireFormat::qwen3_5() noexcept {
-    static const ChatParseWireFormat format{
-        .thinking_open   = "<think>",
-        .thinking_close  = "</think>",
-        .tool_call_open  = "<tool_call>",
-        .tool_call_close = "</tool_call>",
-        .function_open   = "<function=",
-        .function_close  = "</function>",
-        .parameter_open  = "<parameter=",
-        .parameter_close = "</parameter>",
-    };
-    return format;
-}
-
 class ChatParseCore::Impl {
 public:
     Impl(std::shared_ptr<const ToolCallOutputContract> contract, ChatParseOptions options)
@@ -1121,7 +1125,8 @@ public:
     }
 
     [[nodiscard]] ParseContext context() const {
-        return ParseContext{.format         = &ChatParseWireFormat::qwen3_5(),
+        static const ChatParseWireFormat format = ChatParseWireFormat::qwen3_5();
+        return ParseContext{.format         = &format,
                             .tools_enabled  = contract_ != nullptr,
                             .exact_framing  = options_.exact_framing,
                             .close_framing  = options_.close_framing};
@@ -1245,7 +1250,8 @@ std::string_view continuation_tool_region(std::string_view continuation) noexcep
 void check_tool_continuation(const ToolCallOutputContract& contract, std::string_view region,
                              std::size_t max_name_length) {
     if (contract.constrained) {
-        ConstrainedToolRegionParser parser(region, contract, max_name_length);
+        const ChatParseWireFormat format = ChatParseWireFormat::qwen3_5();
+        ConstrainedToolRegionParser parser(region, contract, format, max_name_length);
         std::vector<GeneratedToolCall> calls;
         ToolCallParseDiagnostics diagnostics;
         const auto status = parser.parse(calls, diagnostics);

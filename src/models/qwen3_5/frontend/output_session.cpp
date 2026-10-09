@@ -23,7 +23,8 @@ constexpr std::string_view kUtf8Replacement = "\xef\xbf\xbd";
 
 // Bytes of the canonical reasoning close that follow the thinking close marker; the exact-framing
 // parser drops exactly these and nothing else (ticket #247).
-constexpr std::string_view kReasoningCloseMarker = "</think>";
+constexpr std::string_view kReasoningCloseMarker =
+    fi::ChatParseWireFormat::qwen3_5().thinking_close;
 constexpr std::string_view kReasoningCloseFraming =
     fi::kCanonicalReasoningCloseSerialization.substr(
         fi::kCanonicalReasoningCloseSerialization.find(kReasoningCloseMarker) +
