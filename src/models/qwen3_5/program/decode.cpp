@@ -2,6 +2,7 @@
 #include "models/qwen3_5/program/context_work.h"
 #include "models/qwen3_5/program/execution_context.h"
 #include "models/qwen3_5/program/graph_execution.h"
+#include "models/qwen3_5/program/logprob_round.h"
 #include "models/qwen3_5/program/planning/graph_profiles.h"
 #include "core/nvtx.h"
 #include "core/device.h"
@@ -263,7 +264,9 @@ runtime::BatchedGeneratedRound ProgramImpl::decode_ordinary_batch(
     }
 
         const auto start = Clock::now();
-        bool any_logprobs = false;
+        LogprobRound logprob_round(ordinary_host_ingress->logprob_active,
+                                   ordinary_host_egress->logprob_ids.data(),
+                                   ordinary_host_egress->logprob_values.data(), pending_logprobs_);
         try {
             std::optional<nvtx::ScopedRange> submit_range;
             submit_range.emplace(nvtx::Name::DecodeOrdinarySubmit, nvtx::Category::Decode,
@@ -292,11 +295,11 @@ runtime::BatchedGeneratedRound ProgramImpl::decode_ordinary_batch(
             ordinary_host_ingress->state_source_slots[row]      = selectors.source;
             ordinary_host_ingress->state_destination_slots[row] = selectors.destination;
             ordinary_host_ingress->sampling[row]                = request.sampling_host;
-            any_logprobs |= request.logprobs;
+            logprob_round.enable(request.logprobs);
             ordinary_host_ingress->sampling[row].mask           = fill_grammar_mask(masks, row, {});
             ensure_sequence_kv_mapped(sequence, frontier + 1, 0);
         }
-        ordinary_host_ingress->logprob_active = any_logprobs ? 1 : 0;
+        logprob_round.publish();
 
         execution::OrdinaryBatchContext schedule_state{
             {device, parameters, work, state_images->linear(),
@@ -328,12 +331,7 @@ runtime::BatchedGeneratedRound ProgramImpl::decode_ordinary_batch(
             const std::uint32_t base_S = sequence.ledger_frontier;
             const TokenId token        = ordinary_host_egress->sampled_tokens[row];
             validate_licensed_tokens(std::span<const TokenId>(&token, 1));
-            if (any_logprobs) {
-                pending_logprobs_[row] = assemble_logprob(
-                    ordinary_host_egress->logprob_ids.data(),
-                    ordinary_host_egress->logprob_values.data(), static_cast<std::int32_t>(row),
-                    token);
-            }
+            if (logprob_round.enabled()) { logprob_round.assemble(row, token); }
             sequence.text_kv_valid = base_E + 1;
             commit_sequence_kv(sequence, sequence.text_kv_valid, 0);
             sequence.tail_hidden_valid = true;
@@ -352,7 +350,7 @@ runtime::BatchedGeneratedRound ProgramImpl::decode_ordinary_batch(
         return runtime::BatchedGeneratedRound{
             .tokens =
                 std::span<const TokenId>(ordinary_host_egress->sampled_tokens.data(), lanes.size()),
-            .logprobs = any_logprobs
+            .logprobs = logprob_round.enabled()
                             ? std::span<const runtime::RawTokenLogprob>(pending_logprobs_.data(),
                                                                         lanes.size())
                             : std::span<const runtime::RawTokenLogprob>{},
@@ -434,10 +432,12 @@ runtime::BatchedGeneratedRound ProgramImpl::decode_mtp_batch(
         // The gather covers every [width, batch] row, including lanes with no request this round.
         // Seed the whole array with a safe zero config (greedy, no penalties) before the active
         // lanes overwrite their entries, so an idle lane can never hand the gather a stale config.
-        std::fill(mtp_host_ingress->logprob_sampling.begin(),
-                  mtp_host_ingress->logprob_sampling.end(), ops::SamplingConfig{});
+        LogprobRound logprob_round(
+            mtp_host_ingress->logprob_active, mtp_host_egress->logprob_ids.data(),
+            mtp_host_egress->logprob_values.data(), pending_logprobs_,
+            {mtp_host_ingress->logprob_sampling}, static_cast<std::int32_t>(width));
+        logprob_round.seed_sampling();
 
-        bool any_logprobs = false;
         for (std::size_t row = 0; row < lanes.size(); ++row) {
             SequenceState& sequence           = active_sequence(lanes[row]);
             const RequestControl& request     = requests[lanes[row]];
@@ -472,18 +472,13 @@ runtime::BatchedGeneratedRound ProgramImpl::decode_mtp_batch(
             mtp_host_ingress->state_destination_slots[row] = selectors.destination;
             mtp_host_ingress->rope_deltas[row]             = sequence.rope_delta;
             mtp_host_ingress->sampling[row]                = request.sampling_host;
-            any_logprobs |= request.logprobs;
-            for (std::uint32_t column = 0; column < width; ++column) {
-                // The config a gather row uses must sit at that row's index (col + lane*width).
-                mtp_host_ingress->logprob_sampling[speculation_logprob_column(
-                    static_cast<std::int32_t>(column), static_cast<std::int32_t>(row),
-                    static_cast<std::int32_t>(width))] = request.sampling_host;
-            }
+            logprob_round.enable(request.logprobs);
+            logprob_round.bind_sampling(row, request.sampling_host);
             mtp_host_ingress->sampling[row].mask           = bind_grammar_mask(masks, row);
             ensure_sequence_kv_mapped(sequence, frontier + extent + 1,
                                       std::min(capacity, frontier + extent + draft_window));
         }
-        mtp_host_ingress->logprob_active = any_logprobs ? 1 : 0;
+        logprob_round.publish();
 
         execution::MtpBatchContext schedule_state{{device, parameters, work, state_images->linear(),
                                                    replay_records ? &*replay_records : nullptr, io,
@@ -556,17 +551,11 @@ runtime::BatchedGeneratedRound ProgramImpl::decode_mtp_batch(
                 .prompt_tokens = 0,
                 .produced      = static_cast<std::uint32_t>(count_i),
             };
-            if (any_logprobs) {
+            if (logprob_round.enabled()) {
                 for (std::int32_t index = 0; index < count_i; ++index) {
                     const TokenId token = mtp_host_egress->licensed_tokens[
                         row * width + static_cast<std::size_t>(index)];
-                    pending_logprobs_[row * width + static_cast<std::size_t>(index)] =
-                        assemble_logprob(
-                            mtp_host_egress->logprob_ids.data(),
-                            mtp_host_egress->logprob_values.data(),
-                            speculation_logprob_column(index, static_cast<std::int32_t>(row),
-                                                      static_cast<std::int32_t>(width)),
-                            token);
+                    logprob_round.assemble(row, static_cast<std::size_t>(index), token);
                 }
             }
             request.lifecycle = Lifecycle::Pending;
@@ -577,7 +566,7 @@ runtime::BatchedGeneratedRound ProgramImpl::decode_mtp_batch(
                                                    lanes.size() * width),
             .row_counts = std::span<const std::int32_t>(mtp_host_egress->licensed_counts.data(),
                                                         lanes.size()),
-            .logprobs   = any_logprobs
+            .logprobs   = logprob_round.enabled()
                               ? std::span<const runtime::RawTokenLogprob>(pending_logprobs_.data(),
                                                                           lanes.size() * width)
                               : std::span<const runtime::RawTokenLogprob>{},
@@ -676,10 +665,12 @@ runtime::BatchedGeneratedRound ProgramImpl::decode_dflash_batch(
 
         // See the MTP body: cover the inactive lanes of the [width, batch] gather with a safe
         // zero config before the active lanes overwrite their rows.
-        std::fill(dflash_host_ingress->logprob_sampling.begin(),
-                  dflash_host_ingress->logprob_sampling.end(), ops::SamplingConfig{});
+        LogprobRound logprob_round(
+            dflash_host_ingress->logprob_active, dflash_host_egress->logprob_ids.data(),
+            dflash_host_egress->logprob_values.data(), pending_logprobs_,
+            {dflash_host_ingress->logprob_sampling}, static_cast<std::int32_t>(width));
+        logprob_round.seed_sampling();
 
-        bool any_logprobs = false;
         for (std::size_t row = 0; row < lanes.size(); ++row) {
             SequenceState& sequence           = active_sequence(lanes[row]);
             const RequestControl& request     = requests[lanes[row]];
@@ -711,18 +702,13 @@ runtime::BatchedGeneratedRound ProgramImpl::decode_dflash_batch(
             dflash_host_ingress->state_source_slots[row] = selectors.source;
             dflash_host_ingress->state_destination_slots[row] = selectors.destination;
             dflash_host_ingress->sampling[row]                = request.sampling_host;
-            any_logprobs |= request.logprobs;
-            for (std::uint32_t column = 0; column < width; ++column) {
-                // The config a gather row uses must sit at that row's index (col + lane*width).
-                dflash_host_ingress->logprob_sampling[speculation_logprob_column(
-                    static_cast<std::int32_t>(column), static_cast<std::int32_t>(row),
-                    static_cast<std::int32_t>(width))] = request.sampling_host;
-            }
+            logprob_round.enable(request.logprobs);
+            logprob_round.bind_sampling(row, request.sampling_host);
             dflash_host_ingress->sampling[row].mask           = bind_grammar_mask(masks, row);
             ensure_sequence_kv_mapped(sequence, frontier + extent + 1U,
                                       backend_kv_cache() ? frontier : 0U);
         }
-        dflash_host_ingress->logprob_active = any_logprobs ? 1 : 0;
+        logprob_round.publish();
 
         execution::DFlashBatchContext schedule_state{
             {device, parameters, work, state_images->linear(),
@@ -800,17 +786,11 @@ runtime::BatchedGeneratedRound ProgramImpl::decode_dflash_batch(
                 }
             }
             sequence.dflash_context_frontier = base_E;
-            if (any_logprobs) {
+            if (logprob_round.enabled()) {
                 for (std::int32_t index = 0; index < count_i; ++index) {
                     const TokenId token = dflash_host_egress->licensed_tokens[
                         row * width + static_cast<std::size_t>(index)];
-                    pending_logprobs_[row * width + static_cast<std::size_t>(index)] =
-                        assemble_logprob(
-                            dflash_host_egress->logprob_ids.data(),
-                            dflash_host_egress->logprob_values.data(),
-                            speculation_logprob_column(index, static_cast<std::int32_t>(row),
-                                                      static_cast<std::int32_t>(width)),
-                            token);
+                    logprob_round.assemble(row, static_cast<std::size_t>(index), token);
                 }
             }
             request.pending                  = PendingCandidate{
@@ -828,7 +808,7 @@ runtime::BatchedGeneratedRound ProgramImpl::decode_dflash_batch(
                                                    lanes.size() * width),
             .row_counts = std::span<const std::int32_t>(dflash_host_egress->licensed_counts.data(),
                                                         lanes.size()),
-            .logprobs   = any_logprobs
+            .logprobs   = logprob_round.enabled()
                               ? std::span<const runtime::RawTokenLogprob>(pending_logprobs_.data(),
                                                                           lanes.size() * width)
                               : std::span<const runtime::RawTokenLogprob>{},
