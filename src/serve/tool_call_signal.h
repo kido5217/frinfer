@@ -13,6 +13,7 @@
 
 #include <ninfer/types.h>
 
+#include <optional>
 #include <string_view>
 
 namespace ninfer::serve {
@@ -28,5 +29,11 @@ tool_call_demotion_code(ninfer::ToolCallParseFallbackReason reason) noexcept;
 // The error a signaled demotion renders: status 409, the class code, and a message that avoids
 // every classification phrase that would disable the client's retry.
 [[nodiscard]] ApiError tool_call_demotion_error(ninfer::ToolCallParseFallbackReason reason);
+
+// The retryable error a demotion must signal, or std::nullopt when the demotion is silent and its
+// text should be delivered as ordinary content. Implements the ADR-0002 rule (a demotion that lost
+// an attempted call signals; a prose-only demotion is silent).
+[[nodiscard]] std::optional<ApiError> tool_call_demotion_signal(
+    ninfer::ToolCallParseFallbackReason reason, bool call_attempted);
 
 } // namespace ninfer::serve

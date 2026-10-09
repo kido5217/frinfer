@@ -49,6 +49,12 @@ std::string_view demotion_detail(ninfer::ToolCallParseFallbackReason reason) noe
 
 } // namespace
 
+std::optional<ApiError> tool_call_demotion_signal(ninfer::ToolCallParseFallbackReason reason,
+                                                  bool call_attempted) {
+    if (!tool_call_demotion_signals(reason, call_attempted)) { return std::nullopt; }
+    return tool_call_demotion_error(reason);
+}
+
 ApiError tool_call_demotion_error(ninfer::ToolCallParseFallbackReason reason) {
     ApiError error;
     error.status  = 409;
