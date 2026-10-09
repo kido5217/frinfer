@@ -11,6 +11,7 @@
 #include "models/qwen3_5/frontend/tokenizer.h"
 #include "models/qwen3_5/frontend/tool_contract.h"
 #include "models/qwen3_5/frontend/tool_grammar.h"
+#include "runtime/contract/constraint_compatibility.h"
 #include "text/unicode.h"
 #include "text/grammar.h"
 #include <mutex>
@@ -942,16 +943,18 @@ OutputSession Frontend::make_output_session(
         const RequestErrorKind error_kind =
             tool_constraint ? RequestErrorKind::InvalidToolConstraint
                             : text::constraint_error_kind(constraint->kind);
-        if (impl_->defaults.token_ids.empty() || (constraint && tool_contract) ||
-            !caller_stop.token_ids.empty() || !caller_stop.strings.empty() ||
-            !caller_stop.include_model_defaults || caller_stop.publish_stop_token || output.raw ||
-            output.preserve_special_tokens) {
-            throw RequestError(error_kind,
-                               tool_constraint
-                                   ? "constrained tools require default EOS, text output, no "
-                                     "custom stops, and one output language"
-                                   : "constraints require default EOS, text output, no active "
-                                     "tools and no custom stops");
+        runtime::ConstrainedTurnOptions turn;
+        turn.constrained             = constraint.has_value();
+        turn.constrained_tools       = tool_constraint;
+        turn.model_default_eos       = !impl_->defaults.token_ids.empty();
+        turn.include_default_stops   = caller_stop.include_model_defaults;
+        turn.publish_stop_token      = caller_stop.publish_stop_token;
+        turn.custom_stop_tokens      = !caller_stop.token_ids.empty();
+        turn.custom_stop_strings     = !caller_stop.strings.empty();
+        turn.raw_output              = output.raw;
+        turn.preserve_special_tokens = output.preserve_special_tokens;
+        if (const auto violation = runtime::validate_constrained_turn(turn)) {
+            throw RequestError(error_kind, violation->message);
         }
         try {
             const auto close = prompt.data_->starts_in_reasoning
