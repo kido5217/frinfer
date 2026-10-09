@@ -22,6 +22,10 @@ ninfer_add_test(ninfer_model_acquire_test
   SOURCES "${CMAKE_CURRENT_LIST_DIR}/../test_model_acquire.cpp"
   LIBRARIES ninfer_model_acquire)
 
+ninfer_add_test(ninfer_constraint_contract_test
+  SOURCES "${CMAKE_CURRENT_LIST_DIR}/../test_constraint_contract.cpp"
+  LIBRARIES ninfer_constraint)
+
 ninfer_add_test(ninfer_cli_options_test
   SOURCES "${CMAKE_CURRENT_LIST_DIR}/../test_cli_options.cpp" ${PROJECT_SOURCE_DIR}/apps/cli/options.cpp
   LIBRARIES ninfer_runtime_support ninfer_product_logging ninfer_constraint)

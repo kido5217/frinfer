@@ -952,18 +952,6 @@ void parse_reasoning(const Json& body, OpenAIResponsesPromptRequest& out) {
     out.generation.reasoning_effort = *effort;
 }
 
-// Validates an admitted JSON Schema document through the shared protocol-neutral constraint
-// contract and renders its fail-closed error on this route's field path, mirroring the Chat
-// response_format and Anthropic output_config.format adapters. The document text is compiled
-// by the Engine's XGrammar converter.
-std::string schema_to_document(const Json& schema) {
-    try {
-        return ninfer::constraint::json_schema_constraint_source(schema);
-    } catch (const ninfer::constraint::ConstraintError& error) {
-        bad_request(error.what(), "text.format", error.code());
-    }
-}
-
 const Json& parse_text_format_schema(const Json& format) {
     // The Responses wrapper carries the document under `.schema` with optional
     // name/description/strict metadata (the OpenAI wire always names its schema).
@@ -1001,28 +989,33 @@ void parse_text(const Json& body, GenerationRequest& request) {
             bad_request("text.format must be a typed object", "text");
         }
         const std::string type = format.at("type").get<std::string>();
-        if (type == "text") {
-            if (format.size() != 1) { bad_request("text format has no options", "text.format"); }
-        } else if (type == "json_object") {
-            if (format.size() != 1) {
-                bad_request("json_object format has no options", "text.format");
+        std::vector<ninfer::constraint::ConstraintSlot> slots;
+        try {
+            if (type == "text") {
+                if (format.size() != 1) { bad_request("text format has no options", "text.format"); }
+            } else if (type == "json_object") {
+                if (format.size() != 1) {
+                    bad_request("json_object format has no options", "text.format");
+                }
+                slots.push_back(ninfer::constraint::admit_json_object("text.format"));
+            } else if (type == "json_schema") {
+                slots.push_back(ninfer::constraint::admit_json_schema(
+                    parse_text_format_schema(format), "text.format", "text.format"));
+            } else {
+                bad_request("this text.format requires constrained output, which FrInfer cannot "
+                            "guarantee; only text, json_object, and json_schema are available",
+                            "text.format", "structured_outputs_not_supported");
             }
-            request.constraint        = ninfer::OutputConstraint::json_object();
-            request.constraint_source = ConstraintSource::JsonSchema;
-        } else if (type == "json_schema") {
-            request.constraint = ninfer::OutputConstraint::json_schema(
-                schema_to_document(parse_text_format_schema(format)));
-            request.constraint_source = ConstraintSource::JsonSchema;
-        } else {
-            bad_request("this text.format requires constrained output, which FrInfer cannot "
-                        "guarantee; only text, json_object, and json_schema are available",
-                        "text.format", "structured_outputs_not_supported");
-        }
-        // The tool-call parser owns the turn when tools are declared, so a constrained
-        // answer and a `tools` field cannot share it, mirroring the other routes.
-        if (request.constraint && body.contains("tools") && !body.at("tools").is_null()) {
-            bad_request("tools with a constrained response is not supported", "text.format",
-                        "constrained_decoding_not_supported");
+            // The tool-call parser owns the turn when tools are declared, so a constrained
+            // answer and a `tools` field cannot share it, mirroring the other routes.
+            const bool has_tools = body.contains("tools") && !body.at("tools").is_null();
+            const auto admitted = ninfer::constraint::admit_constraint(std::move(slots), has_tools);
+            if (admitted.constraint) {
+                request.constraint        = std::move(admitted.constraint);
+                request.constraint_source = constraint_source_of(admitted.origin);
+            }
+        } catch (const ninfer::constraint::ConstraintError& error) {
+            bad_request(error.what(), error.param(), error.code());
         }
     }
     if (text.contains("verbosity") && !text.at("verbosity").is_null()) {
