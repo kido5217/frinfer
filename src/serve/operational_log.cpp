@@ -2,6 +2,7 @@
 
 #include "product/logging/pretty_format.h"
 #include "product/speculative_options.h"
+#include "serve/request_observation.h"
 
 #include <spdlog/logger.h>
 
@@ -142,21 +143,6 @@ std::string pretty_code(std::string_view code) {
     result.reserve(code.size());
     for (const char ch : code) { result.push_back(ch == '_' ? ' ' : ch); }
     return result;
-}
-
-template <class T>
-T monotonic_delta(T previous, T current) noexcept {
-    return current >= previous ? current - previous : T{};
-}
-
-std::uint64_t host_active_ns(const ThroughputReport& report) noexcept {
-    const ninfer::RuntimeHostWorkStats& previous = report.previous.host_work;
-    const ninfer::RuntimeHostWorkStats& current  = report.current.host_work;
-    return monotonic_delta(previous.engine_boundary_ns, current.engine_boundary_ns) +
-           monotonic_delta(previous.program_submit_ns, current.program_submit_ns) +
-           monotonic_delta(previous.program_post_ns, current.program_post_ns) +
-           monotonic_delta(previous.engine_commit_output_ns, current.engine_commit_output_ns) +
-           monotonic_delta(previous.engine_maintenance_ns, current.engine_maintenance_ns);
 }
 
 void append_failure_fields(std::ostringstream& out, const RequestFailure& failure) {
@@ -374,7 +360,10 @@ OperationalRecord render_throughput(const ThroughputReport& report) {
             << static_cast<double>(report.decode_row_rounds) /
                    static_cast<double>(report.decode_rounds);
     }
-    const double host_seconds = static_cast<double>(host_active_ns(report)) * 1.0e-9;
+    const double host_seconds =
+        static_cast<double>(host_active_ns(host_work_delta(report.previous.host_work,
+                                                          report.current.host_work))) *
+        1.0e-9;
     const double host_ratio =
         report.interval_seconds > 0.0 ? host_seconds / report.interval_seconds : 0.0;
     out << " | host " << product::format_pretty_percent(host_ratio) << " ("
