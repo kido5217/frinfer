@@ -7,6 +7,8 @@
 #include <optional>
 #include <string>
 
+#include "ninfer/types.h"
+
 namespace ninfer::runtime {
 
 struct ConstrainedTurnOptions {
@@ -31,5 +33,10 @@ struct ConstrainedTurnViolation {
 // is not constrained is always admissible.
 [[nodiscard]] std::optional<ConstrainedTurnViolation>
 validate_constrained_turn(const ConstrainedTurnOptions& options);
+
+// True when a speculative backend can carry a constrained turn: the ordinary backend (None) and
+// MTP can, every other backend cannot. The gateway and the Engine both enforce this fail-closed
+// rule (design #48), each in its own error shape.
+[[nodiscard]] bool constraint_backend_supported(ninfer::SpeculativeBackend backend) noexcept;
 
 } // namespace ninfer::runtime

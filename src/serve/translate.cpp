@@ -335,7 +335,7 @@ ninfer::RequestOptions to_request_options(const GenerationRequest& request,
         // The serve contract rejects a constrained request up front when the configured
         // speculative backend cannot carry one (design #48), naming the backend.
         const SpeculativeBackend backend = server.speculative.backend;
-        if (backend != SpeculativeBackend::None && backend != SpeculativeBackend::Mtp) {
+        if (!runtime::constraint_backend_supported(backend)) {
             ApiError error;
             error.status = 400;
             error.type   = "invalid_request_error";

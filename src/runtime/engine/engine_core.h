@@ -6,6 +6,7 @@
 #include "core/nvtx.h"
 #include "ninfer/types.h"
 #include "runtime/contract/execution.h"
+#include "runtime/contract/constraint_compatibility.h"
 #include "runtime/contract/resources.h"
 #include "runtime/engine/request_record.h"
 #include "runtime/engine/context_cache/resource_manager.h"
@@ -214,7 +215,7 @@ public:
             // fork's fail-closed rejection.
             if (options.constraint) {
                 const SpeculativeBackend backend = instance_.program->speculative_backend();
-                if (backend != SpeculativeBackend::None && backend != SpeculativeBackend::Mtp) {
+                if (!runtime::constraint_backend_supported(backend)) {
                     throw RequestError(RequestErrorKind::InvalidConstraint,
                                        "grammar constraints need the ordinary or MTP backend");
                 }

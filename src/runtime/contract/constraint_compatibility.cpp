@@ -25,4 +25,8 @@ validate_constrained_turn(const ConstrainedTurnOptions& options) {
         false, "constraints require default EOS, text output, no active tools and no custom stops"};
 }
 
+bool constraint_backend_supported(ninfer::SpeculativeBackend backend) noexcept {
+    return backend == ninfer::SpeculativeBackend::None || backend == ninfer::SpeculativeBackend::Mtp;
+}
+
 } // namespace ninfer::runtime
