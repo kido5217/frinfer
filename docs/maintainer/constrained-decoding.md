@@ -112,7 +112,7 @@ GBNF 是直接的 grammar 输入，适合作为底层机制的最小完整使用
 
 沿用 `prepare(PromptInput)` 与 `submit(PreparedPrompt, RequestOptions)` 的分工。PreparedPrompt 保存已解析工具定义、起始输出阶段和必要的 continuation 前缀；工具选择策略与正文约束在 submit 时结合这些事实构造 OutputSession。CompiledGrammar 和 matcher 由该 OutputSession 持有，普通 `count_tokens` 不编译输出约束。
 
-正文约束与活动工具集合同时存在时，在准备阶段拒绝这一组合。`tool_choice=none` 可以与正文约束并用。这样每个请求拥有一个明确的 assistant 输出语言；不隐式丢弃其中一个约束。
+正文约束与活动工具集合同时存在时，在准备阶段拒绝这一组合。`tool_choice=none` 可以与正文约束并用。这样每个请求拥有一个明确的 assistant 输出语言；不隐式丢弃其中一个约束。受约束回合的输出选项兼容性（模型默认 EOS、文本输出、单一输出语言、无自定义 stop 串/token）由 `src/runtime/contract/constraint_compatibility.h` 的单一 validator 持有：Gateway 在 `translate` 提前 fail-fast，Engine 提交边界（frontend 的 `make_output_session`）为权威，二者不再各自重写同一矩阵。
 
 ### 3.2 准备流程
 

@@ -1,7 +1,10 @@
 #include "serve/translate.h"
+#include "serve/generation_service.h"
 #include "serve/request_json.h"
 
 #include "product/speculative_options.h"
+#include "runtime/contract/constraint_compatibility.h"
+#include "text/grammar.h"
 
 #include <nlohmann/json.hpp>
 
@@ -345,21 +348,6 @@ ninfer::RequestOptions to_request_options(const GenerationRequest& request,
         }
         options.constraint = request.constraint;
     }
-    // A tool grammar owns the turn's markup, so constrained tools cannot combine with custom
-    // stop strings (which would need their own matcher branch) and must not preserve the
-    // special-token spellings the grammar licenses explicitly.
-    if (request.constrains_tools() && !request.stop_strings.empty()) {
-        // An output-option conflict a constrained tool turn cannot carry. It is reported with the
-        // Engine's own mapping (`tool_constraint_invalid` on `tools`) so the serve fail-fast and
-        // the Engine's `InvalidToolConstraint` path agree on one documented shape.
-        ApiError error;
-        error.status  = 400;
-        error.type    = "invalid_request_error";
-        error.param   = "tools";
-        error.code    = "tool_constraint_invalid";
-        error.message = "constrained tools require model EOS and cannot use custom stops";
-        throw ApiException(std::move(error));
-    }
     options.output.raw                     = false;
     options.output.preserve_special_tokens = !request.constraint && !request.constrains_tools() &&
                                              (request.uses_tools() || request.has_tool_history());
@@ -378,6 +366,27 @@ ninfer::RequestOptions to_request_options(const GenerationRequest& request,
                                        .channel           = ninfer::OutputChannel::Reasoning,
                                        .include_in_output = false});
             }
+        }
+    }
+    // The constrained-turn output-option compatibility has one owner
+    // (runtime::validate_constrained_turn); the gateway reports its violation early, before
+    // enqueue, in the Engine's own error shape so the fail-fast and the Engine agree.
+    if (request.constraint || request.constrains_tools()) {
+        runtime::ConstrainedTurnOptions turn;
+        turn.constrained             = request.constraint.has_value();
+        turn.constrained_tools       = request.constrains_tools();
+        turn.include_default_stops   = options.stop.include_model_defaults;
+        turn.publish_stop_token      = options.stop.publish_stop_token;
+        turn.custom_stop_tokens      = !options.stop.token_ids.empty();
+        turn.custom_stop_strings     = !options.stop.strings.empty();
+        turn.raw_output              = options.output.raw;
+        turn.preserve_special_tokens = options.output.preserve_special_tokens;
+        if (const auto violation = runtime::validate_constrained_turn(turn)) {
+            const RequestErrorKind kind =
+                violation->tools ? RequestErrorKind::InvalidToolConstraint
+                                 : text::constraint_error_kind(request.constraint->kind);
+            throw ApiException(request_error_to_api_error(RequestError(kind, violation->message),
+                                                          request.constraint_source));
         }
     }
     return options;
