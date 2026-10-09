@@ -29,9 +29,9 @@ bench target *args:
     build/bench/{{target}} {{args}}
 
 # Full verification as one bounded command: configure + build, the whole CTest
-# suite, then the Python conversion and text tests and the independent jsonschema /
-# re.fullmatch grammar oracles, including the Qwen tool-schema constraint probe.
-# Everything is tee-ed to
+# suite, then the hermetic Python suites (artifact, conversion, Serve TTFT, text,
+# tool-schema and serve-corpus) with the independent jsonschema / re.fullmatch
+# grammar oracles and the Qwen tool-schema constraint probe. Everything is tee-ed to
 # build/verify.log and the run ends with an unambiguous `VERIFY OK` or
 # `VERIFY FAIL (step: <step>)` line. Run inside the Nix devShell (see header).
 verify:
@@ -41,6 +41,6 @@ verify:
       echo '== configure =='; cmake --preset dev || fail=configure; \
       if [ -z "$fail" ]; then echo '== build =='; cmake --build build -j || fail=build; fi; \
       if [ -z "$fail" ]; then echo '== ctest =='; ctest --preset dev --output-on-failure || fail=ctest; fi; \
-      if [ -z "$fail" ]; then echo '== pytest =='; python3.13 -m pytest tests/convert tests/text tests/models/qwen3_5/test_tool_schema.py -q || fail=pytest; fi; \
+      if [ -z "$fail" ]; then echo '== pytest =='; python3.13 -m pytest tests/artifact tests/convert tests/bench/ttft tests/text tests/models/qwen3_5/test_tool_schema.py tests/test_serve_corpus.py -q || fail=pytest; fi; \
       if [ -z "$fail" ]; then echo 'VERIFY OK'; else echo "VERIFY FAIL (step: $fail)"; exit 1; fi; \
     } 2>&1 | tee build/verify.log

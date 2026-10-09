@@ -5,7 +5,7 @@ checks. To download and run an existing artifact, start with the [project README
 To build your own weights, use the [weight conversion guide](../docs/weight-conversion.md).
 
 Run commands from the repository root with a Python environment containing the dependencies
-for the selected tool. The maintained environment uses Python 3.11.
+for the selected tool. The maintained environment uses Python 3.13.
 
 Python tools are independent of CMake; there is no `NINFER_BUILD_TOOLS` option.
 
