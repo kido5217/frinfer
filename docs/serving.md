@@ -838,7 +838,7 @@ The table lists executable defaults. The startup example selects a long-context 
 | `--api-key KEY` | required bearer or `x-api-key` value | unset |
 | `--model-id ID` | override the public OpenAI model alias | artifact `metadata.name`, or architecture name |
 | `--max-context N` | logical context ceiling of each sequence | `8192` |
-| `--kv-capacity N\|auto` | explicit shared Main Text KV capacity, or maximize it from remaining GPU memory; omitted follows `--max-concurrency` lanes at full `--max-context`; the pool must cover every lane | `8192` |
+| `--kv-capacity N\|auto` | explicit shared Main Text KV capacity, or maximize it from remaining GPU memory; omitted follows `--max-concurrency` lanes at full `--max-context`; an explicit pool must equal that bound | `8192` |
 | `--max-concurrency N` | resident execution lanes; valid range `1..8` | `1` |
 | `--max-pending-requests N` | additional requests allowed to wait for admission | `16` |
 | `--pending-timeout-ms N` | maximum preparation-plus-admission wait | `30000` |
@@ -1141,10 +1141,10 @@ outside the GPU executor and do not delay formation of the next batch.
 pool used by active requests and retained prefixes. `auto` accounts for the complete enabled runtime
 and leaves 1 GiB of sizing headroom; omitting the option makes the pool follow `--max-concurrency`
 lanes at full `--max-context`. Capacity resolves once at startup. Because active-request preemption
-is pinned off, the pool must cover `--max-concurrency` lanes each at full `--max-context`: an
-explicit capacity that rounds below that bound, or an `auto` resolution that cannot reach it from
-the available GPU memory, is rejected at startup with an error naming the required and supplied
-capacity. The MTP/DFlash backend KV pool is sized on top of the Main pool and covered by the same
+is pinned off, the pool must equal `--max-concurrency` lanes each at full `--max-context`: an
+explicit capacity that rounds below or above that bound, or an `auto` resolution that cannot reach
+it from the available GPU memory, is rejected at startup with an error naming the required and
+supplied capacity. The MTP/DFlash backend KV pool is sized on top of the Main pool and covered by the same
 bound.
 
 Before each prefill, decode or replay unit, the runtime reserves the additional pages and temporary
