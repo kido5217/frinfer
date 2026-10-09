@@ -522,6 +522,9 @@ int exercise_explicit_prefix(const char* artifact) {
     ninfer::RequestOptions request;
     request.execution.requested_output_tokens = 3;
     request.execution.sampling.temperature    = 0.0F;
+    // Prefix-ownership scenario: opt out of the default Basic tool policy so the declared tool
+    // does not constrain the turn and reject the custom stop below.
+    request.tool_choice.constraints           = ninfer::ToolConstraintMode::Automatic;
     request.stop.include_model_defaults       = false;
 
     std::string description;
@@ -617,6 +620,9 @@ int exercise_nested_tool_markers(const char* artifact) {
     request.execution.requested_output_tokens = 1;
     request.execution.sampling.temperature    = 0.0F;
     request.execution.allow_prefix_reuse      = true;
+    // Marker-ownership scenario: opt out of the default Basic tool policy so the declared tools do
+    // not constrain the turn and reject the custom stop below.
+    request.tool_choice.constraints           = ninfer::ToolConstraintMode::Automatic;
     request.stop.include_model_defaults       = false;
 
     // A single source creates both markers. Each probe changes the user suffix so the
@@ -1091,6 +1097,9 @@ int exercise_rewrite_checkpoints(ninfer::Engine& engine) {
         result.execution.requested_output_tokens = 4;
         result.execution.sampling.temperature    = 0.0F;
         result.execution.allow_prefix_reuse      = reuse;
+        // Checkpoint-ownership scenario: opt out of the default Basic tool policy so the declared
+        // tool does not constrain the turn and reject the custom stop below.
+        result.tool_choice.constraints           = ninfer::ToolConstraintMode::Automatic;
         result.stop.include_model_defaults       = false;
         return result;
     };
@@ -1196,6 +1205,10 @@ int exercise_agent_continuation(const char* artifact) {
     request.execution.requested_output_tokens = 4;
     request.execution.sampling.temperature    = 0.0F;
     request.execution.allow_prefix_reuse      = true;
+    // This scenario exercises context-cache ownership, not tool-call constraints: opt out of the
+    // default Basic tool policy so the declared tool does not constrain the turn (which would
+    // reject the custom stop below). Non-strict tool + Automatic resolves to free-form output.
+    request.tool_choice.constraints           = ninfer::ToolConstraintMode::Automatic;
     request.stop.include_model_defaults       = false;
     const auto opener_tokens =
         static_cast<std::uint32_t>(engine.tokenize_text("<|im_start|>assistant\n<think>\n").size());
