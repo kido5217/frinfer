@@ -7,7 +7,6 @@ from pathlib import Path
 import pytest
 
 from tools.bench import run_serve_ttft_campaign as campaign
-from tools.bench.ttft import profiles
 
 
 def test_profile_config_does_not_inherit_product_arguments(tmp_path: Path) -> None:
@@ -115,77 +114,6 @@ def test_missing_baseline_profile_fails_before_staging(
 
     monkeypatch.setattr(campaign, "_stage_weights", stage)
     with pytest.raises(SystemExit, match="no executable Serve profile"):
-        campaign.main([
-            "--case", "cold-short", "--serve", str(serve),
-            "--artifact", str(artifact), "--profile-config", str(config),
-        ])
-
-
-def test_runnable_profiles_satisfy_the_full_resident_bound() -> None:
-    violations = {
-        name: error
-        for name, arguments in profiles.PROFILE_ARGS.items()
-        if (error := profiles.kv_capacity_error(profiles.COMMON_ARGS, arguments)) is not None
-    }
-    assert violations == {}
-
-
-def test_retired_profiles_are_exactly_the_noncompliant_ones() -> None:
-    noncompliant = {
-        name
-        for name, arguments in profiles._ALL_PROFILE_ARGS.items()
-        if profiles.kv_capacity_error(profiles.COMMON_ARGS, arguments) is not None
-    }
-    assert noncompliant == set(profiles.RETIRED_PROFILES)
-    assert not (noncompliant & set(profiles.PROFILE_ARGS))
-
-
-def test_campaigns_exclude_retired_cases() -> None:
-    for name, case_names in campaign.CAMPAIGNS.items():
-        offenders = sorted(case for case in case_names if case in campaign.RETIRED_CASES)
-        assert offenders == [], (name, offenders)
-
-
-def test_retired_case_is_refused_before_staging(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    serve = tmp_path / "serve"
-    artifact = tmp_path / "custom.ninfer"
-    serve.touch()
-    artifact.touch()
-
-    def stage(_source: Path) -> None:
-        pytest.fail("a retired case must be refused before staging the artifact")
-
-    monkeypatch.setattr(campaign, "_stage_weights", stage)
-    with pytest.raises(SystemExit, match="retired cases"):
-        campaign.main([
-            "--case", "preemption-replay", "--serve", str(serve),
-            "--artifact", str(artifact),
-        ])
-
-
-def test_noncompliant_custom_pool_is_refused_before_staging(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    serve = tmp_path / "serve"
-    artifact = tmp_path / "custom.ninfer"
-    serve.touch()
-    artifact.touch()
-    config = tmp_path / "baseline.json"
-    config.write_text(json.dumps({
-        "profiles": {
-            campaign.CASES["cold-short"].profile: [
-                "--max-context", "8192", "--kv-capacity", "8192", "--max-concurrency", "2",
-            ],
-        },
-    }))
-
-    def stage(_source: Path) -> None:
-        pytest.fail("a non-compliant pool must be refused before staging the artifact")
-
-    monkeypatch.setattr(campaign, "_stage_weights", stage)
-    with pytest.raises(SystemExit, match="full-resident KV bound"):
         campaign.main([
             "--case", "cold-short", "--serve", str(serve),
             "--artifact", str(artifact), "--profile-config", str(config),

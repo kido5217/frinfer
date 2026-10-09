@@ -1,4 +1,5 @@
 #include "ninfer/engine.h"
+#include <nlohmann/json.hpp>
 
 #include <algorithm>
 #include <array>
@@ -50,6 +51,12 @@ ninfer::SpeculativeBackend backend(std::string_view name) {
     throw std::invalid_argument("NINFER_TEST_BACKEND must be none, mtp, dflash or dflash2");
 }
 
+std::string grammar_prefix() {
+    std::string prefix;
+    for (char c = 'a'; c <= 'z'; ++c) prefix.append(17 + c - 'a', c);
+    return prefix;
+}
+
 ninfer::RequestOptions request(std::uint32_t outputs) {
     ninfer::RequestOptions options;
     options.execution.requested_output_tokens = outputs;
@@ -57,6 +64,26 @@ ninfer::RequestOptions request(std::uint32_t outputs) {
     options.execution.allow_prefix_reuse      = false;
     options.stop.include_model_defaults       = false;
     options.output.raw                        = true;
+    if (setting("NINFER_TEST_CONSTRAINT", "none") != "none") {
+        std::string source = "root ::= ";
+        for (char c = 'a'; c <= 'z'; ++c) {
+            source += "\"" + std::string(1, c) + "\"{" + std::to_string(17 + c - 'a') + "} ";
+        }
+        if (setting("NINFER_TEST_CONSTRAINT", "none") == "json_schema") {
+            std::string pattern = "^";
+            for (char c = 'a'; c <= 'z'; ++c)
+                pattern += std::string(1, c) + "{" + std::to_string(17 + c - 'a') + "}";
+            pattern += "z{65536}$";
+            options.constraint = ninfer::OutputConstraint::json_schema(
+                nlohmann::json{{"type", "string"}, {"pattern", pattern}}.dump());
+        } else {
+            require(setting("NINFER_TEST_CONSTRAINT", "none") == "grammar",
+                    "unknown test constraint");
+            options.constraint = ninfer::OutputConstraint::grammar(source + "\"z\"{65536}");
+        }
+        options.stop.include_model_defaults = true;
+        options.output.raw                  = false;
+    }
     return options;
 }
 
@@ -174,6 +201,19 @@ public:
                                      result.finish_reason == ninfer::FinishReason::OutputLimit),
                 "resumed request did not honor its original output budget");
         // Compare only the two publication views of this request, never different math paths.
+        if (setting("NINFER_TEST_CONSTRAINT", "none") != "none") {
+            const auto expected =
+                (setting("NINFER_TEST_CONSTRAINT", "none") == "json_schema" ? std::string("\"")
+                                                                            : std::string{}) +
+                grammar_prefix();
+            require(!content_.empty() && reasoning_.empty() &&
+                        (content_.size() <= expected.size()
+                             ? expected.starts_with(content_)
+                             : content_.starts_with(expected) &&
+                                   content_.find_first_not_of('z', expected.size()) ==
+                                       std::string::npos),
+                    "recovery or cancellation changed the grammar position");
+        }
         require(content_ == result.content && reasoning_ == result.reasoning,
                 "stream and terminal response disagree after recovery");
         require(result.reused_prompt_tokens == 0 &&
@@ -261,6 +301,15 @@ void exercise(const std::filesystem::path& artifact, ninfer::SpeculativeBackend 
     require(memory.host_context_capacity_bytes <= (snapshot ? kSnapshotHostBytes : 0),
             "Engine exceeded the fixture's fixed Host quota");
     const auto before = engine.runtime_stats();
+    std::array<unsigned, 2> first_token_counts{};
+    std::array<ninfer::GenerationObservationOptions, 2> observations{kObservations, kObservations};
+    for (std::size_t i = 0; i < observations.size(); ++i) {
+        observations[i].first_token = [&, i](const ninfer::GenerationFirstTokenObservation& first) {
+            require(first.elapsed_since_submit_seconds > 0.0 && first.prepare_seconds >= 0.0,
+                    "first-token observation has invalid time boundaries");
+            ++first_token_counts[i];
+        };
+    }
 
     // Main KV pages hold 64 tokens. Both 192-token prompts fit together in six of eight pages;
     // both can begin decoding, but their continued growth cannot remain resident together.
@@ -283,7 +332,7 @@ void exercise(const std::filesystem::path& artifact, ninfer::SpeculativeBackend 
         // OutputSink runs in wait()'s consumer thread. This gate submits already prepared input
         // at the observed first admission without holding up the Engine or a model callback.
         auto handle = engine.submit(std::move(second_prepared), request(kOutputTokens),
-                                    ninfer::OutputConsumerMode::Streaming, kObservations);
+                                    ninfer::OutputConsumerMode::Streaming, observations[1]);
         {
             std::lock_guard lock(handoff_mutex);
             second_handle.emplace(std::move(handle));
@@ -292,7 +341,7 @@ void exercise(const std::filesystem::path& artifact, ninfer::SpeculativeBackend 
     });
     ObservationSink second_sink(timeline, 1);
     auto first_handle = engine.submit(std::move(first_prepared), request(kOutputTokens),
-                                      ninfer::OutputConsumerMode::Streaming, kObservations);
+                                      ninfer::OutputConsumerMode::Streaming, observations[0]);
     std::jthread first_consumer([&] {
         try {
             first_result = first_handle.wait(&first_sink);
@@ -356,6 +405,22 @@ void exercise(const std::filesystem::path& artifact, ninfer::SpeculativeBackend 
     const auto completed_memory = engine.memory_summary();
     const auto after            = engine.runtime_stats();
     settled(after, completed_memory);
+    require(first_token_counts[0] == 1 && first_token_counts[1] == 1,
+            "recovery or cancellation duplicated/lost first-token observations");
+    require(after.prompt_tokens - before.prompt_tokens == 2 * kPromptTokens &&
+                after.generated_tokens - before.generated_tokens ==
+                    first_result->generated_token_ids.size() +
+                        second_result.generated_token_ids.size(),
+            "metrics duplicated recovered inputs or omitted first generated tokens");
+    require(after.speculative_rounds - before.speculative_rounds ==
+                    first_result->speculative.rounds + second_result.speculative.rounds &&
+                after.speculative_draft_tokens - before.speculative_draft_tokens ==
+                    first_result->speculative.drafted_tokens +
+                        second_result.speculative.drafted_tokens &&
+                after.speculative_accepted_tokens - before.speculative_accepted_tokens ==
+                    first_result->speculative.accepted_tokens +
+                        second_result.speculative.accepted_tokens,
+            "live speculative counters disagree with settled work across recovery");
     require(after.decode_row_rounds - before.decode_row_rounds >
                 after.decode_rounds - before.decode_rounds,
             "fixture never executed a real two-request decode batch");

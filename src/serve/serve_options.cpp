@@ -1,5 +1,4 @@
 #include "serve/serve_options.h"
-#include "core/paged_kv_cache.h"
 #include "product/speculative_options.h"
 
 #include <cerrno>
@@ -12,22 +11,6 @@
 
 namespace ninfer::serve {
 namespace {
-
-// The pinned no-preemption contract requires the shared Main KV pool to cover every resident lane
-// at full context, in whole 64-token pages. When --kv-capacity is omitted it follows
-// --max-concurrency lanes, matching the bound the Engine enforces at startup.
-std::uint32_t full_resident_kv_tokens(std::uint32_t max_context, std::uint32_t max_concurrency) {
-    const std::uint64_t pages =
-        static_cast<std::uint64_t>(max_concurrency) *
-        (1ULL + (static_cast<std::uint64_t>(max_context) - 1ULL) /
-                    static_cast<std::uint64_t>(kPagedKVPageSize));
-    const std::uint64_t tokens = pages * static_cast<std::uint64_t>(kPagedKVPageSize);
-    if (tokens > std::numeric_limits<std::uint32_t>::max()) {
-        throw std::invalid_argument(
-            "--max-concurrency with --max-context exceeds the --kv-capacity token range");
-    }
-    return static_cast<std::uint32_t>(tokens);
-}
 
 int parse_nonnegative_int(const char* text, const char* label) {
     char* end        = nullptr;
@@ -171,7 +154,6 @@ std::string serve_usage_text(const char* argv0) {
            "       --kv-capacity auto leaves " +
            std::to_string(kDefaultKvCapacityHeadroomBytes / (1024ULL * 1024ULL)) +
            " MiB of sizing headroom\n"
-           "       --kv-capacity omitted follows --max-concurrency lanes at full --max-context\n"
            "       --no-prefix-reuse disables cross-request history; request pause/replay "
            "resources remain available\n"
            "       context defaults: device-state=max-concurrency; Host budget is resolved from "
@@ -410,8 +392,7 @@ ServeOptions parse_serve_options(int argc, char** argv) {
         throw std::invalid_argument("--max-concurrency must be in [1,8]");
     }
     if (!kv_capacity_explicit) {
-        options.kv_capacity = KvCapacityPolicy::explicit_capacity(
-            full_resident_kv_tokens(options.max_context, options.max_concurrency));
+        options.kv_capacity = KvCapacityPolicy::explicit_capacity(options.max_context);
     }
     options.context_cache.enabled = options.allow_prefix_reuse;
     const bool has_hf  = options.acquisition.hf_repo.has_value();

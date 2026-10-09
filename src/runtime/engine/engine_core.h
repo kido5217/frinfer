@@ -11,7 +11,6 @@
 #include "runtime/engine/context_cache/resource_manager.h"
 #include "runtime/engine/scheduler.h"
 #include "runtime/engine/generation_budget.h"
-#include "runtime/engine/preemption_policy.h"
 
 #include <algorithm>
 #include <array>
@@ -1624,28 +1623,12 @@ private:
     }
 
     bool pause_reclaim_victim(std::optional<std::uint64_t> priority_ticket) {
-        // PreemptionPolicy is the single owner of the pin; with it on, no resident victim is even
-        // scanned, so admission waits for capacity instead of reclaiming an active request.
-        if (!PreemptionPolicy::may_pause_resident()) { return false; }
         const auto victim = scheduler_.youngest_victim(slots_, max_concurrency_, priority_ticket);
         if (!victim) { return false; }
         return pause_resident(*victim);
     }
 
     bool pause_resident(std::uint32_t lane) {
-        // The fork never pauses a resident request; PreemptionPolicy answers the question for
-        // admission, reclaim, and here. Inactive cache/snapshot reclaim remains enabled above this
-        // point. See docs/maintainer/engine-architecture.md section 1.
-        (void)lane;
-        return PreemptionPolicy::may_pause_resident();
-    }
-
-    // NON-CALLABLE. Retained verbatim as the upstream-merge reference body: nothing in the fork
-    // may call it, and a future upstream sync should re-merge this original pause implementation
-    // rather than re-derive it. The fork's only pause entry point is pause_resident above, which
-    // never pauses a resident (active-request preemption is pinned off) — do not wire this back in.
-    // See docs/adr/0003-full-resident-capacity-under-pinned-preemption.md.
-    bool pause_resident_unreachable(std::uint32_t lane) {
         if (instance_.program->has_context_transaction()) { return false; }
         auto request       = slots_[lane];
         bool save_snapshot = false;
@@ -1726,8 +1709,7 @@ private:
         if (instance_.program->has_context_transaction()) { return false; }
         const auto lane = free_lane();
         if (!lane && restoring) {
-            if (PreemptionPolicy::may_pause_resident() && !paused_.empty() &&
-                !has_older_resident(paused_.front()->id)) {
+            if (!paused_.empty() && !has_older_resident(paused_.front()->id)) {
                 if (const auto victim =
                         scheduler_.youngest_victim(slots_, max_concurrency_, paused_.front()->id)) {
                     return pause_resident(*victim);
@@ -2086,11 +2068,6 @@ private:
                     // Only the oldest required unit can displace younger residents. Other
                     // failed rows wait or yield their own lane; they cannot block ready rows.
                     // The same shortage has already exhausted cache and paused snapshots.
-                    // Fork contract: active-request preemption is pinned off. The fork expects
-                    // --kv-capacity to cover every resident lane at full context (its historical
-                    // admission guaranteed the complete execution resources before Active), so a
-                    // resident that cannot obtain its legal unit under that contract is an
-                    // invariant violation and fails closed instead of preempting a younger row.
                     if (pause_reclaim_victim(request->id)) { break; }
                     throw std::logic_error("oldest resident cannot obtain its legal unit");
                 }

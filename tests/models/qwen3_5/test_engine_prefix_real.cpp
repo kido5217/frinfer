@@ -1873,8 +1873,7 @@ int exercise_attention_integration(const char* artifact) {
     options.artifact_path                    = artifact;
     options.kv_cache                         = storage;
     options.max_context                      = 65536;
-    // The pinned no-preemption contract sizes the shared pool for every batch lane at full context.
-    options.kv_capacity = ninfer::KvCapacityPolicy::explicit_capacity(65536 * batch);
+    options.kv_capacity = ninfer::KvCapacityPolicy::explicit_capacity(65536);
     options.prefill_chunk                    = 1024;
     options.max_concurrency                  = batch;
     options.max_pending_requests             = batch;

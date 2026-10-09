@@ -14,10 +14,9 @@ FrInfer 在单 GPU、单常驻模型、启动固定的 1–8 个执行槽上运�
 - **检查点**表达可以恢复的精确位置、StateImage 与各后端 KV 覆盖。
 - **物理对象和副本**承担实际占用、共享、传输与释放。
 
-普通执行按下一单元增量预留资源。上游机制在工作集增长到无法共同驻留时暂停较年轻的请求，
-优先推进较老请求；恢复另外取得覆盖旧 frontier 和首个新单元的完整许可，直到产生新进展再归还
-余额。本 fork 固定不抢占已激活请求，暂停/恢复路径不可达，admission 等待容量（见 §3.1 与 §8）。
-请求的已提交历史与输出语义在上游机制下跨暂停保存，设备绑定可以重建。
+普通执行按下一单元增量预留资源。工作集增长到无法共同驻留时，暂停较年轻的请求，优先推进
+较老请求。恢复另外取得覆盖旧 frontier 和首个新单元的完整许可，直到产生新进展再归还余额。
+请求的已提交历史与输出语义跨暂停保存，设备绑定可以重建。
 
 缓存重点服务多轮对话、agent 工具往返、输入重试和共享前缀。保存机会来自输入语义与请求生命周期；
 prefill chunk 仅切分调度工作，不自动保存 state。真实采用和重复计算的需求证据决定热度；
@@ -72,14 +71,9 @@ Main KV 页为 64 token；每种 KV 的物理字节数由其层数、几何和�
 | `context_cache.host_capacity_bytes` | StateImage、Main/backend KV、暂停快照及传输目的共用的 pinned Host 字节容量 |
 
 Main KV 容量曲线的页数下界为 `max(ceil(max_context / 64), C)`，上界为
-`C × ceil(max_context / 64)`。下界只描述几何上可实现的最小布局，不是可启动配置。本 fork 固定不
-抢占 resident 请求，最坏情况下 C 个 lane 会同时占满各自的 `ceil(max_context / 64)` 页，因此实际
-Main KV 池必须取到上界 `C × ceil(max_context / 64)`：显式 `kv_capacity` 按页舍入后低于该上界时启动
-失败，错误同时给出所需的页数与 token 数以及提供的值；自动容量因显存预算不足解析到上界以下时
-同样启动失败。所选 backend 的 KV 池以 Main 池为基础另行加上每 lane 的 draft 窗口余量，每个 lane 的
-backend frontier 同样以 `max_context` 为界，所以 Main 池满足上界即覆盖全部 typed pool，Native 抢
-占路径“最老 resident 无法取得合法单元”的容量合同错误分支不可达。容量按页在 lane 间共享，不平均
-切分。
+`C × ceil(max_context / 64)`。下界分别满足单请求独占最大上下文和 C 个最小页的几何要求。Native 同时
+计算所选后端、state、workspace 和 Graph 的布局；显式或自动容量都要落在这条曲线内并满足可用
+显存。容量并不平均切给每个 lane。
 
 Host 缺省容量为 `8 GiB + 8 × 当前模型 Host StateImage 大小`。它是一个共享 backing，State 与
 KV 的分项占用用于观测，不能再次相加成额外配额。传输目标从预留时就计费，发布只改变其状态，
@@ -358,11 +352,6 @@ Host 先释放安全的重复副本，再对有限物理动作作完整预检：
 
 <a id="scheduling"></a>
 ## 8. 调度、抢占与恢复
-
-本 fork 固定不抢占已激活请求：`pause_resident` 恒返回 false，paused 队列在合规容量下恒为空。
-以下调度周期、压力与恢复描述定义上游机制与保留的所有权规则；暂停、Snapshot/Replay 恢复分支
-不可达（ADR [0003](../adr/0003-full-resident-capacity-under-pinned-preemption.md)），压力仍会回收
-optional cache 与 inactive checkpoint。
 
 ### 8.1 普通周期
 

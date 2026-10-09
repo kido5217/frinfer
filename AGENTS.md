@@ -43,10 +43,11 @@ FrInfer is a from-scratch C++/CUDA inference engine for maximum single-GPU perfo
 use the same architecture, binding and execution path. The implementation targets `sm_120a` and
 is tuned on NVIDIA GeForce RTX 5090.
 
-Generation uses one GPU, one resident model, startup-fixed concurrency of one to eight requests,
-bounded FIFO ingress, no active-request preemption, and one compact decode batch per round.
-The adopted runtime's preemption primitives are pinned off: admission waits for capacity and never
-pauses a resident request (see the no-preemption evidence in issue #244).
+Generation uses one GPU and one resident model. Scheduling follows the adopted upstream runtime:
+startup-fixed concurrency of one to eight requests, bounded FIFO ingress, one compact decode batch
+per round, and active-request preemption — a resident may be paused/reclaimed to admit a younger
+request, matching upstream. Earlier revisions pinned preemption off and required a full-resident
+Main KV pool; that divergence was reverted (see ADR 0004).
 Generation and offline CausalScoring use the same public `.ninfer` Engine route. Delivered
 capabilities and commands are documented in `README.md`, the product guides, and executable
 `--help`. New mathematical architectures, execution platforms, large-scale/preemptive continuous

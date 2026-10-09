@@ -8,7 +8,7 @@ regex/choice 与严格工具调用，共用同一 token 约束机制：GBNF/rege
 （None）与 MTP 后端；DFlash/DFlash2 等投机后端由 `src/runtime/engine/engine_core.h` fail-closed
 拒绝。已落地范围与协议边界见 §16。
 
-目标是让 GBNF、JSON、JSON Schema 和工具调用共用一套 token 约束机制，接入现有普通采样、MTP、DFlash、DFlash2、thinking 与流式输出；上游的抢占恢复机制在本 fork 被 pin 掉（不可达，见 [资源调度与上下文缓存](resource-scheduling-and-context-cache.md)）。FrInfer 保持单 GPU、固定 resident lanes、原生 C++/CUDA 执行。
+目标是让 GBNF、JSON、JSON Schema 和工具调用共用一套 token 约束机制，接入现有普通采样、MTP、DFlash、DFlash2、thinking、流式输出与抢占恢复。FrInfer 保持单 GPU、固定 resident lanes、原生 C++/CUDA 执行。
 
 总体选择：vendor XGrammar 的 CPU 核心；Frontend 构造符合模型输出语义的 grammar；请求拥有 matcher；Program 管理位图缓冲和执行时序；Sampling Ops 在合法集合内建立目标分布。模型状态、语法状态和用户可见输出沿同一提交边界前进。
 
@@ -287,7 +287,7 @@ Frontend 拥有 Qwen 的输出阶段规则，grammar 和 OutputSession 的发布
 
 ### 6.1 请求拥有状态
 
-Matcher 属于 OutputSession，随 Request 从等待、resident 到终态（本 fork 固定不抢占已激活请求，paused 状态不可达）。只有 Engine worker 推进活跃请求的 matcher。准备阶段创建的 matcher 在 submit 后移交，不被 consumer 或编译线程继续修改。
+Matcher 属于 OutputSession，随 Request 从等待、resident、paused 到终态。只有 Engine worker 推进活跃请求的 matcher。准备阶段创建的 matcher 在 submit 后移交，不被 consumer 或编译线程继续修改。
 
 CompiledGrammar 共享；matcher、decoder 与临时预览均不跨请求共享。Lane、KV row、compact row 只是当前执行映射，不能作为 grammar 状态身份。
 
