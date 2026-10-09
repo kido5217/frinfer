@@ -17,6 +17,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <stdexcept>
 
 namespace ninfer::ops::detail {
 namespace {
@@ -33,8 +34,10 @@ constexpr int kNvfp4DownKTiles       = kNvfp4DownK / kNvfp4DownBlockK;       // 
 // Activation quantisation divisor. E2M1 codes are normalised by the per-group E4M3 scale, so the
 // divisor cancels in reconstruction; 1.0 keeps the E4M3 scale inside its normal range.
 constexpr float kNvfp4DownActivationDivisor = 1.0f;
-// Upper bound on the persistent grid (matches the packed prefill cap: 32 * 170 SMs).
-constexpr int kNvfp4DownMaxBlocks = 32 * 170;
+// Persistent-grid cap: 32 queued CTAs per SM, mirroring the packed prefill seam. The routed GEMM
+// strides its work list by gridDim.x, so any positive grid is correct; this is a queued CTA budget,
+// not simultaneous residency.
+constexpr int kNvfp4DownMaxBlocksPerSm = 32;
 
 using Nvfp4DownSchedule =
     Nvfp4A4MmaSchedule<kNvfp4DownBlockColumns, kNvfp4DownBlockRows, kNvfp4DownBlockK, 2, 2, 2, 2>;
@@ -250,7 +253,12 @@ void sparse_moe_nvfp4_down_launch(const Tensor& routed_activation,
                                   const int* route_job_experts, const int* route_job_columns,
                                   const int* route_job_count, std::uint8_t* activation_codes,
                                   std::uint8_t* activation_scales,
-                                  __nv_bfloat16* grouped_output, cudaStream_t stream) {
+                                  __nv_bfloat16* grouped_output,
+                                  std::int32_t multiprocessor_count, cudaStream_t stream) {
+    if (multiprocessor_count <= 0) {
+        throw std::invalid_argument(
+            "sparse_moe nvfp4 down: positive multiprocessor count required");
+    }
     const int assignments = routed_activation.ne[1];
     const auto* input     = static_cast<const __nv_bfloat16*>(routed_activation.data);
 
@@ -266,8 +274,9 @@ void sparse_moe_nvfp4_down_launch(const Tensor& routed_activation,
 
     const Nvfp4DownBases bases = make_nvfp4_down_bases(weights);
 
+    const int blocks = multiprocessor_count * kNvfp4DownMaxBlocksPerSm;
     sparse_moe_nvfp4_down_kernel<Nvfp4DownSchedule>
-        <<<kNvfp4DownMaxBlocks, Nvfp4DownSchedule::kThreads, 0, stream>>>(
+        <<<blocks, Nvfp4DownSchedule::kThreads, 0, stream>>>(
             activation_codes, activation_scales, const_cast<int*>(expert_offsets),
             const_cast<int*>(route_job_experts), const_cast<int*>(route_job_columns),
             const_cast<int*>(route_job_count), grouped_output, bases, kNvfp4DownActivationDivisor);

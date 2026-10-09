@@ -138,7 +138,7 @@ struct Case {
         if (shape.gated)
             ops::gated_rmsnorm(x, w, z, 1.e-6f, y, execution);
         else
-            ops::rmsnorm(x, w, 1.e-6f, shape.offset, y, execution.stream);
+            ops::rmsnorm(x, w, 1.e-6f, shape.offset, y, execution);
     }
 };
 } // namespace

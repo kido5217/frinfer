@@ -190,6 +190,11 @@ int main(int argc, char** argv) {
 
         cudaStream_t stream = nullptr;
         CUDA_CHECK(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
+        int device = 0;
+        CUDA_CHECK(cudaGetDevice(&device));
+        int multiprocessor_count = 0;
+        CUDA_CHECK(
+            cudaDeviceGetAttribute(&multiprocessor_count, cudaDevAttrMultiProcessorCount, device));
         bench::L2FlushBuffer flush(kFlushBytes);
         DeviceBuffer input = bench::make_bf16(static_cast<std::size_t>(kHidden) * max_t, 211U);
 
@@ -251,7 +256,8 @@ int main(int argc, char** argv) {
                     static_cast<const int*>(point.job_count.p),
                     static_cast<std::uint8_t*>(point.plane_codes.p),
                     static_cast<std::uint8_t*>(point.plane_scales.p),
-                    static_cast<__nv_bfloat16*>(point.output.p), launch_stream);
+                    static_cast<__nv_bfloat16*>(point.output.p), multiprocessor_count,
+                    launch_stream);
             };
             const bench::ColdTiming timing = bench::measure_cold_launch(
                 launch, flush, stream, options.warmup, options.repeat);
@@ -282,7 +288,8 @@ int main(int argc, char** argv) {
                     static_cast<const int*>(point.job_count.p),
                     static_cast<std::uint8_t*>(point.down_codes.p),
                     static_cast<std::uint8_t*>(point.down_scales.p),
-                    static_cast<__nv_bfloat16*>(point.down_output.p), launch_stream);
+                    static_cast<__nv_bfloat16*>(point.down_output.p), multiprocessor_count,
+                    launch_stream);
             };
             const bench::ColdTiming timing = bench::measure_cold_launch(
                 launch, flush, stream, options.warmup, options.repeat);

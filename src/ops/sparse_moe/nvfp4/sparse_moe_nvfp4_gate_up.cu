@@ -18,6 +18,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <stdexcept>
 
 namespace ninfer::ops::detail {
 namespace {
@@ -37,8 +38,10 @@ constexpr int kNvfp4KTiles       = kNvfp4Hidden / kNvfp4BlockK; // 8
 // divisor cancels in reconstruction; 1.0 keeps the E4M3 scale inside its normal range for the
 // post-norm hidden state.
 constexpr float kNvfp4ActivationDivisor = 1.0f;
-// Upper bound on the persistent grid (matches the packed prefill cap: 32 * 170 SMs).
-constexpr int kNvfp4MaxBlocks = 32 * 170;
+// Persistent-grid cap: 32 queued CTAs per SM, mirroring the packed prefill seam. The routed GEMM
+// strides its work list by gridDim.x, so any positive grid is correct; this is a queued CTA budget,
+// not simultaneous residency.
+constexpr int kNvfp4MaxBlocksPerSm = 32;
 
 using Nvfp4GateUpSchedule =
     Nvfp4A4MmaSchedule<kNvfp4BlockColumns, kNvfp4BlockRows, kNvfp4BlockK, 2, 2, 2, 2>;
@@ -299,7 +302,12 @@ void sparse_moe_nvfp4_gate_up_launch(const Tensor& x, const SparseMoeWeights& we
                                      const int* route_job_columns, const int* route_job_count,
                                      std::uint8_t* activation_codes,
                                      std::uint8_t* activation_scales,
-                                     __nv_bfloat16* routed_activation, cudaStream_t stream) {
+                                     __nv_bfloat16* routed_activation,
+                                     std::int32_t multiprocessor_count, cudaStream_t stream) {
+    if (multiprocessor_count <= 0) {
+        throw std::invalid_argument(
+            "sparse_moe nvfp4 gate_up: positive multiprocessor count required");
+    }
     const int tokens    = x.ne[1];
     const auto* input   = static_cast<const __nv_bfloat16*>(x.data);
 
@@ -315,11 +323,12 @@ void sparse_moe_nvfp4_gate_up_launch(const Tensor& x, const SparseMoeWeights& we
 
     const Nvfp4GateUpBases bases = make_nvfp4_gate_up_bases(weights);
 
-    // The persistent kernel strides its work list by gridDim.x, so a fixed cap is correct for any
-    // job count and the job count is only ever read on the device; never dereference the device
-    // route map on the host.
+    // The persistent kernel strides its work list by gridDim.x, so a device-derived cap is correct
+    // for any job count and the job count is only ever read on the device; never dereference the
+    // device route map on the host.
+    const int blocks = multiprocessor_count * kNvfp4MaxBlocksPerSm;
     sparse_moe_nvfp4_gate_up_kernel<Nvfp4GateUpSchedule>
-        <<<kNvfp4MaxBlocks, Nvfp4GateUpSchedule::kThreads, 0, stream>>>(
+        <<<blocks, Nvfp4GateUpSchedule::kThreads, 0, stream>>>(
             activation_codes, activation_scales, const_cast<int*>(packed_token),
             const_cast<int*>(expert_offsets), const_cast<int*>(route_job_experts),
             const_cast<int*>(route_job_columns), const_cast<int*>(route_job_count),

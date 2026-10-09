@@ -60,11 +60,7 @@ void require_tensor_layout(const Tensor& tensor, const char* label, std::int32_t
     }
 }
 
-void require_common(const Tensor& positions, int rotary_dim, float theta,
-                    DeviceExecutionView execution) {
-    if (execution.multiprocessor_count <= 0) {
-        throw std::invalid_argument("rope: positive multiprocessor count required");
-    }
+void require_common(const Tensor& positions, int rotary_dim, float theta) {
     if (positions.dtype != DType::I32) {
         throw std::invalid_argument("rope: positions must be I32");
     }
@@ -73,6 +69,14 @@ void require_common(const Tensor& positions, int rotary_dim, float theta,
     }
     if (rotary_dim <= 0 || (rotary_dim & 1) != 0) {
         throw std::invalid_argument("rope: rotary_dim must be positive and even");
+    }
+}
+
+// Validated after the empty-tensor early return so a zero-numel call with a default-constructed
+// execution view still no-ops, matching the pre-refactor behavior.
+void require_execution(DeviceExecutionView execution) {
+    if (execution.multiprocessor_count <= 0) {
+        throw std::invalid_argument("rope: positive multiprocessor count required");
     }
 }
 
@@ -114,7 +118,7 @@ void require_model_mode(int axes, int rotary_dim, std::int32_t head_dim) {
 
 void rope(const Tensor& positions, int rotary_dim, float theta, Tensor& q, Tensor& k,
           DeviceExecutionView execution) {
-    require_common(positions, rotary_dim, theta, execution);
+    require_common(positions, rotary_dim, theta);
     if (q.dtype != DType::BF16 || k.dtype != DType::BF16) {
         throw std::invalid_argument("rope: q/k must be BF16");
     }
@@ -130,6 +134,7 @@ void rope(const Tensor& positions, int rotary_dim, float theta, Tensor& q, Tenso
     require_tensor_layout(q, "q", head_dim, q_heads, tokens);
     require_tensor_layout(k, "k", head_dim, k_heads, tokens);
     if (q_numel == 0) { return; }
+    require_execution(execution);
     require_positions_storage(positions);
     if (q.data == nullptr || k.data == nullptr) {
         throw std::invalid_argument("rope: q/k data must be non-null");
@@ -139,7 +144,7 @@ void rope(const Tensor& positions, int rotary_dim, float theta, Tensor& q, Tenso
 
 void rope(const Tensor& positions, int rotary_dim, float theta, Tensor& x,
           DeviceExecutionView execution) {
-    require_common(positions, rotary_dim, theta, execution);
+    require_common(positions, rotary_dim, theta);
     if (x.dtype != DType::BF16) { throw std::invalid_argument("rope: tensor must be BF16"); }
     (void)numel_allow_zero(positions, "positions");
     const std::int64_t x_numel  = numel_allow_zero(x, "tensor");
@@ -150,6 +155,7 @@ void rope(const Tensor& positions, int rotary_dim, float theta, Tensor& x,
     require_model_mode(axes, rotary_dim, head_dim);
     require_tensor_layout(x, "tensor", head_dim, heads, tokens);
     if (x_numel == 0) { return; }
+    require_execution(execution);
     require_positions_storage(positions);
     if (x.data == nullptr) { throw std::invalid_argument("rope: tensor data must be non-null"); }
     detail::rope_single_launch(positions, rotary_dim, theta, x, execution);
@@ -157,7 +163,7 @@ void rope(const Tensor& positions, int rotary_dim, float theta, Tensor& x,
 
 void rope(const Tensor& positions, int rotary_dim, float theta, const YarnScale& yarn, Tensor& q,
           Tensor& k, DeviceExecutionView execution) {
-    require_common(positions, rotary_dim, theta, execution);
+    require_common(positions, rotary_dim, theta);
     require_yarn_scale(yarn);
     if (q.dtype != DType::BF16 || k.dtype != DType::BF16) {
         throw std::invalid_argument("rope: q/k must be BF16");
@@ -174,6 +180,7 @@ void rope(const Tensor& positions, int rotary_dim, float theta, const YarnScale&
     require_tensor_layout(q, "q", head_dim, q_heads, tokens);
     require_tensor_layout(k, "k", head_dim, k_heads, tokens);
     if (q_numel == 0) { return; }
+    require_execution(execution);
     require_positions_storage(positions);
     if (q.data == nullptr || k.data == nullptr) {
         throw std::invalid_argument("rope: q/k data must be non-null");
@@ -183,7 +190,7 @@ void rope(const Tensor& positions, int rotary_dim, float theta, const YarnScale&
 
 void rope(const Tensor& positions, int rotary_dim, float theta, const YarnScale& yarn, Tensor& x,
           DeviceExecutionView execution) {
-    require_common(positions, rotary_dim, theta, execution);
+    require_common(positions, rotary_dim, theta);
     require_yarn_scale(yarn);
     if (x.dtype != DType::BF16) { throw std::invalid_argument("rope: tensor must be BF16"); }
     (void)numel_allow_zero(positions, "positions");
@@ -195,6 +202,7 @@ void rope(const Tensor& positions, int rotary_dim, float theta, const YarnScale&
     require_model_mode(axes, rotary_dim, head_dim);
     require_tensor_layout(x, "tensor", head_dim, heads, tokens);
     if (x_numel == 0) { return; }
+    require_execution(execution);
     require_positions_storage(positions);
     if (x.data == nullptr) { throw std::invalid_argument("rope: tensor data must be non-null"); }
     detail::rope_yarn_single_launch(positions, rotary_dim, theta, yarn, x, execution);

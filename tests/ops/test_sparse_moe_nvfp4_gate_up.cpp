@@ -47,6 +47,15 @@ constexpr ReductionCriterion kNvfp4GateUpTolerance{
     /*gross_relative_to_max_reference*/ 1.0e-2,
 };
 
+int device_multiprocessor_count() {
+    int device = 0;
+    cuda_check(cudaGetDevice(&device), "cudaGetDevice");
+    int count = 0;
+    cuda_check(cudaDeviceGetAttribute(&count, cudaDevAttrMultiProcessorCount, device),
+               "cudaDeviceGetAttribute(MultiProcessorCount)");
+    return count;
+}
+
 double e2m1_decode(std::uint8_t code) {
     constexpr double kTable[8] = {0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0};
     const double value         = kTable[code & 7u];
@@ -255,7 +264,7 @@ int run_case(const char* label, std::int32_t tokens, std::int32_t experts_used,
         static_cast<const int*>(device_columns.p), static_cast<const int*>(device_jobcount.p),
         static_cast<std::uint8_t*>(device_codes.p),
         static_cast<std::uint8_t*>(device_scales.p),
-        static_cast<__nv_bfloat16*>(device_output.p), nullptr);
+        static_cast<__nv_bfloat16*>(device_output.p), device_multiprocessor_count(), nullptr);
     cuda_synchronize();
 
     const std::vector<std::uint8_t> codes =

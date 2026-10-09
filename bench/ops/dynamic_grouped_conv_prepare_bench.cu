@@ -78,6 +78,11 @@ void run_batch(int width, std::int32_t batch_size, const Options& options,
                DeviceBuffer& prepared_storage, DeviceBuffer& finish_storage,
                WorkspaceArena& workspace, bench::L2FlushBuffer& flush, cudaStream_t stream) {
     const std::int32_t tokens = width * batch_size;
+    int device = 0;
+    CUDA_CHECK(cudaGetDevice(&device));
+    int multiprocessor_count = 0;
+    CUDA_CHECK(cudaDeviceGetAttribute(&multiprocessor_count, cudaDevAttrMultiProcessorCount,
+                                      device));
     Tensor residual(residual_storage.p, DType::BF16, {kHidden, width, batch_size});
     Tensor prepared(prepared_storage.p, DType::BF16, {kHidden, width, batch_size});
     Tensor finish_delta(finish_storage.p, DType::BF16, {kGroups, kTaps, width, batch_size});
@@ -85,7 +90,9 @@ void run_batch(int width, std::int32_t batch_size, const Options& options,
         workspace.reset();
         ops::rmsnorm_dynamic_grouped_conv_prepare(residual, norm_weight, 1.0e-6F, base_kernel,
                                                   projection_weight, prepared, finish_delta,
-                                                  workspace, launch_stream);
+                                                  workspace,
+                                                  DeviceExecutionView{launch_stream,
+                                                                      multiprocessor_count});
     };
     workspace.reset_peak();
     TimedGraph graph;

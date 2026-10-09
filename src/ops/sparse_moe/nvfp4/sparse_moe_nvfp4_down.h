@@ -32,11 +32,14 @@ struct Nvfp4DownBases {
 // routed output [2048, assignments]. expert_offsets [257] and the route-job maps are the prefill
 // route's packed-route maps (route_job_count[0] is the job count); activation_codes/scales are the
 // compact FP4 plane scratch (assignments * 512/2 and assignments * 512/16 bytes).
+// multiprocessor_count sizes the persistent grid cap (32 queued CTAs per SM), mirroring the packed
+// prefill seam.
 void sparse_moe_nvfp4_down_launch(const Tensor& routed_activation,
                                   const SparseMoeWeights& weights, const int* expert_offsets,
                                   const int* route_job_experts, const int* route_job_columns,
                                   const int* route_job_count, std::uint8_t* activation_codes,
                                   std::uint8_t* activation_scales,
-                                  __nv_bfloat16* grouped_output, cudaStream_t stream);
+                                  __nv_bfloat16* grouped_output,
+                                  std::int32_t multiprocessor_count, cudaStream_t stream);
 
 } // namespace ninfer::ops::detail

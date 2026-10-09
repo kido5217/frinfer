@@ -75,7 +75,8 @@ int run_case(const char* label, const Shape& shape, bool unit_offset, std::uint3
     DecodeGraphDefinition definition;
     DecodeGraphExecutable graph;
     const auto launch = [&] {
-        ops::rmsnorm(input_tensor, weight_tensor, kEps, unit_offset, output_tensor, device.stream);
+        ops::rmsnorm(input_tensor, weight_tensor, kEps, unit_offset, output_tensor,
+                     device.execution_view());
     };
     int failures = 0;
     for (int phase = 0; phase < (replay ? 2 : 1); ++phase) {
