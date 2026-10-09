@@ -226,7 +226,7 @@ preemption is pinned off, so admission waits for capacity instead.
 
 See [Resource scheduling and context cache](docs/maintainer/resource-scheduling-and-context-cache.md)
 for the algorithm and [Serve TTFT benchmark](tools/bench/ttft/) for public-HTTP coverage of hot
-reuse, Host resume, eviction, shared prefixes, scheduling boundaries, and multimodal load.
+reuse, Host State resume, shared prefixes, scheduling boundaries, and multimodal load.
 
 ## Performance
 

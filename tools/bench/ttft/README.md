@@ -64,11 +64,12 @@ continuations; use that control when comparing an older profile that disabled sh
 
 ### Retired cases
 
-The fork pins active-request preemption off, so the upstream preemption campaign and the cases that
-need a Main KV pool below `max_concurrency × ceil(max_context/64)` cannot run: the compliant-pool
-startup validator rejects their servers before any request. They are retired with their reasons in
-[profiles.py](profiles.py) (`RETIRED_PROFILES`); the campaign controller refuses them by name. They
-remain in [cases.py](cases.py) only as the upstream design reference.
+The fork pins active-request preemption off, so the upstream preemption campaign is retired, and the
+cases whose frozen workloads were sized for a Main KV pool below `max_concurrency ×
+ceil(max_context/64)` cannot run under the compliant bound: the startup validator rejects their
+servers before any request. They are retired with their reasons in [profiles.py](profiles.py)
+(`RETIRED_PROFILES`); the campaign controller refuses them by name. They remain in [cases.py](cases.py)
+only as the upstream design reference.
 
 | Retired case(s) | Profile | Why it cannot run |
 |---|---|---|
@@ -76,11 +77,11 @@ remain in [cases.py](cases.py) only as the upstream design reference.
 | `shared-growth-fairness` | `shared-growth-fairness` | requires preemption and replay copresence |
 | `snapshot-history-cancel` | `snapshot-history-cancel` | requires a paused resident (snapshot restore) |
 | `vision-growth-replay` | `vision-growth-replay` | requires Vision preemption/replay |
-| `resume-after-interference-kv-host` | `cache-pressure-kv-host` | Host-KV restore pressure needs a pool below the compliant bound |
-| `resume-after-interference-both-host` | `cache-pressure-both-host` | State+KV restore pressure needs a pool below the compliant bound |
-| `resume-after-interference-evicted` | `cache-pressure-evict` | checkpoint eviction needs a pool below the compliant bound |
-| `session-alternating-64k-host-swap` | `cache-swap-64k-host` | Host KV swap needs a pool below two near-capacity lanes |
-| `session-rotation-55k-host`, `session-rotation-55k-two-cohort-stream` | `cache-rotation-55k-host` | rotation needs a pool below every lane at full context |
+| `resume-after-interference-kv-host` | `cache-pressure-kv-host` | the frozen graph cannot reach Host-KV pressure under a compliant pool |
+| `resume-after-interference-both-host` | `cache-pressure-both-host` | the frozen graph cannot reach State+KV pressure under a compliant pool |
+| `resume-after-interference-evicted` | `cache-pressure-evict` | the frozen graph cannot reach checkpoint-eviction pressure under a compliant pool |
+| `session-alternating-64k-host-swap` | `cache-swap-64k-host` | the frozen two-session swap cannot reach Host-KV pressure under a compliant pool |
+| `session-rotation-55k-host`, `session-rotation-55k-two-cohort-stream` | `cache-rotation-55k-host` | the frozen six-session rotation cannot reach Device/Host KV pressure under a compliant pool |
 
 `resume-after-interference-device` and `resume-after-interference-state-host` remain: their profiles
 are already compliant.

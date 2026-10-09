@@ -337,15 +337,15 @@ RETIRED_PROFILES: dict[str, str] = {
     "snapshot-history-cancel": "needs a paused resident (snapshot restore); preemption is pinned off",
     "vision-growth-replay": "needs Vision preemption/replay; preemption is pinned off",
     "cache-pressure-kv-host":
-        "Host-KV restore pressure needs a pool below max_concurrency * full context",
+        "the frozen graph cannot reach Host-KV pressure under a compliant pool",
     "cache-pressure-evict":
-        "checkpoint eviction needs a pool below max_concurrency * full context",
+        "the frozen graph cannot reach checkpoint-eviction pressure under a compliant pool",
     "cache-pressure-both-host":
-        "State+KV restore pressure needs a pool below max_concurrency * full context",
+        "the frozen graph cannot reach State+KV pressure under a compliant pool",
     "cache-swap-64k-host":
-        "Host KV swap across two near-capacity 64K lanes; the compliant pool holds both on Device",
+        "the frozen two-session swap cannot reach Host-KV pressure under a compliant pool",
     "cache-rotation-55k-host":
-        "rotation under Device/Host KV pressure; the compliant pool holds every lane at full context",
+        "the frozen six-session rotation cannot reach Device/Host KV pressure under a compliant pool",
 }
 
 PROFILE_ARGS: dict[str, tuple[str, ...]] = {
