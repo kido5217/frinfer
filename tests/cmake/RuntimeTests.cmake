@@ -18,6 +18,10 @@ ninfer_add_test(ninfer_constraint_compatibility_test
   SOURCES "${CMAKE_CURRENT_LIST_DIR}/../runtime/test_constraint_compatibility.cpp"
   LIBRARIES ninfer_runtime_support)
 
+ninfer_add_test(ninfer_preemption_policy_test
+  SOURCES "${CMAKE_CURRENT_LIST_DIR}/../runtime/test_preemption_policy.cpp"
+  LIBRARIES ninfer_runtime_support)
+
 ninfer_add_test(ninfer_sampling_defaults_test
   SOURCES "${CMAKE_CURRENT_LIST_DIR}/../runtime/test_sampling_defaults.cpp"
   LIBRARIES ninfer_engine ninfer_core)

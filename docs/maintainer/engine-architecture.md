@@ -83,7 +83,8 @@ response event 和 Engine availability。它编排 admission、资源事务、�
 
 Scheduler 拥有执行成员与公平性规则：fresh admission 的有限绕过、prefill 轮转、紧凑 decode/control
 批次、抢占受害请求及恢复机会。它使用请求状态和提交顺序做决定，暂停请求局部等待容量事件。
-本 fork 固定不抢占已激活请求（§1）：`pause_resident` 恒返回 false，抢占受害与暂停/恢复分支
+本 fork 固定不抢占已激活请求（§1）：`PreemptionPolicy::may_pause_resident()` 恒为 false，
+`pause_resident`、抢占受害扫描与 admission 的受害分支都咨询它，因此抢占受害与暂停/恢复分支
 不可达，资源不足时请求等待容量；这部分机制保留为上游合并参考。
 
 Lane 是 resident 请求位置；StateImage slot、KV execution row 和 compact batch row 是独立身份。
@@ -173,7 +174,8 @@ Capture 是 resident 请求上的暂时执行门，capture 未完成的请求不
 
 ### 3.1 暂停与恢复
 
-本 fork 固定不抢占已激活请求：`pause_resident` 恒返回 false，暂停与恢复绑定在合规容量下不可达
+本 fork 固定不抢占已激活请求：唯一的所有者 `PreemptionPolicy::may_pause_resident()` 恒为 false
+（`pause_resident` 返回它），暂停与恢复绑定在合规容量下不可达
 （ADR [0003](../adr/0003-full-resident-capacity-under-pinned-preemption.md)）。以下描述上游的
 pause/replay 机制，保留为上游合并参考。
 
