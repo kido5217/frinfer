@@ -1,5 +1,7 @@
 #include "text/grammar.h"
 #include "text/json_schema.h"
+#include "text/json_schema_internal.h"
+#include "text/model_grammar_internal.h"
 #include "text/unicode.h"
 
 #include <xgrammar/xgrammar.h>
@@ -218,7 +220,7 @@ GrammarCompiler::~GrammarCompiler() = default;
 
 std::unique_ptr<GrammarSession>
 GrammarCompiler::compile_model(std::string_view identity,
-                               const std::function<xgrammar::Grammar()>& build,
+                               const std::function<ModelGrammar()>& build,
                                std::string_view close, std::string_view continuation) {
     const std::string key =
         "model:" + std::to_string(close.size()) + ":" + std::string(close) + std::string(identity);
@@ -226,7 +228,8 @@ GrammarCompiler::compile_model(std::string_view identity,
     auto compiled = impl_->compiler.CompileCachedGrammar(
         key,
         [&] {
-            auto grammar = build();
+            ModelGrammar model        = build();
+            xgrammar::Grammar grammar = std::move(*model.impl_->grammar);
             return close.empty() ? grammar
                                  : xgrammar::Grammar::Concat({reasoning_prefix(close), grammar});
         },

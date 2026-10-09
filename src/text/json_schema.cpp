@@ -1,4 +1,5 @@
 #include "text/json_schema.h"
+#include "text/json_schema_internal.h"
 #include "text/schema_composition.h"
 #include "text/json_input.h"
 #include "ninfer/types.h"

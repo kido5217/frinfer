@@ -92,7 +92,7 @@ GBNF 是直接的 grammar 输入，适合作为底层机制的最小完整使用
 | Sampling / Speculative Ops | 合法候选筛选、概率归一化、p/q 接受、残差与采样结果 |
 | Gateway / CLI | 文件获取、协议字段翻译、协议错误和响应编码；各语言字段的准入逻辑（`ninfer::constraint` 的共享模块：单一约束、payload 限制、schema allowlist、tools 冲突） |
 
-通用适配可置于 `src/text/` 的约束模块；Qwen 语义留在现有 `src/models/qwen3_5/frontend/`。执行数据合同属于 `src/runtime/contract/`，物理消费者沿现有 Program/Ops 目录组织。这是职责边界，具体文件拆分随实现规模确定。
+通用适配可置于 `src/text/` 的约束模块；Qwen 语义留在现有 `src/models/qwen3_5/frontend/`。模型侧工具语法经 `src/text/model_grammar.h` 的 builder facade（`ModelGrammarBuilder`，vendor 中立的原语 + 分类后的 `ModelGrammarError`）表达自己的输出框架，不直接引用 vendor 类型；构建器、JSON Schema→子语法转换与编译诊断封装在 `src/text/model_grammar.cpp`。执行数据合同属于 `src/runtime/contract/`，物理消费者沿现有 Program/Ops 目录组织。这是职责边界，具体文件拆分随实现规模确定。
 
 ## 3. 请求输入与编译
 

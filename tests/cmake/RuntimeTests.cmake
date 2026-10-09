@@ -30,3 +30,7 @@ ninfer_add_test(ninfer_regex_choice_test
 ninfer_add_test(ninfer_json_schema_test
   SOURCES "${CMAKE_CURRENT_LIST_DIR}/../text/test_json_schema.cpp"
   LIBRARIES ninfer_text_grammar ninfer::json)
+
+ninfer_add_test(ninfer_model_grammar_test
+  SOURCES "${CMAKE_CURRENT_LIST_DIR}/../text/test_model_grammar.cpp"
+  LIBRARIES ninfer_text_grammar)

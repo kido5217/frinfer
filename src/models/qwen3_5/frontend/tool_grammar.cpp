@@ -1,79 +1,86 @@
 #include "models/qwen3_5/frontend/tool_grammar.h"
 #include "text/json_schema.h"
 
-#include "grammar_builder.h"
-#include "grammar_functor.h"
-#include "json_schema_converter.h"
-
 #include <nlohmann/json.hpp>
+
 #include <optional>
+#include <string>
+#include <utility>
+#include <vector>
 
 namespace ninfer::models::qwen3_5::frontend {
 namespace {
 using Json     = nlohmann::ordered_json;
 using Contract = ToolCallOutputContract;
+using Builder  = text::ModelGrammarBuilder;
+using Rule     = Builder::Rule;
 
-xgrammar::Grammar arguments(const Contract::Tool& tool) {
+// The non-strict tool arguments surface: any object of string values.
+constexpr std::string_view kNonStrictArgumentsSchema =
+    R"({"type":"object","additionalProperties":{"type":"string"}})";
+
+// Adopts one tool's argument schema, attributing any construction failure to the tool declaration.
+Rule arguments(Builder& builder, const Contract::Tool& tool) {
     try {
-        std::string source;
-        if (tool.strict)
-            source = text::prepare_json_schema(tool.schema_json);
-        else
-            source = R"({"type":"object","additionalProperties":{"type":"string"}})";
-        return xgrammar::JSONSchemaToGrammar(
-            source, false, std::nullopt, std::pair<std::string, std::string>{", ", ": "}, false,
-            std::nullopt, false, xgrammar::JSONFormat::kQwenXML, {});
+        const std::string source = tool.strict
+                                       ? text::prepare_json_schema(tool.schema_json)
+                                       : std::string(kNonStrictArgumentsSchema);
+        return builder.json_schema_rule(source);
+    } catch (const text::ModelGrammarError& error) {
+        RequestErrorKind kind = RequestErrorKind::InvalidJsonSchema;
+        switch (error.kind()) {
+        case text::ModelGrammarError::Kind::UnsupportedSchema:
+            kind = RequestErrorKind::UnsupportedJsonSchema;
+            break;
+        case text::ModelGrammarError::Kind::UnsatisfiableSchema:
+            kind = RequestErrorKind::UnsatisfiableJsonSchema;
+            break;
+        case text::ModelGrammarError::Kind::Fatal:
+            kind = RequestErrorKind::InvalidToolConstraint;
+            break;
+        case text::ModelGrammarError::Kind::InvalidSchema:
+            break;
+        }
+        throw RequestError(kind, "tool '" + tool.name + "': " + error.what(),
+                           "/" + std::to_string(tool.declaration_index) + "/parameters" +
+                               error.pointer(),
+                           RequestErrorSource::Tools);
     } catch (const RequestError& error) {
         throw RequestError(error.kind(), "tool '" + tool.name + "': " + error.what(),
                            "/" + std::to_string(tool.declaration_index) + "/parameters" +
                                error.pointer(),
                            RequestErrorSource::Tools);
-    } catch (const xgrammar::JSONSchemaCompileError& error) {
-        const auto kind = error.kind == xgrammar::SchemaErrorType::kUnsupportedSchema
-                              ? RequestErrorKind::UnsupportedJsonSchema
-                          : error.kind == xgrammar::SchemaErrorType::kUnsatisfiableSchema
-                              ? RequestErrorKind::UnsatisfiableJsonSchema
-                              : RequestErrorKind::InvalidJsonSchema;
-        throw RequestError(kind, "tool '" + tool.name + "': " + error.what(),
-                           "/" + std::to_string(tool.declaration_index) + "/parameters" +
-                               error.pointer,
-                           RequestErrorSource::Tools);
-    } catch (const xgrammar::LogFatalError& error) {
-        throw RequestError(RequestErrorKind::InvalidToolConstraint,
-                           "tool '" + tool.name + "': " + error.what(),
-                           "/" + std::to_string(tool.declaration_index) + "/parameters",
-                           RequestErrorSource::Tools);
     }
 }
 
-xgrammar::Grammar build(const Contract& contract) {
-    xgrammar::GrammarBuilder builder;
-    if (contract.tools.empty())
-        return builder.Get(
-            builder.AddRuleWithHint("root", builder.AddTagDispatch({{}, false, {"<tool_call>"}})));
-    std::vector<int32_t> choices;
-    std::optional<int32_t> basic_arguments;
-    for (const auto& tool : contract.tools) {
-        const auto body = !tool.strict && basic_arguments
-                              ? *basic_arguments
-                              : xgrammar::SubGrammarAdder::Apply(&builder, arguments(tool));
-        if (!tool.strict) basic_arguments = body;
-        choices.push_back(builder.AddSequence(
-            {builder.AddByteString("\n<function=" + tool.name + ">\n"), builder.AddRuleRef(body),
-             builder.AddByteString("</function>\n</tool_call>")}));
+text::ModelGrammar build(const Contract& contract) {
+    Builder builder;
+    if (contract.tools.empty()) {
+        return builder.get(builder.rule(
+            "root", builder.tag_dispatch({}, false, {"<tool_call>"})));
     }
-    const auto call_body = builder.AddRuleWithHint("call_body", builder.AddChoices(choices));
-    const auto next_call = builder.AddSequence(
-        {builder.AddByteString("\n<tool_call>"), builder.AddRuleRef(call_body)});
-    const auto tail  = contract.parallel ? builder.AddRepeatFromExpr("calls", next_call, 0, -1)
-                                         : builder.AddEmptyStr();
-    const auto first = builder.AddRuleWithHint(
-        "calls", builder.AddSequence({builder.AddRuleRef(call_body), tail}));
-    const auto root =
+    std::vector<Rule> choices;
+    std::optional<Rule> basic_arguments;
+    for (const auto& tool : contract.tools) {
+        const Rule body =
+            !tool.strict && basic_arguments ? *basic_arguments : arguments(builder, tool);
+        if (!tool.strict) { basic_arguments = body; }
+        choices.push_back(builder.sequence(
+            {builder.literal("\n<function=" + tool.name + ">\n"), builder.reference(body),
+             builder.literal("</function>\n</tool_call>")}));
+    }
+    const Rule call_body = builder.rule("call_body", builder.choice(choices));
+    const Rule next_call =
+        builder.sequence({builder.literal("\n<tool_call>"), builder.reference(call_body)});
+    const Rule tail =
+        contract.parallel ? builder.repeat("calls", next_call, 0, -1) : builder.empty();
+    const Rule first =
+        builder.rule("calls", builder.sequence({builder.reference(call_body), tail}));
+    const Rule root =
         contract.required
-            ? builder.AddSequence({builder.AddByteString("<tool_call>"), builder.AddRuleRef(first)})
-            : builder.AddTagDispatch({{{"<tool_call>", first}}, false, {}});
-    return xgrammar::GrammarNormalizer::Apply(builder.Get(builder.AddRuleWithHint("root", root)));
+            ? builder.sequence({builder.literal("<tool_call>"), builder.reference(first)})
+            : builder.tag_dispatch({{"<tool_call>", first}}, false, {});
+    return builder.normalize(builder.rule("root", root));
 }
 } // namespace
 
