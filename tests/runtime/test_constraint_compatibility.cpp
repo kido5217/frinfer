@@ -99,6 +99,19 @@ int main() {
         failures += check(violates(options), "raw output violates a constraint");
     }
 
+    // The constrained-turn speculative-backend rule: only the ordinary (None) and MTP backends can
+    // carry a constraint; every other backend cannot (design #48).
+    using ninfer::SpeculativeBackend;
+    using ninfer::runtime::constraint_backend_supported;
+    failures += check(constraint_backend_supported(SpeculativeBackend::None),
+                      "the ordinary backend supports a constrained turn");
+    failures += check(constraint_backend_supported(SpeculativeBackend::Mtp),
+                      "MTP supports a constrained turn");
+    failures += check(!constraint_backend_supported(SpeculativeBackend::DFlash),
+                      "DFlash does not support a constrained turn");
+    failures += check(!constraint_backend_supported(SpeculativeBackend::DFlash2),
+                      "DFlash2 does not support a constrained turn");
+
     if (failures == 0) { std::cout << "Constrained-turn compatibility tests passed\n"; }
     return failures == 0 ? 0 : 1;
 }
