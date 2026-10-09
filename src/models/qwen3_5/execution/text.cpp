@@ -1284,11 +1284,11 @@ TextContext::prefill_impl(std::span<const int> ids, const TextPrefill* text_pref
                 project(last_xf, *lm_head_, logits, work_, s);
                 // The logprob gather reads the pre-increment token counts, so it runs after the
                 // mask and before the sampler; it is device-gated and a no-op when off.
-                if (sampling_config_ != nullptr && io_.logprob_active.data != nullptr) {
+                if (sampling_config_ != nullptr && io_.logprob.active.data != nullptr) {
                     ops::logprob_topk(
                         logits, sampling_config_,
                         dimension(parameters_.model.resources().public_token_count),
-                        io_.logprob_ids, io_.logprob_values, io_.logprob_lse, io_.logprob_active,
+                        io_.logprob.ids, io_.logprob.values, io_.logprob.lse, io_.logprob.active,
                         work_, s);
                 }
                 // Set io_.pos to the bonus token's absolute position (base + T) before picking so
