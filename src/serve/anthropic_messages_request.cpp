@@ -914,8 +914,7 @@ const Json& parse_output_format(const Json& format) {
     return format.at("schema");
 }
 
-void parse_output_config(const Json& body, GenerationRequest& request, ParsePurpose purpose,
-                         std::vector<ninfer::constraint::ConstraintSlot>& slots) {
+void parse_output_config(const Json& body, GenerationRequest& request, ParsePurpose purpose) {
     const bool has_config = body.contains("output_config") && !body.at("output_config").is_null();
     if (has_config && !body.at("output_config").is_object()) {
         bad_request("output_config must be an object", "output_config");
@@ -940,14 +939,25 @@ void parse_output_config(const Json& body, GenerationRequest& request, ParsePurp
                     "output_format", "output_format_not_supported");
     }
 
-    // output_config.format is the route's body-constraint kind and reaches the same shared
-    // constraint contract the OpenAI `response_format` json_schema path uses; the shared admission
-    // applies the cross-language rules. Output-only: count_tokens has no answer stream, so the
-    // field is ignored there (unchanged behavior).
+    // output_config.format is the route's only body-constraint kind and reaches the same shared
+    // constraint contract the OpenAI `response_format` json_schema path uses. Output-only:
+    // count_tokens has no answer stream, so the field is ignored there (unchanged behavior).
     if (purpose == ParsePurpose::Messages && has_format) {
-        slots.push_back(ninfer::constraint::admit_json_schema(
-            parse_output_format(config->at("format")), "output_config.format",
-            "output_config.format"));
+        try {
+            request.constraint = ninfer::constraint::admit_json_schema(
+                                     parse_output_format(config->at("format")),
+                                     "output_config.format", "output_config.format")
+                                     .value;
+        } catch (const ninfer::constraint::ConstraintError& error) {
+            bad_request(error.what(), error.param(), error.code());
+        }
+        request.constraint_source = ConstraintSource::JsonSchema;
+        // The tool-call parser owns the turn when tools are declared, so a constrained answer and
+        // a `tools` field cannot share it (even an empty array), mirroring the OpenAI route.
+        if (body.contains("tools") && !body.at("tools").is_null()) {
+            bad_request("tools with a constrained response is not supported",
+                        "output_config.format", "constrained_decoding_not_supported");
+        }
     }
 
     if (config == nullptr || !config->contains("effort") || config->at("effort").is_null()) {
@@ -1065,14 +1075,27 @@ void apply_anthropic_prompt_cache_policy(const Json& body, GenerationRequest& re
 }
 
 // The NInfer structured_outputs extension on the Anthropic route: exactly one of grammar, regex or
-// choice, an alternative to `output_config.format`. The single-constraint rule is enforced when
-// this route's slots are adopted.
-void parse_structured_outputs(const Json& body, ParsePurpose purpose,
-                              std::vector<ninfer::constraint::ConstraintSlot>& slots) {
+// choice, an alternative to `output_config.format`. A body may not name two constraint sources; the
+// Anthropic route applies that rule before it parses the option, as it always has.
+void parse_structured_outputs(const Json& body, GenerationRequest& request, ParsePurpose purpose) {
     if (!body.contains("structured_outputs") || body.at("structured_outputs").is_null()) { return; }
     // count_tokens carries no answer stream, so an output-only constraint is ignored there.
     if (purpose != ParsePurpose::Messages) { return; }
-    slots.push_back(ninfer::constraint::admit_structured_outputs(body.at("structured_outputs")));
+    try {
+        const Json& value        = body.at("structured_outputs");
+        const std::string option = ninfer::constraint::structured_outputs_option(value);
+        if (request.constraint) {
+            ninfer::constraint::reject_second_constraint("structured_outputs");
+        }
+        const auto admitted = ninfer::constraint::admit_structured_outputs_option(value, option);
+        if (body.contains("tools") && !body.at("tools").is_null()) {
+            ninfer::constraint::reject_constraint_with_tools(admitted.field);
+        }
+        request.constraint        = admitted.value;
+        request.constraint_source = constraint_source_of(admitted.origin);
+    } catch (const ninfer::constraint::ConstraintError& error) {
+        bad_request(error.what(), error.param(), error.code());
+    }
 }
 
 void parse_common_prompt(const Json& body, GenerationRequest& request, ParsePurpose purpose,
@@ -1081,20 +1104,8 @@ void parse_common_prompt(const Json& body, GenerationRequest& request, ParsePurp
     parse_system(body, request);
     parse_messages(body, request);
     parse_thinking(body, request, purpose, effective_max_tokens);
-    std::vector<ninfer::constraint::ConstraintSlot> constraint_slots;
-    try {
-        parse_output_config(body, request, purpose, constraint_slots);
-        parse_structured_outputs(body, purpose, constraint_slots);
-        const bool has_tools = body.contains("tools") && !body.at("tools").is_null();
-        const auto admitted =
-            ninfer::constraint::admit_constraint(std::move(constraint_slots), has_tools);
-        if (admitted.constraint) {
-            request.constraint        = std::move(admitted.constraint);
-            request.constraint_source = constraint_source_of(admitted.origin);
-        }
-    } catch (const ninfer::constraint::ConstraintError& error) {
-        bad_request(error.what(), error.param(), error.code());
-    }
+    parse_output_config(body, request, purpose);
+    parse_structured_outputs(body, request, purpose);
     apply_anthropic_prompt_cache_policy(body, request);
     if (body.contains("container") && !body.at("container").is_null()) {
         bad_request("container requires an external execution environment that FrInfer does not "

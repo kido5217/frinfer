@@ -207,8 +207,22 @@ int test_structured_output() {
         request["output_config"]      = body["output_config"];
         request["structured_outputs"] = Json{{"grammar", "root ::= \"a\""}};
         const ApiError error          = api_error([&] { (void)parse(request); });
-        failures += check(error.code == "constrained_decoding_conflict",
-                          "output_config.format and structured_outputs conflict");
+        failures += check(error.code == "constrained_decoding_conflict" &&
+                              error.param == "structured_outputs",
+                          "output_config.format and structured_outputs conflict on the "
+                          "structured_outputs field");
+    }
+    {
+        // The Anthropic route applies the single-constraint rule before it parses the option, so a
+        // malformed structured_outputs alongside output_config.format reports the conflict, not the
+        // shape error.
+        Json request                  = base_request();
+        request["output_config"]      = body["output_config"];
+        request["structured_outputs"] = Json{{"grammar", ""}};
+        const ApiError error          = api_error([&] { (void)parse(request); });
+        failures += check(error.code == "constrained_decoding_conflict" &&
+                              error.param == "structured_outputs",
+                          "the conflict precedes a malformed structured_outputs option");
     }
 
     // Malformed wrappers fail closed on the Anthropic field path, not the OpenAI one.

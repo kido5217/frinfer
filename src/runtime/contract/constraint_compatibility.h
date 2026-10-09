@@ -12,6 +12,7 @@ namespace ninfer::runtime {
 struct ConstrainedTurnOptions {
     bool constrained             = false; // a body constraint (grammar / JSON schema / choice / regex)
     bool constrained_tools       = false; // a constrained tool grammar owns the turn
+    bool tool_contract           = false; // any tool contract is active (constrained or not)
     bool model_default_eos       = true;  // the model declares a non-empty default EOS set
     bool include_default_stops   = true;  // the caller kept the model's default stop tokens/strings
     bool publish_stop_token      = false; // raw stop-token publication
@@ -22,7 +23,7 @@ struct ConstrainedTurnOptions {
 };
 
 struct ConstrainedTurnViolation {
-    bool tools = false; // the failing turn is a constrained tool turn
+    bool tools = false; // the failing turn is reported as a constrained tool turn
     std::string message;
 };
 

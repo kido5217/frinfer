@@ -815,6 +815,14 @@ int test_constrained_decoding_extensions() {
     failures += check(tools_schema_error.param == "response_format" &&
                           tools_schema_error.code == "constrained_decoding_not_supported",
                       "tools with a schema constraint are rejected");
+    Json tools_so_grammar                  = base_request();
+    tools_so_grammar["tools"]              = Json::array({tool});
+    tools_so_grammar["structured_outputs"] = Json{{"grammar", "root ::= \"x\""}};
+    const ApiError tools_so_grammar_error  = api_error([&] { (void)parse(tools_so_grammar); });
+    failures += check(tools_so_grammar_error.code == "constrained_decoding_not_supported" &&
+                          tools_so_grammar_error.param == "grammar",
+                      "tools with structured_outputs.grammar attribute the tools conflict to the "
+                      "grammar source, not the sub-field");
 
     // The serve contract rejects a constrained request on a backend that cannot carry one,
     // naming the configured backend.

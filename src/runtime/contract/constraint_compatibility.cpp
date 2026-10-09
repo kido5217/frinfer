@@ -6,8 +6,10 @@ std::optional<ConstrainedTurnViolation>
 validate_constrained_turn(const ConstrainedTurnOptions& options) {
     if (!options.constrained && !options.constrained_tools) { return std::nullopt; }
 
+    // A body constraint cannot share the turn with any active tool contract; the constrained-tool
+    // report kind additionally requires the tool grammar itself to own the turn.
     const bool violates =
-        !options.model_default_eos || (options.constrained && options.constrained_tools) ||
+        !options.model_default_eos || (options.constrained && options.tool_contract) ||
         !options.include_default_stops || options.publish_stop_token || options.raw_output ||
         options.preserve_special_tokens || options.custom_stop_tokens ||
         options.custom_stop_strings;
