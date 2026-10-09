@@ -100,10 +100,8 @@ is still a supplied prompt; the request fails on an empty context rather than si
 bare completion. `--messages` remains the route for structured multi-turn input and applies the
 chat template; the two text sources do not.
 
-The CLI normally omits `--kv-capacity`, so the shared Main Text KV pool follows the example's
-32,768-token `--max-context`. The CLI runs a single execution lane, so that pool already satisfies
-the pinned no-preemption capacity requirement (the pool must cover every lane at full context); an
-explicit `--kv-capacity` must round to that same single-lane pool or startup fails.
+The CLI normally omits `--kv-capacity`, so
+the shared Main Text KV pool follows the example's 32,768-token `--max-context`.
 
 Answer content is streamed to stdout. Human-readable startup milestones and runtime errors are
 written to stderr without service timestamps. Reasoning and the CLI result report (timings,
@@ -348,7 +346,7 @@ The table lists executable defaults. The examples above select FP8 KV and MTP3.
 | Option | Meaning | Default |
 |---|---|---:|
 | `--max-context N` | per-sequence logical context ceiling; above the native `max_position_embeddings` it activates the YaRN context extension (DFlash rejects it) | `2048` |
-| `--kv-capacity N\|auto` | explicit shared Main Text KV capacity, or maximize it from remaining GPU memory; omitted follows `--max-context` (the CLI is single-lane) | `2048` |
+| `--kv-capacity N\|auto` | explicit shared Main Text KV capacity, or maximize it from remaining GPU memory; omitted means `--max-context` | `2048` |
 | `--prefill-chunk N` | positive text-prefill chunk, in multiples of 128 | `1024` |
 | `--max-new N` | requested output-token limit | `128` |
 | `--device N` | CUDA device index | `0` |
@@ -436,10 +434,8 @@ memory, and directly chooses the largest legal page capacity for the complete en
 layout. This includes the selected speculative backend, fixed sequence state, unified workspace,
 and CUDA Graph allowance, while leaving the default 1 GiB automatic headroom
 unallocated. It does not probe allocations or resize the pool at request time. The single-request
-CLI normally leaves the option omitted so it follows `--max-context`; the CLI runs one execution
-lane, so that value already satisfies the pinned no-preemption capacity requirement. A concurrent
-server sizes the omitted default to `--max-concurrency` lanes at full `--max-context`, and an
-explicit value must round to that same pool or startup fails.
+CLI normally leaves the option omitted so it follows
+`--max-context`; the distinction matters primarily to a concurrent Engine or server.
 
 At Engine startup FrInfer reserves model weights, persistent sequence state, one phase-reused
 Program workspace, and a separate CUDA Graph driver allowance. With Vision enabled, that one

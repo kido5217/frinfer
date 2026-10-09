@@ -406,11 +406,8 @@ int main(int argc, char** argv) {
         options.artifact_path   = artifact;
         options.max_context     = pressure_mode ? 1024 : 1536;
         options.max_concurrency = argc > 3 ? std::stoul(argv[3]) : 2;
-        // Fork adaptation: active-request preemption is pinned off, so Main KV must cover
-        // every resident lane at full max_context (upstream sizes a partial cache that the
-        // fork's full-resident policy rejects).
-        options.kv_capacity = ninfer::KvCapacityPolicy::explicit_capacity(options.max_concurrency *
-                                                                          options.max_context);
+        options.kv_capacity     = ninfer::KvCapacityPolicy::explicit_capacity(
+            pressure_mode ? 1024 : options.max_concurrency * 1024);
         options.prefill_chunk                     = 128;
         options.kv_cache                          = ninfer::KvCacheStorage::Fp8E4M3Row256;
         options.use_cuda_graph                    = mode != "eager";

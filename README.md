@@ -33,7 +33,7 @@ the `frinfer` product binaries. The rest of this README describes the combined p
 ### Changes from upstream
 
 Maintained: add or update a row whenever a fork feature changes or its status changes.
-Last updated 2026-10-09 (r7→master: the pinned no-preemption boundary and its coverage, the constrained tool-calling surface, request-log schema v25, the Serve metrics renderer, and the Serve TTFT campaign reconciled with the compliant-pool bound).
+Last updated 2026-10-09 (scheduling and Main-KV capacity reverted to upstream: real active-request preemption and the accepted pool range, superseding ADR 0003 and #238/#244/#249).
 
 | What | Why | How | Status | Source |
 |---|---|---|---|---|
@@ -59,8 +59,8 @@ Last updated 2026-10-09 (r7→master: the pinned no-preemption boundary and its 
 | Model-acquisition flags — `--hf-repo`/`--hf-file`, `--model-url`, `--cache-dir`, `--offline`, `--cache-list` on `frinfer` + `frinfer-serve` | The quick start was a two-tool dance (external `hf` CLI + ninfer) while artifacts live on Hugging Face | libcurl streaming download into `~/.cache/frinfer` with resume, offline cache reuse, cache listing, and fail-closed `hf_not_found`/`offline_not_cached` codes | shipped | llama.cpp (the `-hf`/`--hf-repo`, `--offline`, `--cache-list` pattern, adopted) |
 | Tokenizer CLI — `frinfer-tokenize` (encode / decode / per-id spelling) | No surface answers "how does this text tokenize?", which is the daily debugging primitive for prompt framing, template drift and token budgets | `Engine::detokenize` and `Engine::token_piece` alongside the existing `tokenize_text`, plus a small app; encode/decode round-trip tested against the artifact | shipped | FrInfer (decode direction; llama.cpp's `llama-tokenize` is encode-only) |
 | CLI prompt from file or stdin — `--prompt-file FILE` / `--prompt-stdin` | Long or awkward prompts (code, CJK, tabs, newlines) hit shell-quoting pain in the one place a prompt must be typed, and the structured `--messages` route forces JSON for plain text | Both sources read the body verbatim — no escape processing, no trailing-newline trimming, no re-encoding — and feed the same `prompt_from_text` route `--prompt` uses, so identical bytes give an identical token count; the prompt now has exactly one source among `--prompt`/`--prompt-file`/`--prompt-stdin`/`--messages`, and naming two reports both flags | shipped | FrInfer (llama.cpp's `-f`/`--stdin` is the shape; its silent precedence of `--stdin` over `-f`/`-p` is deliberately not copied, because a run that quietly used the wrong prompt is worse than a rejected one) |
-| No active-request preemption — the upstream runtime's pause/reclaim/replay primitives are pinned off | The fork contract is bounded FIFO ingress with startup-fixed 1–8 concurrency: a resident request must never lose its completion ability to a newer one | `pause_resident` returns false, so admission waits for capacity; `test_engine_no_preemption_real` runs concurrent requests at the compliant pool ceiling, including a cached-context restore under pressure, and asserts the preemption/recovery counters stay zero. The pause/reclaim route is unreachable under the compliant-pool validator, so the pin holds by construction rather than by a runtime counter | shipped | FrInfer (pin) on the adopted upstream runtime (#238/#244/#249) |
-| Main KV capacity must cover every resident lane at full context | With preemption pinned off, an undersized shared pool would otherwise fail a resident at runtime instead of at boot | `validate_target_options` requires the explicit pool to equal the curve upper bound `max_concurrency × ceil(max_context / 64)` and rejects a smaller or larger one naming required/supplied capacity; an under-sized `auto` resolution is rejected in `construct_model`; `test_engine_no_preemption_real` asserts the accepted concurrent run and both startup rejection messages | shipped | FrInfer (validators) on the adopted upstream runtime (#249) |
+| Scheduling tracks upstream — real active-request preemption | Earlier revisions pinned the upstream pause/reclaim/replay primitives off (#238/#244/#249); the fork now matches upstream `Neroued/ninfer` | `PreemptionPolicy` is deleted and `pause_resident` is upstream's live pause body, so a resident may be paused/reclaimed to admit a younger request; `test_engine_preemption_real` is restored and registered | shipped | FrInfer revert (ADR 0004); supersedes #238/#244/#249 |
+| Main KV capacity tracks upstream's range | The full-resident requirement made a sub-full pool unstartable (#282); upstream accepts a sub-full pool and relies on preemption | `validate_target_options` accepts upstream's `[max(page_count(max_context), C), C × page_count(max_context)]` range and `require_full_resident_capacity` is removed, so `auto` may resolve to the minimum; an omitted `--kv-capacity` follows `--max-context` | shipped | FrInfer revert (ADR 0004) |
 | Attention kernel tuning — measured, **not ported** | The port survey's last open performance candidate, and the only one whose verdict was a measurement rather than a port | Decode attention already runs at 84–91 % of the DRAM roofline at long context under the deployed 8-bit KV profiles, leaving a ≈1.10–1.19× kernel ceiling and a ≈3–7 % end-to-end decode gain — under the bar for a bespoke kernel; nvfp4 KV (63–66 % utilization) is the one profile with real kernel headroom and has no published end-to-end baseline to attach a gain to | no-port (measured) | FrInfer measurement (gate evidence `research/attention-tuning-evidence` @ `08171824`); candidates surveyed from llama.cpp |
 
 ### Bug reporting
@@ -179,10 +179,10 @@ Start a long-running text/agent server with two active-request lanes:
 
 Each request has a 120,000-token logical ceiling. A shared 240,000-token Device KV pool covers both
 lanes, so each may reach its full 120,000-token context while the other is resident. Requests
-acquire KV pages as execution advances; when the pool is exhausted, admission waits for capacity
-instead of pausing a resident request (active-request preemption is pinned off). The profile provides
-two extra Device StateImages and the default shared pinned Host budget: 8 GiB plus eight model
-StateImages, used for retained state, KV and checkpoint snapshots.
+acquire KV pages as execution advances; under pressure, the scheduler can pause a request and
+resume it later. The profile provides two extra
+Device StateImages and the default shared pinned Host budget: 8 GiB plus eight model StateImages,
+used for retained state, KV and pause snapshots.
 
 Send an OpenAI-style request:
 
@@ -221,13 +221,13 @@ diagnostics. Use `--messages FILE` and `--vision` for structured image/video inp
 
 A reusable checkpoint combines KV with the complete continuation state at an exact token frontier.
 The engine retains completed conversation endpoints and stable input boundaries for multi-turn and
-agent reuse. Inactive checkpoints share Device and pinned Host capacity; pressure reclaims those
-inactive cached contexts and checkpoints. Resident requests are never paused: active-request
-preemption is pinned off, so admission waits for capacity instead.
+agent reuse. Inactive checkpoints share Device and pinned Host capacity; pressure reclaims retained
+resources before pausing resident requests. Paused requests resume from a snapshot or rebuild their
+state by replaying already committed tokens.
 
 See [Resource scheduling and context cache](docs/maintainer/resource-scheduling-and-context-cache.md)
 for the algorithm and [Serve TTFT benchmark](tools/bench/ttft/) for public-HTTP coverage of hot
-reuse, Host State resume, shared prefixes, scheduling boundaries, and multimodal load.
+reuse, Host resume, eviction, shared prefixes, scheduling boundaries, and multimodal load.
 
 ## Performance
 
@@ -343,8 +343,6 @@ The product boundary remains intentionally small:
 
 - one RTX 5090 and one resident model per Engine;
 - one to eight resident execution lanes with bounded FIFO ingress;
-- no active-request preemption: the adopted runtime's pause/reclaim/replay primitives are pinned
-  off; admission waits for capacity instead of pausing a resident request;
 - no priority/QoS, weight offload, multi-GPU, or distributed serving;
 - one shared startup-fixed KV pool across active requests and retained prefixes;
 - model architectures and format/shape combinations use explicitly implemented native paths;

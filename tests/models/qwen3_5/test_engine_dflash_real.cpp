@@ -42,7 +42,7 @@ ninfer::EngineOptions dflash_vision_engine_options(const char* artifact) {
         dflash_engine_options(artifact, ninfer::ProposalHead::Optimized, 4096);
     options.prefill_chunk   = 1024;
     options.max_concurrency = 2;
-    // The pinned no-preemption contract sizes the shared pool for both lanes at full context.
+    // The shared pool covers both lanes at full context; sized explicitly for this fixture.
     options.kv_capacity     = ninfer::KvCapacityPolicy::explicit_capacity(2 * 4096);
     options.enable_vision   = true;
     return options;

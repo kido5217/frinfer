@@ -1,5 +1,7 @@
 # Full worst-case Main KV capacity under pinned preemption
 
+> **Superseded by [ADR 0004](0004-match-upstream-scheduling-and-capacity.md).**
+
 Context: the fork pins active-request preemption off (`pause_resident` returns false; #238/#244).
 The adopted upstream runtime still carries its fallback for the impossible case at
 `src/runtime/engine/engine_core.h:2066-2072`: when the oldest resident cannot obtain its legal unit

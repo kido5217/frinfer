@@ -7,13 +7,7 @@
 ## 1. 产品执行模型
 
 Generation Engine 使用一张 GPU、一个常驻模型和启动时确定的 `max_concurrency=1..8`。
-有界等待队列按提交顺序组织；resident 请求按有限执行单元增量取得资源。
-本 fork 固定**不抢占已激活请求**：上游运行时的 pause/reclaim/replay 原语在本 fork 中被 pin 掉，
-资源不足时新请求等待容量而不是暂停 resident 请求（见 `engine_core.h` 的 `pause_resident`）。
-因此共享 Main KV 池必须在启动时覆盖 `max_concurrency` 个 lane 各自的满上下文：显式 `kv_capacity`
-低于该上界，或自动容量因显存不足解析到上界以下，都在启动时报错；上游“最老 resident 无法取得
-其合法单元”的回退分支因此不可达（契约见
-[资源调度与上下文缓存](resource-scheduling-and-context-cache.md#capacity)）。
+有界等待队列按提交顺序组织；resident 请求按有限执行单元增量取得资源，资源压力下可以暂停与恢复。
 每轮将具备执行许可的 decode-ready 请求组成一个紧凑批次，prefill 与 Replay 分块穿插执行。
 
 Text、Vision、prefix reuse、MTP、DFlash/DFlash2、CLI 和 HTTP serving 都通过公共 `ninfer::Engine`。
@@ -83,13 +77,9 @@ response event 和 Engine availability。它编排 admission、资源事务、�
 
 Scheduler 拥有执行成员与公平性规则：fresh admission 的有限绕过、prefill 轮转、紧凑 decode/control
 批次、抢占受害请求及恢复机会。它使用请求状态和提交顺序做决定，暂停请求局部等待容量事件。
-本 fork 固定不抢占已激活请求（§1）：`PreemptionPolicy::may_pause_resident()` 恒为 false，
-`pause_resident`、抢占受害扫描与 admission 的受害分支都咨询它，因此抢占受害与暂停/恢复分支
-不可达，资源不足时请求等待容量；这部分机制保留为上游合并参考。
 
 Lane 是 resident 请求位置；StateImage slot、KV execution row 和 compact batch row 是独立身份。
-上游机制中暂停会释放 lane、请求仍归 EngineCore 拥有并在恢复时取得另一 lane；本 fork 的 pin 下
-暂停从不发生，该路径不可达。
+暂停释放 lane 后，请求仍由 EngineCore 拥有；恢复可以取得另一 lane。
 
 ### 2.3 ResourceManager
 
@@ -163,9 +153,7 @@ stateDiagram-v2
     ModelFinished --> [*]: 资源与输出结算
 ```
 
-本图描述上游请求生命周期；本 fork 固定不抢占已激活请求，`Pausing`/`Paused` 状态及其入边与
-Snapshot/Replay 恢复入口属于 pinned-off 的抢占路径，在合规容量下不可达（见 §1 与 ADR
-[0003](../adr/0003-full-resident-capacity-under-pinned-preemption.md)）。
+本图描述上游请求生命周期；`Pausing`/`Paused` 状态及其入边与 Snapshot/Replay 恢复入口属于抢占路径。
 
 `Materializing` 包含 source lease、必要传输和 destination 安装；完整绑定采用后才暴露 SequenceHandle。
 Capture 是 resident 请求上的暂时执行门，capture 未完成的请求不进入模型 unit。
@@ -173,11 +161,6 @@ Capture 是 resident 请求上的暂时执行门，capture 未完成的请求不
 取消与失败可以从相应稳定边界进入终态。
 
 ### 3.1 暂停与恢复
-
-本 fork 固定不抢占已激活请求：唯一的所有者 `PreemptionPolicy::may_pause_resident()` 恒为 false
-（`pause_resident` 返回它），暂停与恢复绑定在合规容量下不可达
-（ADR [0003](../adr/0003-full-resident-capacity-under-pinned-preemption.md)）。以下描述上游的
-pause/replay 机制，保留为上游合并参考。
 
 暂停由 Program 在已提交 GPU 边界完成，返回 owning `ResumeState`：
 
@@ -223,9 +206,8 @@ transport 通过队列、原子 cancellation flag 和 response event 交互。
 
 Program 的 `reserve_units` 原子取得一个调用集合的 typed 增量需求；Engine 逐行调用，组成可运行
 子集。一行缺资源不会阻止其他已许可行执行。普通 unit 结算释放未用 reservation 与 provisional
-suffix；恢复许可保留未来重建及首新单元尚需的 reservation。压力可以回收 optional cache 与 inactive
-checkpoint；本 fork 固定不抢占已激活请求，paused 队列恒为空，撤销 paused Snapshot 与暂停年轻
-resident 的路径不可达。具体准入与公平性见核心缓存文档。
+suffix；恢复许可保留未来重建及首新单元尚需的 reservation。压力可以回收 optional cache、撤销
+paused Snapshot 或暂停年轻 resident，具体准入与公平性见核心缓存文档。
 
 一次资源事务可以与不受影响的 resident 执行交错，但同一 sequence、source/destination lease、
 block table 和 transfer buffer 的依赖由 Program 冻结。任意时刻只有一个上下文资源事务，任意 GPU unit

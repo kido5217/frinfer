@@ -1809,9 +1809,7 @@ void shared_capture_alignment(DeviceContext& device, const qwen::execution::Para
 void replay_sampling_counts(DeviceContext& device, const qwen::execution::Parameters& parameters,
                             qwen::Frontend& frontend, EngineOptions options) {
     options.max_context                       = 128;
-    // The declared capacity covers both lanes at full context; the fixture then finalizes a tight
-    // two-page pool directly to exercise replay admission without the Engine's resolution step.
-    options.kv_capacity                       = KvCapacityPolicy::explicit_capacity(256);
+    options.kv_capacity                       = KvCapacityPolicy::explicit_capacity(128);
     options.max_concurrency                   = 2;
     options.context_cache.enabled             = false;
     options.context_cache.device_state_slots  = 0;
@@ -1999,9 +1997,7 @@ int main(int argc, char** argv) {
             fixture.physical_facts();
         }
         program.reset();
-        // The declared capacity covers both lanes at full context; the fixture then finalizes the
-        // deliberately tight eight-page pool that drives pool pressure directly.
-        options.kv_capacity    = KvCapacityPolicy::explicit_capacity(2 * kCapacity);
+        options.kv_capacity    = KvCapacityPolicy::explicit_capacity(kCapacity);
         auto full_pool_planner = qwen::make_sequence_planner(parameters, device, options);
         auto full_pool_plan    = std::move(full_pool_planner).finalize(8);
         auto full_pool = qwen::create_program(parameters, std::move(full_pool_plan), device, {});
@@ -2015,7 +2011,6 @@ int main(int argc, char** argv) {
         full_pool.reset();
         options.max_context                       = kCapacity;
         options.max_concurrency                   = 1;
-        options.kv_capacity                       = KvCapacityPolicy::explicit_capacity(kCapacity);
         options.context_cache.device_state_slots  = 0;
         options.context_cache.host_capacity_bytes = 0;
         auto capture_planner = qwen::make_sequence_planner(parameters, device, options);

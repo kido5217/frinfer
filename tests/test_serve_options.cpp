@@ -396,17 +396,17 @@ int main() {
                           inherited.kv_capacity.explicit_tokens == 16384,
                       "omitted --kv-capacity did not follow --max-context");
 
-    // The pinned no-preemption contract sizes an omitted pool for every lane at full context, in
-    // whole 64-token pages.
+    // An omitted pool follows --max-context regardless of --max-concurrency; the accepted range is
+    // enforced by the Engine target validator, not the parser.
     const ServeOptions scaled =
         parse({"ninfer-serve", "model.ninfer", "--max-context", "8192", "--max-concurrency", "4"});
     failures += check(scaled.kv_capacity.mode == ninfer::KvCapacityMode::Explicit &&
-                          scaled.kv_capacity.explicit_tokens == 32768,
-                      "omitted --kv-capacity did not scale to max-concurrency lanes");
+                          scaled.kv_capacity.explicit_tokens == 8192,
+                      "omitted --kv-capacity did not follow --max-context at max-concurrency 4");
     const ServeOptions unaligned =
         parse({"ninfer-serve", "model.ninfer", "--max-context", "100", "--max-concurrency", "3"});
-    failures += check(unaligned.kv_capacity.explicit_tokens == 384,
-                      "omitted --kv-capacity did not round each lane to whole pages");
+    failures += check(unaligned.kv_capacity.explicit_tokens == 100,
+                      "omitted --kv-capacity did not follow --max-context verbatim");
 
     const ServeOptions automatic = parse({"ninfer-serve", "model.ninfer", "--kv-capacity", "auto"});
     failures += check(automatic.kv_capacity.mode == ninfer::KvCapacityMode::Automatic &&

@@ -20,12 +20,7 @@ if __package__ in {None, ""}:
 
 from tools.bench.ttft.cases import CASES, CaseDefinition
 from tools.bench.ttft.diagnostics import attach_generation_diagnostics
-from tools.bench.ttft.profiles import (
-    COMMON_ARGS,
-    PROFILE_ARGS,
-    RETIRED_PROFILES,
-    kv_capacity_error,
-)
+from tools.bench.ttft.profiles import COMMON_ARGS, PROFILE_ARGS
 from tools.bench.ttft.render import write_campaign_summary
 from tools.bench.ttft.report import ReportError
 
@@ -42,24 +37,55 @@ PORT = 18080
 RESOURCE_CASES = (
     "shared-state-working-set-shift",
     "private-state-working-set-shift",
+    "private-only-working-set-shift",
     "shared-state-hot-prefix",
     "resume-after-interference-device",
     "resume-after-interference-state-host",
+    "resume-after-interference-kv-host",
+    "resume-after-interference-both-host",
+    "resume-after-interference-evicted",
+    "session-alternating-64k-host-swap",
+    "session-rotation-55k-host",
+    "session-rotation-55k-two-cohort-stream",
 )
-
-# Cases whose Serve profile is retired (cf. profiles.RETIRED_PROFILES) cannot run under the pinned
-# no-preemption runtime. They remain registered as the upstream design reference but are excluded
-# from every campaign and refused with their reason when selected directly.
-RETIRED_CASES: dict[str, str] = {
-    name: RETIRED_PROFILES[definition.profile]
-    for name, definition in CASES.items()
-    if definition.profile in RETIRED_PROFILES
+CONTRACT_CASES = (
+    "session-publication-order",
+    "pending-overflow",
+    "pending-timeout",
+    "context-exact",
+    "context-over",
+    "vision-disabled",
+    "vision-envelope-over",
+)
+LONG_CONTEXT_CASES = ("cold-long-256k",)
+PREPROCESS_CASES = ("many-image-28", "many-image-28-thread-1")
+# The two-cohort case already runs the complete ordinary 55K rotation as its first phase.
+FULL_EXCLUSIONS = {
+    *CONTRACT_CASES,
+    *LONG_CONTEXT_CASES,
+    "many-image-28-thread-1",
+    "session-rotation-55k-host",
 }
-
 CAMPAIGNS = {
     "smoke": ("cold-short",),
     "resource": RESOURCE_CASES,
-    "full": tuple(name for name in CASES if name not in RETIRED_CASES),
+    "preemption": (
+        "preemption-replay",
+        "preemption-snapshot",
+        "preemption-snapshot-mtp",
+        "preemption-snapshot-dflash2",
+        "shared-growth-recovery",
+        "host-history-pressure-cancel",
+        "vision-growth-replay",
+        "agent-continuation-replay",
+        "agent-continuation-snapshot",
+    ),
+    "load": tuple(name for name in CASES
+                  if name.startswith(("resident-", "mixed-arrivals-"))),
+    "contract": CONTRACT_CASES,
+    "long-context": LONG_CONTEXT_CASES,
+    "preprocess": PREPROCESS_CASES,
+    "full": tuple(name for name in CASES if name not in FULL_EXCLUSIONS),
 }
 
 
@@ -436,8 +462,9 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         "--campaign",
         choices=tuple(CAMPAIGNS),
         help=(
-            "smoke=one baseline, resource=cache pressure and working-set cases, "
-            "full=all runnable cases"
+            "smoke=one baseline, resource=pressure and Host-rotation cases, "
+            "preemption=restore, mixed scheduling, cancellation and Vision pressure cases, "
+            "full=composite performance; contract=HTTP boundaries; long-context=long inputs; preprocess=worker control"
         ),
     )
     selection.add_argument(
@@ -484,15 +511,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         else CAMPAIGNS[args.campaign or "resource"]
     )
     definitions = [CASES[name] for name in case_names]
-    retired_selected = [name for name in case_names if name in RETIRED_CASES]
-    if retired_selected:
-        detail = "; ".join(
-            f"{name} (profile {CASES[name].profile}: {RETIRED_CASES[name]})"
-            for name in retired_selected
-        )
-        raise SystemExit(
-            f"retired cases cannot run under the pinned no-preemption runtime: {detail}"
-        )
     try:
         common_args, profiles = _load_profiles(args.profile_config)
     except CampaignError as error:
@@ -501,14 +519,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     missing_profiles = sorted(set(selected_profiles) - profiles.keys())
     if missing_profiles:
         raise SystemExit(f"cases have no executable Serve profile: {missing_profiles}")
-    capacity_errors = {
-        name: error
-        for name in selected_profiles
-        if (error := kv_capacity_error(common_args, profiles[name])) is not None
-    }
-    if capacity_errors:
-        detail = "; ".join(f"{name}: {error}" for name, error in capacity_errors.items())
-        raise SystemExit(f"profiles violate the full-resident KV bound: {detail}")
 
     output_dir = (
         args.output_dir.expanduser().resolve()

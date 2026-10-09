@@ -24,11 +24,11 @@ See [CUDA synchronization](cli.md#cuda-synchronization) for the shared `NINFER_C
 The command uses Qwen3.8-27B NVFP4. Each request has a 120,000-token logical ceiling. A shared
 240,000-token Main Text KV pool admits two lanes at full context, so either request may reach its
 full 120,000-token ceiling while the other is resident. Requests acquire KV pages as execution
-advances; if concurrent growth exhausts the pool, admission waits for capacity instead of pausing a
-resident request (active-request preemption is pinned off).
+advances; if concurrent growth exhausts the pool, the scheduler can pause a request and restore it
+later.
 
 With `C=2` and two extra Device slots, the process owns four Device StateImages. The default shared
-pinned Host budget is 8 GiB plus eight model StateImages. It holds retained state, KV and checkpoint
+pinned Host budget is 8 GiB plus eight model StateImages. It holds retained state, KV and pause
 snapshots, including in-flight destinations; `--host-context-mib` sets an explicit total instead.
 
 Other artifacts use the same command shape with their own path. For 35B-A3B DFlash, replace the MTP
@@ -838,7 +838,7 @@ The table lists executable defaults. The startup example selects a long-context 
 | `--api-key KEY` | required bearer or `x-api-key` value | unset |
 | `--model-id ID` | override the public OpenAI model alias | artifact `metadata.name`, or architecture name |
 | `--max-context N` | logical context ceiling of each sequence | `8192` |
-| `--kv-capacity N\|auto` | explicit shared Main Text KV capacity, or maximize it from remaining GPU memory; omitted follows `--max-concurrency` lanes at full `--max-context`; an explicit pool must equal that bound | `8192` |
+| `--kv-capacity N\|auto` | explicit shared Main Text KV capacity, or maximize it from remaining GPU memory; omitted means `--max-context` | `8192` |
 | `--max-concurrency N` | resident execution lanes; valid range `1..8` | `1` |
 | `--max-pending-requests N` | additional requests allowed to wait for admission | `16` |
 | `--pending-timeout-ms N` | maximum preparation-plus-admission wait | `30000` |
@@ -938,7 +938,7 @@ curl http://127.0.0.1:8080/metrics
 | `frinfer_prefill_units_total`, `frinfer_control_units_total` | Executed prefill units and committed thinking-control units (fork product counters) |
 | `frinfer_generation_tokens_total`, `frinfer_decode_tokens_total` | All committed outputs, or decode/control outputs excluding the first token; include thinking and injected control tokens |
 | `frinfer_spec_decode_{rounds,draft_tokens,accepted_tokens,fallback_steps}_total` | Live native speculative work, including MTP and DFlash/DFlash2 |
-| `frinfer_{preemptions,snapshot_restores,replay_restores}_total` | Pressure pauses and recovery routes (pinned off under this fork's no-preemption runtime) |
+| `frinfer_{preemptions,snapshot_restores,replay_restores}_total` | Pressure pauses and recovery routes |
 | `frinfer_root_selections_total`, `frinfer_checkpoint_selections_total` | Initial bindings without and with exact-checkpoint reuse |
 | `frinfer_device_kv_{used,capacity}_pages`, `frinfer_device_state_{used,capacity}_slots`, `frinfer_device_backend_kv_used_pages` | Physical Main KV and StateImage occupancy plus speculative backend KV occupancy; retained history also occupies these pools |
 | `frinfer_host_context_{used,reserved,capacity,peak}_bytes`, `frinfer_host_state_images`, `frinfer_host_kv_used_bytes` | Unified Host backing, the StateImages it holds, and KV bytes within it; reserved bytes are already included in used bytes |
@@ -982,7 +982,7 @@ they do not infer request behavior from process-global counter deltas.
 | `request_start` | protocol, resolved sampler and seed, requested reasoning effort, actual initial thinking mode and optional budget, Responses semantic-change flag, output budget, stream/message/tool shape |
 | `request_rejected` | parsed request shape, requested reasoning effort, media-item count, `phase: "prepare"`, and the exact HTTP status/type/code/parameter/message for a synchronous preparation rejection |
 | `request_done` | finish reason, prompt/completion/cache/computed-prefill tokens, prefix reuse path, tool-call parse diagnostics, terminal constraint observation, preemption/recovery counters, thinking-budget application counters, unrounded request-stage seconds, per-request Engine Host exposure, and complete speculative-decoding counters |
-| `request_scheduling` | request identity, pause/restore/recovery transitions, Snapshot revocation, Engine observation time and cumulative global/request work counters; the preemption transitions are pinned off, so this event is retained but not emitted (see below) |
+| `request_scheduling` | request identity, pause/restore/recovery transitions, Snapshot revocation, Engine observation time and cumulative global/request work counters |
 | `request_error` | the resolved request configuration and the generation, cancellation, or pre-outcome transport terminal message |
 | `throughput` | interval token/decode/context-cache pressure counter deltas, authoritative worker Host-work deltas, current scheduler/resource gauges, and decode-round batch statistics |
 
@@ -1010,8 +1010,6 @@ as full-precision JSON numbers. Its `speculative` object contains `backend`, `dr
 derived downstream from raw token counts and seconds instead of rounded stderr strings.
 `generation.scheduling` records preemptions, snapshot/replay restores, replayed tokens, paused time
 and request-owned transfer bytes. Replay rebuilds committed state without adding new output usage.
-Under the fork's pinned-off active-request preemption these preemption/recovery counters and
-`paused_ns` are always zero, and Replay never runs.
 
 `generation.admission` records the initial `preferred_reused_tokens`, `source_wait_seconds`,
 `revoked_checkpoints`, and `fallback_reason`. Source waiting is a subset of initial queue time;
@@ -1034,11 +1032,6 @@ other requests' completed work. In particular, `restored` to `replay_complete` e
 other work advanced during Replay without relying on periodic scheduler gauges. Events are enabled
 only with request logging and add no per-token records.
 
-These transitions are emitted only when the Engine fires them. The fork pins active-request
-preemption off, so `pause_started`, `paused`, `restore_started`, `restored`, `replay_complete`,
-`recovery_complete`, `snapshot_revoked` and the preempted `terminal` boundary never occur: the
-schema and fields are retained but no `request_scheduling` event is written.
-
 For `server_start.memory`, `workspace.capacity_bytes` is the only physical workspace allocation.
 When Vision is enabled, `vision_workspace` reports the aggregate prompt and maximum-item token
 bounds plus encode peak and handoff layout/usage within that same allocation; these bytes must not
@@ -1057,10 +1050,9 @@ summed across concurrent requests**.
 first nonempty output delta. It is `null` when no such output exists. This boundary differs from the
 first accepted model token and the client's first HTTP output. Engine elapsed time begins at submit:
 initial queue ends when the successful binding attempt starts, initial binding ends when the
-binding is installed, and paused time includes pause preparation, waiting and restoration (always
-zero under the pinned-off preemption). The remaining interval is resident time. Its `engine`
-observations describe resident Host/Device-wait exposure; `prefill` and `replay` describe this
-request's submitted work. Terminal `engine_timing` still covers
+binding is installed, and paused time includes pause preparation, waiting and restoration. The remaining
+interval is resident time. Its `engine` observations describe resident Host/Device-wait exposure;
+`prefill` and `replay` describe this request's submitted work. Terminal `engine_timing` still covers
 the whole request.
 
 The work `gpu_seconds` measures Text prefill stream intervals, including their MTP/DFlash work;
@@ -1089,12 +1081,10 @@ Pretty `batch` and JSONL `average_size` are decode row-rounds divided by decode 
 same interval. The
 `running`, `prefilling`, `decode_ready`, `waiting`, `paused`, `replaying`, `materializing`,
 `capture_pending`, and `terminal_pending` fields are the Engine scheduler snapshot at the end of the
-interval (`paused` and `replaying` stay zero under the pinned-off preemption). The JSONL
-`context_cache` object reports selections, captures, StateImage operations,
+interval. The JSONL `context_cache` object reports selections, captures, StateImage operations,
 transfers, tail-page COW and pressure spills as interval deltas; `occupancy` and `last_selection` are
 end-of-interval gauges. The separate `scheduling` object reports preemptions, restores and replayed
-tokens (all zero under the pinned-off preemption). Occupancy includes Host reservations while
-transfers are in flight.
+tokens. Occupancy includes Host reservations while transfers are in flight.
 
 The JSONL `throughput.host_work` object is the aggregation authority: the Engine worker counts each
 wall-time segment once, independent of batch size. `elapsed_seconds` contains the same five
@@ -1125,10 +1115,9 @@ CPU/media preparation and completed model results whose response has not yet bee
 capacity returns HTTP 429 with code `server_overloaded`. The absolute
 `--pending-timeout-ms` deadline starts before preparation, covers media acquisition and Engine FIFO
 waiting, and returns HTTP 503 with code `request_queue_timeout` if admission does not occur in time.
-Once admitted, a request holds its lane until it completes or is cancelled; the runtime never pauses
-a resident request, so this initial-admission deadline is not restarted by resource pressure. Fresh
-requests enter in FIFO order with a bounded bypass allowance when an earlier request cannot fit.
-There is no admission ETA or unbounded overflow queue.
+Once admitted, a request may pause for resource pressure without restarting this initial-admission
+deadline. Fresh requests enter in FIFO order with a bounded bypass allowance when an earlier request
+cannot fit. There is no admission ETA or unbounded overflow queue.
 
 Input memory is bounded by the outstanding-request count and the per-request
 `--max-request-mib` limit. Media preparation uses a shared permit pool sized from `--media-live-mib`
@@ -1139,21 +1128,20 @@ outside the GPU executor and do not delay formation of the next batch.
 
 `--max-context` is each sequence's logical ceiling. `--kv-capacity` fixes the shared Main Text KV
 pool used by active requests and retained prefixes. `auto` accounts for the complete enabled runtime
-and leaves 1 GiB of sizing headroom; omitting the option makes the pool follow `--max-concurrency`
-lanes at full `--max-context`. Capacity resolves once at startup. Because active-request preemption
-is pinned off, the pool must equal `--max-concurrency` lanes each at full `--max-context`: an
-explicit capacity that rounds below or above that bound, or an `auto` resolution that cannot reach
-it from the available GPU memory, is rejected at startup with an error naming the required and
-supplied capacity. The MTP/DFlash backend KV pool is sized on top of the Main pool and covered by the same
-bound.
+and leaves 1 GiB of sizing headroom; omitting the option makes it follow `--max-context`. Capacity
+resolves once at startup.
 
 Before each prefill, decode or replay unit, the runtime reserves the additional pages and temporary
-storage required by that unit. When capacity is short it first reclaims inactive cached contexts and
-checkpoints; that reclaim stays enabled. Resident requests are never paused to make room, because
-active-request preemption is pinned off: admission waits for capacity instead. The upstream runtime's
-pause/replay recovery mechanism is retained for the upstream merge but is unreachable under the
-compliant pool, which covers `--max-concurrency` lanes each at full `--max-context`. The policy and
-ownership rules are defined in
+storage required by that unit. It first reclaims inactive cache resources when capacity is short.
+If resident requests still cannot advance together, it pauses a younger request while preserving
+progress for the oldest resident request. A paused request does not block fresh requests that fit
+the remaining capacity. Restoration follows original request order and reserves enough space to
+rebuild the saved frontier and complete one new execution unit.
+
+A paused request keeps its committed output and protocol state. With sufficient Host backing, it
+can restore a snapshot; otherwise it rebuilds model state from retained input and committed tokens.
+Replay does not resample or republish those tokens, but it consumes compute and can increase gaps in
+the output stream. The policy and ownership rules are defined in
 [Resource scheduling and context cache](maintainer/resource-scheduling-and-context-cache.md).
 
 Compatible prefixes are reused for both text and multimodal histories unless the server starts with
