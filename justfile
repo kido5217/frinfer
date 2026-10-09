@@ -29,8 +29,9 @@ bench target *args:
     build/bench/{{target}} {{args}}
 
 # Full verification as one bounded command: configure + build, the whole CTest
-# suite, then the Python conversion tests and the independent jsonschema /
-# re.fullmatch grammar oracles. Everything is tee-ed to
+# suite, then the Python conversion and text tests and the independent jsonschema /
+# re.fullmatch grammar oracles, including the Qwen tool-schema constraint probe.
+# Everything is tee-ed to
 # build/verify.log and the run ends with an unambiguous `VERIFY OK` or
 # `VERIFY FAIL (step: <step>)` line. Run inside the Nix devShell (see header).
 verify:

@@ -37,7 +37,7 @@ weight decoding.
 ## Build and run
 
 Select a Python environment with the dependencies for the tests first. The maintained environment
-uses Python 3.11; CMake finds Python 3 without restricting its minor version.
+uses Python 3.13; CMake finds Python 3 without restricting its minor version.
 `Python3_EXECUTABLE` selects the interpreter used by interop and frontend tests explicitly.
 
 ```bash
