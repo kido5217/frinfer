@@ -165,9 +165,9 @@ void sample_from_hidden(PrefillContext& state, const Tensor& hidden, std::int32_
             state.execution.device.stream);
     const std::int32_t token_domain =
         dimension(state.execution.parameters.model.resources().public_token_count);
-    ops::logprob_topk(logits, state.sampling, token_domain, state.execution.io.logprob_ids,
-                      state.execution.io.logprob_values, state.execution.io.logprob_lse,
-                      state.execution.io.logprob_active, state.execution.work,
+    ops::logprob_topk(logits, state.sampling, token_domain, state.execution.io.logprob.ids,
+                      state.execution.io.logprob.values, state.execution.io.logprob.lse,
+                      state.execution.io.logprob.active, state.execution.work,
                       state.execution.device.stream);
     CUDA_CHECK(cudaMemcpyAsync(state.execution.io.pos.data, &absolute_position,
                                sizeof(absolute_position), cudaMemcpyHostToDevice,

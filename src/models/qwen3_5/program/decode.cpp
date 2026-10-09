@@ -60,11 +60,11 @@ auto ordinary_batch_body(OrdinaryBatchContext& state, std::int32_t batch_size,
         // The gather is a pure view of the sampler's distribution and must see the pre-increment
         // token counts, so it is enqueued before sample(). It is gated on device so an off-round
         // pays only the flag check.
-        Tensor top_ids    = ordinary.logprob_ids.slice(1, 0, batch_size);
-        Tensor top_values = ordinary.logprob_values.slice(1, 0, batch_size);
-        Tensor lse        = ordinary.logprob_lse.slice(0, 0, batch_size);
+        Tensor top_ids    = ordinary.logprob.ids.slice(1, 0, batch_size);
+        Tensor top_values = ordinary.logprob.values.slice(1, 0, batch_size);
+        Tensor lse        = ordinary.logprob.lse.slice(0, 0, batch_size);
         ops::logprob_topk(logits, ordinary.sampling, token_domain, top_ids, top_values, lse,
-                          ordinary.logprob_active, state.execution.work,
+                          ordinary.logprob.active, state.execution.work,
                           state.execution.device.stream);
         ops::sample(logits, sampled, token_domain, ordinary.sampling, cache_positions,
                     ops::kSamplePurposeDecode, state.execution.work, state.execution.device.stream);

@@ -144,6 +144,25 @@ struct DFlashDecodeEgress {
     std::array<float, kMaximumConcurrency * kDFlashDecodeMaximumWidth> logprob_lse{};
 };
 
+// The logprob gather's device regions and its host-controlled gate, grouped so the gather layout
+// is declared once and bound once per round kind. `sampling` is the speculative per-verify-column
+// config view (null for the ordinary round).
+struct LogprobGather {
+    Tensor ids;
+    Tensor values;
+    Tensor lse;
+    Tensor active;
+    const ops::SamplingConfig* sampling = nullptr;
+};
+
+// The same group as layout regions, for RoundStateLayout.
+struct LogprobGatherRegions {
+    TensorRegion ids;
+    TensorRegion values;
+    TensorRegion lse;
+    TensorRegion active;
+};
+
 struct OrdinaryDecodeStateLayout {
     LayoutRegion ingress;
     LayoutRegion egress;
@@ -210,10 +229,7 @@ struct RoundStateLayout {
     TensorRegion rope_delta;
     TensorRegion logits;
     // Prefill single-row logprob gather (and its device active gate).
-    TensorRegion logprob_ids;
-    TensorRegion logprob_values;
-    TensorRegion logprob_lse;
-    TensorRegion logprob_active;
+    LogprobGatherRegions logprob;
     TensorRegion text_kv_table_row;
     TensorRegion backend_kv_table_row;
     std::optional<MtpPrefillStateLayout> mtp;
@@ -240,10 +256,7 @@ struct OrdinaryDecodeState {
     Tensor state_destination_slots;
     const ops::SamplingConfig* sampling = nullptr;
     Tensor sampled_tokens;
-    Tensor logprob_ids;
-    Tensor logprob_values;
-    Tensor logprob_lse;
-    Tensor logprob_active;
+    LogprobGather logprob;
     Tensor logits;
     Tensor hidden;
 
@@ -303,11 +316,7 @@ struct MtpDecodeState {
     Tensor accepted_drafts;
     Tensor next_drafts;
     Tensor next_extents;
-    Tensor logprob_ids;
-    Tensor logprob_values;
-    Tensor logprob_lse;
-    Tensor logprob_active;
-    const ops::SamplingConfig* logprob_sampling = nullptr;
+    LogprobGather logprob;
     Tensor verify_ids;
     Tensor target_positions;
     Tensor target_argmax;
@@ -347,11 +356,7 @@ struct DFlashDecodeState {
     Tensor licensed_tokens;
     Tensor licensed_counts;
     Tensor accepted_drafts;
-    Tensor logprob_ids;
-    Tensor logprob_values;
-    Tensor logprob_lse;
-    Tensor logprob_active;
-    const ops::SamplingConfig* logprob_sampling = nullptr;
+    LogprobGather logprob;
     Tensor proposal_ids;
     Tensor proposal_positions;
     Tensor verify_positions;
@@ -378,10 +383,7 @@ struct RoundState {
     Tensor rope_pos;
     Tensor rope_delta;
     Tensor logits;
-    Tensor logprob_ids;
-    Tensor logprob_values;
-    Tensor logprob_lse;
-    Tensor logprob_active;
+    LogprobGather logprob;
     Tensor text_kv_table_row;
     Tensor backend_kv_table_row;
     std::optional<MtpPrefillState> mtp;

@@ -674,11 +674,11 @@ auto dflash_decode_batch_body(DFlashBatchContext& state, std::int32_t batch_size
                 .feature_sink    = &sink,
                 .gather_logits =
                     frame.target_logits.view({frame.target_logits.ne[0], logprob_rows}),
-                .logprob_ids      = frame.logprob_ids.view({logprob_top_k, logprob_rows}),
-                .logprob_values   = frame.logprob_values.view({logprob_top_k, logprob_rows}),
-                .logprob_lse      = frame.logprob_lse.view({logprob_rows}),
-                .logprob_active   = frame.logprob_active,
-                .logprob_sampling = frame.logprob_sampling,
+                .logprob_ids      = frame.logprob.ids.view({logprob_top_k, logprob_rows}),
+                .logprob_values   = frame.logprob.values.view({logprob_top_k, logprob_rows}),
+                .logprob_lse      = frame.logprob.lse.view({logprob_rows}),
+                .logprob_active   = frame.logprob.active,
+                .logprob_sampling = frame.logprob.sampling,
             };
             if (phase == SpeculativePhase::Forward) {
                 target_verify_forward(state.execution, card, verify, target_envelope);
