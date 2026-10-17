@@ -154,6 +154,9 @@ int main() {
     running.running_requests            = 1;
     running.host_context_occupied_bytes = 4096;
     running.host_context_reserved_bytes = 1024;
+    running.kv_pools = {{0, "text", 2, 8}, {1, "draft", 1, 4}, {2, "index", 3, 6}};
+    running.context_transfers.kv.resize(3);
+    running.context_transfers.kv[2][1].bytes = 8192;
     metrics.first_token({.prepare_seconds = 0.05, .elapsed_since_submit_seconds = 0.2});
     const auto live = metrics.render(running, true, 0);
     check(live.find("frinfer_generation_tokens_total 5\n") != std::string::npos,
@@ -215,6 +218,11 @@ int main() {
         std::cerr << '\n';
         ++failures;
     }
+
+    check(live.find("ninfer_device_kv_used_page_groups{pool_id=\"2\"} 3\n") != std::string::npos &&
+              live.find("ninfer_context_transfer_bytes_total{resource=\"kv\",pool_id=\"2\","
+                        "direction=\"h2d\"} 8192\n") != std::string::npos,
+          "pool metrics dropped the third pool or used a model role as its identity");
 
     GenerationOutcome outcome;
     outcome.finish_reason                            = FinishReason::OutputLimit;

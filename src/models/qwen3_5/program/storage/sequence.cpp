@@ -1,5 +1,5 @@
 #include "models/qwen3_5/program/program_impl.h"
-#include "models/qwen3_5/program/context_work.h"
+#include "models/common/context/work.h"
 #include "core/device.h"
 
 #include <algorithm>
@@ -59,48 +59,40 @@ const SequenceState& ProgramImpl::active_sequence(std::uint32_t lane) const {
     return sequences[lane];
 }
 
-StateImageSelectors ProgramImpl::state_selectors(const SequenceState& sequence) const {
-    return {state_store->physical_slot(sequence.state.read),
-            state_store->physical_slot(sequence.state.write)};
+context::StateImageSelectors ProgramImpl::state_selectors(const SequenceState& sequence) const {
+    return {state_store->physical_slot(sequence.continuation.image),
+            state_store->physical_slot(sequence.write_state())};
 }
 
-void ProgramImpl::refresh_state_views(SequenceState& sequence) {
-    sequence.tail_hidden =
-        state_images->continuation_hidden_slot(state_store->physical_slot(sequence.state.read));
+Tensor ProgramImpl::tail_hidden(const SequenceState& sequence) const {
+    return state_images->continuation_hidden_slot(
+        state_store->physical_slot(sequence.continuation.image));
 }
 
-void ProgramImpl::settle_state_fork(SequenceState& sequence) {
-    if (!sequence.state.fork_pending) { return; }
-    state_store->commit_fork(sequence.state.read, sequence.state.write);
-    sequence.state = {.read = sequence.state.write, .write = sequence.state.write};
-    refresh_state_views(sequence);
+void ProgramImpl::complete_state_write(SequenceState& sequence) {
+    const auto destination = sequence.write_state();
+    state_store->complete_write(sequence.continuation.image, destination);
+    sequence.continuation.image = destination;
+    sequence.continuation.metadata.execution_frontier =
+        sequence.continuation.metadata.text_kv_valid;
+    sequence.pending_write = {};
 }
 
 void ProgramImpl::release_sequence_state(SequenceState& sequence) noexcept {
     try {
-        if (sequence.state.fork_pending) {
-            state_store->abort_fork(sequence.state.read, sequence.state.write);
+        if (sequence.pending_write.valid()) {
+            state_store->abort_write(sequence.continuation.image, sequence.write_state());
         }
-        if (state_store->valid(sequence.state.write) &&
-            !state_store->release(sequence.state.write)) {
+        if (state_store->valid(sequence.write_state()) &&
+            !state_store->release(sequence.write_state())) {
             std::terminate();
         }
-        sequence.state       = {};
-        sequence.tail_hidden = {};
+        sequence.continuation.image = {};
+        sequence.pending_write      = {};
     } catch (...) { std::terminate(); }
 }
 
-void ProgramImpl::release_sequence_kv(SequenceState& sequence) noexcept {
-    if (!sequence.kv) { return; }
-    if (sequence.kv->backend && backend_kv_addresses->active(*sequence.kv->backend)) {
-        backend_kv_addresses->deactivate(*sequence.kv->backend);
-    }
-    if (text_kv_addresses->active(sequence.kv->text)) {
-        text_kv_addresses->deactivate(sequence.kv->text);
-    }
-    refresh_history_requirements(sequence.kv, true);
-    sequence.kv.reset();
-}
+void ProgramImpl::release_sequence_kv(SequenceState& sequence) noexcept { sequence.kv.reset(); }
 
 void ProgramImpl::clear_lane(SequenceState& sequence, RequestControl& request) noexcept {
     // The caller settles real GPU readers before reaching this destruction boundary.
@@ -131,52 +123,53 @@ const PagedKVCache* ProgramImpl::backend_kv_cache() const noexcept {
 }
 
 std::uint32_t ProgramImpl::backend_kv_valid(const SequenceState& state) const noexcept {
-    if (speculative_backend == SpeculativeBackend::Mtp) { return state.mtp_kv_valid; }
-    return speculative_backend == SpeculativeBackend::DFlash ? state.dflash_context_frontier : 0;
+    if (speculative_backend == SpeculativeBackend::Mtp) {
+        return state.continuation.metadata.backend_kv_valid;
+    }
+    return speculative_backend == SpeculativeBackend::DFlash
+               ? state.continuation.metadata.dflash_context_frontier
+               : 0;
 }
 
 void ProgramImpl::ensure_sequence_kv_mapped(SequenceState& state, std::uint32_t main,
                                             std::uint32_t backend) {
-    text_kv_addresses->ensure_mapped_to_tokens(state.kv->text, main, device.stream);
+    const auto main_begin = text_kv_histories->committed_frontier(state.kv->text.handle());
+    if (main > main_begin)
+        text_kv_histories->prepare_write(state.kv->text, main_begin, main, device.stream());
     if (state.kv->backend) {
-        backend_kv_addresses->ensure_mapped_to_tokens(*state.kv->backend, backend, device.stream);
+        const auto backend_begin =
+            backend_kv_histories->committed_frontier(state.kv->backend->handle());
+        if (backend > backend_begin)
+            backend_kv_histories->prepare_write(*state.kv->backend, backend_begin, backend,
+                                                device.stream());
     }
 }
 
 void ProgramImpl::commit_sequence_kv(SequenceState& state, std::uint32_t main,
                                      std::uint32_t backend) {
-    text_kv_addresses->commit_frontier(state.kv->text, main);
-    if (state.kv->backend) { backend_kv_addresses->commit_frontier(*state.kv->backend, backend); }
+    state.continuation.metadata.backend_kv_valid = backend;
+    text_kv_histories->commit_frontier(state.kv->text.handle(), main);
+    if (state.kv->backend) {
+        backend_kv_histories->commit_frontier(state.kv->backend->handle(), backend);
+    }
 }
 
 void ProgramImpl::trim_sequence_kv(SequenceState& state, std::uint32_t main,
                                    std::uint32_t backend) {
-    text_kv_addresses->destructive_truncate(state.kv->text, main);
-    if (state.kv->backend) {
-        backend_kv_addresses->destructive_truncate(*state.kv->backend, backend);
-    }
-}
-
-PagedKVCacheView ProgramImpl::text_kv_view(const SequenceState& state) const {
-    return decoder->text_kv.execution_view(text_kv_addresses->execution_row(state.kv->text));
+    text_kv_histories->trim(state.kv->text, main, device.stream());
+    if (state.kv->backend) backend_kv_histories->trim(*state.kv->backend, backend, device.stream());
 }
 
 PagedKVCacheView ProgramImpl::mtp_kv_view(const SequenceState& state) const {
     return speculative_backend == SpeculativeBackend::Mtp
                ? decoder->mtp_cache()->execution_view(
-                     backend_kv_addresses->execution_row(*state.kv->backend))
+                     backend_kv_histories->execution_row(state.kv->backend->handle()))
                : PagedKVCacheView{};
 }
 
 void ProgramImpl::set_device_i32(Tensor& tensor, std::int32_t value) {
-    CUDA_CHECK(
-        cudaMemcpyAsync(tensor.data, &value, sizeof(value), cudaMemcpyHostToDevice, device.stream));
-}
-
-void ProgramImpl::ordered_reset(SequenceState& state) {
-    refresh_state_views(state);
-    state.text_kv_valid = state.mtp_kv_valid = state.dflash_context_frontier = 0;
-    work.reset();
+    CUDA_CHECK(cudaMemcpyAsync(tensor.data, &value, sizeof(value), cudaMemcpyHostToDevice,
+                               device.stream()));
 }
 
 } // namespace ninfer::models::qwen3_5::detail

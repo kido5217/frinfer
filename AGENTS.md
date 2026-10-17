@@ -219,6 +219,13 @@ only when that work is in scope. Install or upgrade dependencies only when the t
 Create commits only when requested. Use Conventional Commit subjects with concise lowercase types
 such as `feat`, `fix`, `perf`, `bench`, `test`, `build`, `refactor`, `docs`, or `chore`.
 
+Store all agent-generated temporary files under the repository-root `.agent-tmp/<task>/`,
+including temporary plans, experimental code and binaries, test data, logs, profiling captures,
+performance reports, and intermediate artifacts. This directory is ignored by Git; do not commit
+its contents. Remove temporary files that are no longer needed when the task ends.
+Reserve `out/` for model weights, their companion files, and explicitly retained important artifacts.
+Do not use `out/` for temporary experiments or task output.
+
 ## Git
 
 All changes land on `master` only through the pipeline: `branch → commit → push → PR → merge → rebase`.

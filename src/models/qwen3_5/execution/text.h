@@ -1,6 +1,7 @@
 #pragma once
-#include "models/qwen3_5/program/internal.h"
 
+#include "models/common/qwen/vision/prefill.h"
+#include "models/qwen3_5/program/internal.h"
 
 #include "core/arena.h"
 #include "core/device.h"
@@ -11,9 +12,9 @@
 #include "ninfer/ops/rope.h"
 #include "ninfer/ops/sampling.h"
 #include "ninfer/ops/softmax_attention.h"
-#include "ninfer/ops/sparse_moe.h"
+#include "ninfer/ops/moe.h"
 #include "models/qwen3_5/state/decoder_state.h"
-#include "models/qwen3_5/frontend/prepared_prompt.h"
+#include "models/common/qwen/frontend/prepared_prompt.h"
 #include "models/qwen3_5/program/round_buffers.h"
 
 #include <array>
@@ -23,7 +24,13 @@
 #include <span>
 #include <vector>
 
+namespace ninfer::models::moe {
+class Resources;
+}
+
 namespace ninfer::models::qwen3_5::execution {
+
+class TextGraphRun;
 
 using Phase = qwen3_5::TextPhase;
 
@@ -59,23 +66,22 @@ struct DFlashFeatureSink {
     std::int32_t active_tokens  = 0;
 
     void begin(const Tensor& value);
-    void capture_layer(int layer, const Tensor& value, cudaStream_t stream);
-    void capture_positions(const Tensor& source, cudaStream_t stream);
+    void capture_layer(int layer, const Tensor& value, CudaExecutionView execution);
+    void capture_positions(const Tensor& source, CudaExecutionView execution);
     void consume_prefill_chunk(std::int32_t tokens, bool rewrite_checkpoint);
 };
 
-class VisionPrefillSession;
-
 class TextContext {
 public:
-    TextContext(DeviceContext& ctx, const execution::Parameters& weights, WorkspaceArena& work,
-                qwen3_5::PagedKVCacheView kv, LinearAttentionStatePool& state,
+    TextContext(DeviceContext& ctx, const execution::Parameters& weights, MemoryArena& work,
+                const qwen3_5::PagedKVCache& batch_text_kv, LinearAttentionStateView& state,
                 qwen3_5::RoundState& io, Tensor& prefill_hidden, std::uint32_t prefill_chunk,
                 std::uint32_t text_kv_base,
-                qwen3_5::PagedKVCacheView mtp_kv           = qwen3_5::PagedKVCacheView(),
-                const qwen3_5::PagedKVCache* batch_text_kv = nullptr,
-                const qwen3_5::PagedKVCache* batch_mtp_kv  = nullptr);
+                qwen3_5::PagedKVCacheView mtp_kv          = qwen3_5::PagedKVCacheView(),
+                const qwen3_5::PagedKVCache* batch_mtp_kv = nullptr, moe::Resources* moe = nullptr);
     ~TextContext();
+
+    void set_graph_run(TextGraphRun* graphs) noexcept { graphs_ = graphs; }
 
     TextContext(const TextContext&)            = delete;
     TextContext& operator=(const TextContext&) = delete;
@@ -108,10 +114,6 @@ public:
 
     [[nodiscard]] const LinearParameters* proposal_head() const noexcept { return proposal_head_; }
 
-    [[nodiscard]] const std::int32_t* proposal_head_ids() const noexcept {
-        return proposal_head_ids_;
-    }
-
     [[nodiscard]] int proposal_head_n() const noexcept { return proposal_head_n_; }
 
     [[nodiscard]] PrefillChunkResult prefill_chunk(std::span<const int> full_ids,
@@ -122,13 +124,15 @@ public:
                                                    std::uint32_t begin,
                                                    std::uint32_t nominal_length,
                                                    bool finalize_at_end, DFlashFeatureSink& sink);
-    [[nodiscard]] PrefillChunkResult
-    prefill_chunk(const qwen3_5::PreparedPromptData& input, std::uint32_t begin,
-                  std::uint32_t nominal_length, VisionPrefillSession& vision, bool finalize_at_end);
-    [[nodiscard]] PrefillChunkResult prefill_chunk(const qwen3_5::PreparedPromptData& input,
+    [[nodiscard]] PrefillChunkResult prefill_chunk(const qwen::PreparedPromptData& input,
                                                    std::uint32_t begin,
                                                    std::uint32_t nominal_length,
-                                                   VisionPrefillSession& vision,
+                                                   qwen::VisionPrefillSession& vision,
+                                                   bool finalize_at_end);
+    [[nodiscard]] PrefillChunkResult prefill_chunk(const qwen::PreparedPromptData& input,
+                                                   std::uint32_t begin,
+                                                   std::uint32_t nominal_length,
+                                                   qwen::VisionPrefillSession& vision,
                                                    bool finalize_at_end, DFlashFeatureSink& sink);
     void ordinary_decode_batch(const Tensor& ids, const Tensor& cache_positions,
                                const Tensor& rope_positions, const Tensor& kv_table_rows,
@@ -167,9 +171,8 @@ private:
 
     void attn_mix(const BlockParameters& weights, Tensor& x, int index, Phase phase);
     void gdn_mix(const BlockParameters& weights, Tensor& x, int index, Phase phase);
-    void mlp_tail(const BlockParameters& weights, Tensor& x, Phase phase,
-                  const ops::SparseMoeHints& hints);
-    [[nodiscard]] ops::SparseMoeHints next_projection_hints(int layer) const;
+    void post_mixer(const BlockParameters& weights, Tensor& x, int layer);
+    [[nodiscard]] ops::MoeExecutionHints next_projection_hints(int layer) const;
     void run_layers(Tensor& x, Phase phase);
     template <class Tap>
     void run_layers(Tensor& x, Phase phase, Tap& tap);
@@ -199,9 +202,9 @@ private:
     struct MultimodalPrefill {
         std::span<const int> token_ids;
         std::span<const std::int32_t> positions;
-        VisionPrefillSession* vision = nullptr;
-        std::uint32_t begin          = 0;
-        std::int32_t rope_delta      = 0;
+        qwen::VisionPrefillSession* vision = nullptr;
+        std::uint32_t begin                = 0;
+        std::int32_t rope_delta            = 0;
     };
 
     struct TextPrefill {
@@ -213,15 +216,17 @@ private:
     [[nodiscard]] PrefillChunkResult
     prefill_impl(std::span<const int> ids, const TextPrefill* text_prefill,
                  const MultimodalPrefill* multimodal, Tap& tap, bool finalize_at_end);
+    moe::Resources* moe_;
+    TextGraphRun* graphs_ = nullptr;
     DeviceContext& ctx_;
+    CudaExecutionView execution_;
     const Parameters& parameters_;
     const TextConfig& config_;
-    WorkspaceArena& work_;
-    qwen3_5::PagedKVCacheView kv_;
+    MemoryArena& work_;
     qwen3_5::PagedKVCacheView mtp_kv_;
-    const qwen3_5::PagedKVCache* batch_text_kv_ = nullptr;
-    const qwen3_5::PagedKVCache* batch_mtp_kv_  = nullptr;
-    LinearAttentionStatePool& state_;
+    const qwen3_5::PagedKVCache& batch_text_kv_;
+    const qwen3_5::PagedKVCache* batch_mtp_kv_ = nullptr;
+    LinearAttentionStateView& state_;
     qwen3_5::RoundState& io_;
     Tensor& prefill_hidden_;
     // Borrowed from Program; every measured chunk retires before this pair is reused.

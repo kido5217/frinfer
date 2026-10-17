@@ -1,10 +1,9 @@
-#include "ninfer/ops/speculative_round.h"
 #include "models/qwen3_5/program/graph_execution.h"
 #include "models/qwen3_5/program/internal.h"
 #include "models/qwen3_5/program/execution_context.h"
 #include "core/nvtx.h"
-#include "ninfer/ops/mtp_round.h"
-#include "ninfer/ops/scatter.h"
+#include "ninfer/ops/sequence.h"
+#include "ninfer/ops/indexing.h"
 #include "ninfer/ops/scalar.h"
 #include <cuda_runtime.h>
 #include <stdexcept>
@@ -22,21 +21,21 @@ void mtp_bridge_and_propose(PrefillContext& state, const Tensor& next_token,
     }
     state.execution.work.reset();
     TextContext card(state.execution.device, state.execution.parameters, state.execution.work,
-                     state.text_kv, state.execution.linear_attention, state.execution.io,
+                     state.text_cache, state.execution.linear_attention, state.execution.io,
                      state.execution.prefill_hidden, state.execution.prefill_chunk,
-                     state.text_kv_base, state.mtp_kv, &state.text_cache, state.mtp_cache);
+                     state.text_kv_base, state.mtp_kv, state.mtp_cache, state.execution.moe);
     configure_text_card(card, state.execution, state.sampling, state.state_source_slot,
                         state.state_destination_slot, state.mtp_proposal_extent);
 
     Tensor position_view = state.execution.io.mtp->target_positions.slice(0, 0, 1);
-    ops::set_i32_scalar(position_view, position, state.execution.device.stream);
+    ops::set_i32_scalar(position_view, position, state.execution.cuda);
     Tensor mtp_hidden         = state.execution.io.mtp->ar_hidden;
     Tensor logits             = state.execution.io.logits.slice(1, 0, 1);
     Tensor draft0             = state.execution.io.mtp->draft_tokens.slice(0, 0, 1);
     Tensor rope_position_view = state.execution.work.alloc(DType::I32, {1, 3});
     CUDA_CHECK(cudaMemcpyAsync(rope_position_view.data, rope_position.data(),
                                rope_position.size_bytes(), cudaMemcpyHostToDevice,
-                               state.execution.device.stream));
+                               state.execution.cuda.stream()));
     const auto bridge_visible = static_cast<std::uint32_t>(position + 1);
     const ops::CausalAttentionExecutionEnvelope bridge_envelope{bridge_visible, bridge_visible};
     card.mtp_forward_batch(next_token, previous_hidden, position_view, bridge_envelope, mtp_hidden,
@@ -51,7 +50,7 @@ void mtp_bridge_and_propose(PrefillContext& state, const Tensor& next_token,
     }
 
     Tensor ar_position = state.execution.io.mtp->position.slice(0, 0, 1);
-    ops::set_i32_scalar(ar_position, position + 1, state.execution.device.stream);
+    ops::set_i32_scalar(ar_position, position + 1, state.execution.cuda);
     for (int i = 1; i < static_cast<int>(state.mtp_proposal_extent); ++i) {
         Tensor previous_token = state.execution.io.mtp->draft_tokens.slice(0, i - 1, 1);
         Tensor next_draft     = state.execution.io.mtp->draft_tokens.slice(0, i, 1);
@@ -62,8 +61,8 @@ void mtp_bridge_and_propose(PrefillContext& state, const Tensor& next_token,
                                  envelope, next_hidden, logits, next_draft);
         CUDA_CHECK(cudaMemcpyAsync(state.execution.io.mtp->ar_hidden.data, next_hidden.data,
                                    state.execution.io.mtp->ar_hidden.bytes(),
-                                   cudaMemcpyDeviceToDevice, state.execution.device.stream));
-        ops::increment_i32_scalar(ar_position, state.execution.device.stream);
+                                   cudaMemcpyDeviceToDevice, state.execution.cuda.stream()));
+        ops::increment_i32_scalar(ar_position, state.execution.cuda);
     }
 }
 
@@ -78,16 +77,17 @@ auto mtp_decode_batch_body(MtpBatchContext& state, std::int32_t batch_size, std:
         qwen3_5::MtpDecodeState& frame = state.frame;
         const std::int32_t width       = static_cast<std::int32_t>(k) + 1;
         state.execution.work.reset();
-        if (phase == SpeculativePhase::Forward) {
+        if (phase == SpeculativePhase::Forward && emit_forward_gpu(state.execution.text_graph)) {
             CUDA_CHECK(cudaMemcpyAsync(frame.ingress.data, &state.host_ingress,
                                        sizeof(qwen3_5::MtpDecodeIngress), cudaMemcpyHostToDevice,
-                                       state.execution.device.stream));
+                                       state.execution.cuda.stream()));
         }
 
         TextContext card(state.execution.device, state.execution.parameters, state.execution.work,
-                         {}, state.execution.linear_attention, state.execution.io,
+                         state.text_cache, state.execution.linear_attention, state.execution.io,
                          state.execution.prefill_hidden, state.execution.prefill_chunk, 0, {},
-                         &state.text_cache, &state.mtp_cache);
+                         &state.mtp_cache, state.execution.moe);
+        card.set_graph_run(state.execution.text_graph);
         Tensor anchors            = frame.anchors.slice(0, 0, batch_size);
         Tensor frontiers          = frame.base_frontiers.slice(0, 0, batch_size);
         Tensor budgets            = frame.remaining_budgets.slice(0, 0, batch_size);
@@ -151,12 +151,13 @@ auto mtp_decode_batch_body(MtpBatchContext& state, std::int32_t batch_size, std:
             .logprob_sampling = frame.logprob.sampling,
         };
         if (phase == SpeculativePhase::Forward) {
-            ops::speculative_prepare_verify_inputs(anchors, current_drafts, frontiers,
-                                                   current_extents, verify_ids, target_positions,
-                                                   state.execution.device.stream);
+            if (emit_forward_gpu(state.execution.text_graph)) {
+                ops::prepare_verify_inputs(anchors, current_drafts, frontiers, current_extents,
+                                           verify_ids, target_positions, state.execution.cuda);
+            }
             nvtx::ScopedRange target_range(nvtx::Name::DecodeMtpTarget, nvtx::Category::Mtp,
                                            static_cast<std::uint64_t>(width) * batch_size);
-            target_verify_forward(state.execution, card, verify, envelopes.target_verify);
+            target_verify_forward(card, verify, envelopes.target_verify);
             return;
         }
         target_accept(state.execution, state.continuation_hidden_store, verify);
@@ -164,16 +165,15 @@ auto mtp_decode_batch_body(MtpBatchContext& state, std::int32_t batch_size, std:
         {
             nvtx::ScopedRange draft_range(nvtx::Name::DecodeMtpDraft, nvtx::Category::Mtp,
                                           static_cast<std::uint64_t>(k) * batch_size);
-            ops::mtp_prepare_next_round(verify_ids, anchors, accepted, frontiers, budgets,
-                                        licensed_counts, rope_deltas, alignment_ids, next_extents,
-                                        ar_positions, ar_rope_positions, ar_valid_columns,
-                                        static_cast<std::int32_t>(state.text_cache.max_context()),
-                                        state.execution.device.stream);
+            ops::prepare_autoregressive_round(
+                verify_ids, anchors, accepted, frontiers, budgets, licensed_counts, rope_deltas,
+                alignment_ids, next_extents, ar_positions, ar_rope_positions, ar_valid_columns,
+                static_cast<std::int32_t>(state.text_cache.max_context()), state.execution.cuda);
             card.mtp_forward_decode_batch(alignment_ids, target_hidden, target_positions,
                                           target_rope, licensed_counts, mtp_rows, envelopes.batch,
                                           alignment_hidden);
-            ops::speculative_select_accepted_hidden(alignment_hidden, accepted, ar_hidden,
-                                                    state.execution.device.stream);
+            ops::gather_bf16_batch_columns(alignment_hidden, accepted, ar_hidden,
+                                           state.execution.cuda);
 
             Tensor proposal_logits = frame.proposal_logits.slice(1, 0, batch_size);
             Tensor draft0          = next_drafts.slice(1, 0, 1).view({batch_size});
@@ -201,13 +201,13 @@ auto mtp_decode_batch_body(MtpBatchContext& state, std::int32_t batch_size, std:
                 card.mtp_propose_batch(next_hidden, proposal_logits, next);
                 CUDA_CHECK(cudaMemcpyAsync(ar_hidden.data, next_hidden.data, ar_hidden.bytes(),
                                            cudaMemcpyDeviceToDevice,
-                                           state.execution.device.stream));
+                                           state.execution.cuda.stream()));
             }
         }
 
         CUDA_CHECK(cudaMemcpyAsync(&state.host_egress, frame.egress.data,
                                    sizeof(qwen3_5::MtpDecodeEgress), cudaMemcpyDeviceToHost,
-                                   state.execution.device.stream));
+                                   state.execution.cuda.stream()));
     };
 }
 

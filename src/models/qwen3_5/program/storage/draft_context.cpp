@@ -3,9 +3,9 @@
 
 namespace ninfer::models::qwen3_5::detail {
 
-DFlashPersistentState::DFlashPersistentState(DeviceSpan backing,
+DFlashPersistentState::DFlashPersistentState(MemorySpan backing,
                                              const DFlashPersistentLayout& layout,
-                                             CyclicKVCache& local_state)
+                                             CyclicKVCacheView& local_state)
     : local(local_state), prefill_features(layout.prefill_features.bind(backing)),
       prefill_positions(layout.prefill_positions.bind(backing)),
       pending_features(layout.pending_features.bind(backing)) {
@@ -19,12 +19,6 @@ CyclicKVCacheLayerView DFlashPersistentState::local_layer(std::uint32_t layer) c
 PagedKVBatchLayerView DFlashPersistentState::full_batch_layer(std::uint32_t layer) const {
     if (!full) { throw std::logic_error("masked draft has no full KV layer"); }
     return full->batch_layer_view(layer);
-}
-
-void DFlashPersistentState::save_rewrite_checkpoint(std::int32_t source_slot,
-                                                    std::int32_t destination_slot,
-                                                    cudaStream_t stream) {
-    local.copy_slot_from(local, source_slot, destination_slot, stream);
 }
 
 } // namespace ninfer::models::qwen3_5::detail

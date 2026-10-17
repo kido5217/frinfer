@@ -1,12 +1,12 @@
 // Driver for the chat-parsing oracle corpus (tests/fixtures/chat_parsing/corpus.json).
 //
 // The corpus is the acceptance contract for the ported Qwen3.5/froggeric parsing core
-// (models/qwen3_5/frontend/chat_parse_core.h): every vector drives the core round by round and
+// (models/common/qwen/frontend/chat_parse_core.h): every vector drives the core round by round and
 // the driver asserts the cumulative channels, the held bytes, the terminal tool calls and the
 // terminal diagnostics. Expectations are never re-derived from the core.
 
-#include "models/qwen3_5/frontend/chat_parse_core.h"
-#include "models/qwen3_5/frontend/tool_contract.h"
+#include "models/common/qwen/frontend/chat_parse_core.h"
+#include "models/common/qwen/frontend/tool_contract.h"
 
 #include <nlohmann/json.hpp>
 

@@ -9,11 +9,12 @@
 //       --qtype q4 --n 4096 --k 5120 --t 8 --profile
 
 #include "core/weight.h"
+#include "core/buffer.h"
 #include "ninfer/ops/linear.h"
 
 #include "core/device.h"
 #include "direct_bf16_weight.cuh"
-#include "ninfer_bench_common.h"
+#include "op_measurement.cuh"
 #include "quantized_weight.cuh"
 
 #include <cuda_bf16.h>
@@ -21,7 +22,6 @@
 #include <cuda_runtime.h>
 
 #include <algorithm>
-#include <cerrno>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -97,12 +97,6 @@ constexpr SuiteEntry kQwen35bEntries[] = {
     {"35b.vision_merger_fc2", QType::Q8_G32_FP16, 2048, 4608, TClass::VisionStep4},
 };
 
-struct Sweep {
-    std::int32_t begin = 0;
-    std::int32_t end   = 0;
-    std::int32_t step  = 1;
-};
-
 struct Options {
     bool have_qtype     = false;
     bool have_n         = false;
@@ -118,7 +112,7 @@ struct Options {
     std::int32_t n      = 0;
     std::int32_t k      = 0;
     std::int32_t t      = 0;
-    Sweep sweep;
+    bench::measurement::Sweep sweep;
     std::string suite;
     int warmup                = kDefaultWarmup;
     int repeat                = kDefaultRepeat;
@@ -263,58 +257,6 @@ LinearPolicy parse_policy(std::string_view text) {
     throw std::invalid_argument("Linear benchmark policy must be a16, a8, or a4");
 }
 
-std::uint64_t parse_u64(std::string_view text, const char* label) {
-    const std::string value(text);
-    char* end                       = nullptr;
-    errno                           = 0;
-    const unsigned long long parsed = std::strtoull(value.c_str(), &end, 10);
-    if (errno != 0 || end == value.c_str() || *end != '\0') {
-        throw std::invalid_argument(std::string("invalid ") + label + ": " + value);
-    }
-    return static_cast<std::uint64_t>(parsed);
-}
-
-std::int32_t parse_i32(std::string_view text, const char* label) {
-    const std::uint64_t value = parse_u64(text, label);
-    if (value == 0 ||
-        value > static_cast<std::uint64_t>(std::numeric_limits<std::int32_t>::max())) {
-        throw std::invalid_argument(std::string(label) + " must be in [1, INT32_MAX]");
-    }
-    return static_cast<std::int32_t>(value);
-}
-
-int parse_nonnegative_int(std::string_view text, const char* label) {
-    const std::uint64_t value = parse_u64(text, label);
-    if (value > static_cast<std::uint64_t>(std::numeric_limits<int>::max())) {
-        throw std::invalid_argument(std::string(label) + " is too large");
-    }
-    return static_cast<int>(value);
-}
-
-Sweep parse_sweep(std::string_view text) {
-    const std::string value(text);
-    const std::size_t first = value.find(':');
-    if (first == std::string::npos) {
-        throw std::invalid_argument("--sweep must be START:END or START:END:STEP");
-    }
-    const std::size_t second = value.find(':', first + 1);
-    if (second != std::string::npos && value.find(':', second + 1) != std::string::npos) {
-        throw std::invalid_argument("--sweep has too many fields");
-    }
-    Sweep sweep;
-    sweep.begin = parse_i32(value.substr(0, first), "sweep start");
-    sweep.end   = parse_i32(value.substr(first + 1, second == std::string::npos ? std::string::npos
-                                                                                : second - first - 1),
-                            "sweep end");
-    if (second != std::string::npos) {
-        sweep.step = parse_i32(value.substr(second + 1), "sweep step");
-    }
-    if (sweep.begin > sweep.end) {
-        throw std::invalid_argument("--sweep start must not exceed end");
-    }
-    return sweep;
-}
-
 void usage(const char* argv0) {
     std::fprintf(stderr,
                  "Usage:\n"
@@ -349,16 +291,16 @@ Options parse_args(int argc, char** argv) {
         } else if (arg == "--policy") {
             opt.policy = parse_policy(next("policy"));
         } else if (arg == "--n") {
-            opt.n      = parse_i32(next("N"), "N");
+            opt.n      = bench::measurement::integer(next("N"));
             opt.have_n = true;
         } else if (arg == "--k") {
-            opt.k      = parse_i32(next("K"), "K");
+            opt.k      = bench::measurement::integer(next("K"));
             opt.have_k = true;
         } else if (arg == "--t") {
-            opt.t      = parse_i32(next("T"), "T");
+            opt.t      = bench::measurement::integer(next("T"));
             opt.have_t = true;
         } else if (arg == "--sweep") {
-            opt.sweep      = parse_sweep(next("sweep"));
+            opt.sweep      = bench::measurement::parse_sweep(next("sweep"));
             opt.have_sweep = true;
         } else if (arg == "--suite") {
             opt.suite      = lower(next("suite"));
@@ -369,16 +311,17 @@ Options parse_args(int argc, char** argv) {
                 throw std::invalid_argument("execution must be eager or graph");
             opt.graph = mode == "graph";
         } else if (arg == "--graph-calls") {
-            opt.graph_calls = parse_nonnegative_int(next("graph-calls"), "graph-calls");
+            opt.graph_calls = bench::measurement::integer(next("graph-calls"), 0);
         } else if (arg == "--profile") {
             opt.profile = true;
         } else if (arg == "--warmup") {
-            opt.warmup = parse_nonnegative_int(next("warmup"), "warmup");
+            opt.warmup = bench::measurement::integer(next("warmup"), 0);
         } else if (arg == "--repeat") {
-            opt.repeat = parse_nonnegative_int(next("repeat"), "repeat");
+            opt.repeat = bench::measurement::integer(next("repeat"), 0);
         } else if (arg == "--flush-mib") {
             opt.flush_bytes =
-                checked_mul(parse_u64(next("flush-mib"), "flush-mib"), 1ULL << 20, "flush bytes");
+                checked_mul(bench::measurement::integer<std::uint64_t>(next("flush-mib"), 0),
+                            1ULL << 20, "flush bytes");
         } else if (arg == "--csv-out") {
             opt.csv_out = next("csv output path");
         } else if (arg == "--help" || arg == "-h") {
@@ -529,9 +472,10 @@ LinearBenchWeight make_weight(QType qtype, std::int32_t n, std::int32_t k) {
     return {std::move(packed.storage), packed.weight, model_bytes};
 }
 
-void fill_activation(DeviceBuffer& buffer, std::uint64_t elements, cudaStream_t stream) {
-    CUDA_CHECK(bench::fixture::fill_values(static_cast<__nv_bfloat16*>(buffer.p), elements, 101U,
-                                           -0.5F, 0.5F, stream));
+void fill_activation(DeviceBuffer& buffer, std::uint64_t elements, CudaExecutionView cuda) {
+    const auto stream = cuda.stream();
+    CUDA_CHECK(bench::fixture::fill_values(static_cast<__nv_bfloat16*>(buffer.data()), elements,
+                                           101U, -0.5F, 0.5F, stream));
 }
 
 std::string join_labels(const std::vector<std::string>& labels) {
@@ -653,7 +597,8 @@ Result make_result(const BenchPoint& point, const LinearBenchWeight& weight,
 }
 
 std::vector<Result> run_group(const PointGroup& group, const Options& opt,
-                              bench::L2FlushBuffer& flush, cudaStream_t stream) {
+                              bench::L2FlushBuffer& flush, CudaExecutionView cuda) {
+    const auto stream = cuda.stream();
     const std::int32_t max_t =
         std::max_element(group.points.begin(), group.points.end(),
                          [](const BenchPoint& a, const BenchPoint& b) { return a.t < b.t; })
@@ -668,13 +613,17 @@ std::vector<Result> run_group(const PointGroup& group, const Options& opt,
         checked_mul(static_cast<std::uint64_t>(group.n), max_t, "output allocation");
 
     LinearBenchWeight weight = make_weight(group.qtype, group.n, group.k);
-    DeviceBuffer x(checked_mul(x_elements, 2, "activation allocation bytes"));
-    DeviceBuffer out(checked_mul(out_elements, 2, "output allocation bytes"));
+    DeviceBuffer x(ninfer::bench::device_context().device(),
+                   checked_mul(x_elements, 2, "activation allocation bytes"));
+    DeviceBuffer out(ninfer::bench::device_context().device(),
+                     checked_mul(out_elements, 2, "output allocation bytes"));
     const std::size_t workspace_capacity = ops::linear_workspace_capacity_bytes(
         group.qtype, group.n, group.k, group.policy, min_t, max_t);
-    DeviceArena workspace(std::max<std::size_t>(workspace_capacity, 256));
-    fill_activation(x, x_elements, stream);
-    CUDA_CHECK(cudaMemsetAsync(out.p, 0, out.bytes, stream));
+    ninfer::DeviceBuffer workspace_storage(ninfer::bench::device_context().device(),
+                                           std::max<std::size_t>(workspace_capacity, 256));
+    MemoryArena workspace(workspace_storage.span());
+    fill_activation(x, x_elements, cuda);
+    CUDA_CHECK(cudaMemsetAsync(out.data(), 0, out.size(), stream));
     CUDA_CHECK(cudaStreamSynchronize(stream));
 
     std::vector<Result> results;
@@ -683,19 +632,19 @@ std::vector<Result> run_group(const PointGroup& group, const Options& opt,
     double previous_median = std::numeric_limits<double>::quiet_NaN();
 
     for (const BenchPoint& point : group.points) {
-        Tensor activation(x.p, DType::BF16, {group.k, point.t});
-        Tensor output(out.p, DType::BF16, {group.n, point.t});
-        const auto launch = [&](cudaStream_t launch_stream) {
-            ops::linear(activation, weight.weight, output, group.policy, workspace, launch_stream);
+        Tensor activation(x.span(), DType::BF16, {group.k, point.t});
+        Tensor output(out.span(), DType::BF16, {group.n, point.t});
+        const auto launch = [&](CudaExecutionView cuda) {
+            ops::linear(activation, weight.weight, output, group.policy, workspace, cuda);
         };
         bench::TimedGraph graph;
         if (opt.graph)
-            graph.capture(stream, [&](cudaStream_t launch_stream) {
-                for (int call = 0; call < opt.graph_calls; ++call) launch(launch_stream);
+            graph.capture(cuda, [&](CudaExecutionView cuda) {
+                for (int call = 0; call < opt.graph_calls; ++call) launch(cuda);
             });
         bench::ColdTiming timing =
-            opt.graph ? bench::measure_cold_graph(graph, flush, stream, opt.warmup, opt.repeat)
-                      : bench::measure_cold_launch(launch, flush, stream, opt.warmup, opt.repeat);
+            opt.graph ? bench::measure_cold_graph(graph, flush, cuda, opt.warmup, opt.repeat)
+                      : bench::measure_cold_launch(launch, flush, cuda, opt.warmup, opt.repeat);
         timing.median_us /= opt.graph_calls;
         timing.min_us /= opt.graph_calls;
         timing.p95_us /= opt.graph_calls;
@@ -718,41 +667,46 @@ std::vector<Result> run_group(const PointGroup& group, const Options& opt,
 }
 
 void run_profile(const BenchPoint& point, const Options& opt, bench::L2FlushBuffer& flush,
-                 cudaStream_t stream) {
+                 CudaExecutionView cuda) {
+    const auto stream = cuda.stream();
     const std::uint64_t x_elements =
         checked_mul(static_cast<std::uint64_t>(point.k), point.t, "activation allocation");
     const std::uint64_t out_elements =
         checked_mul(static_cast<std::uint64_t>(point.n), point.t, "output allocation");
     LinearBenchWeight weight = make_weight(point.qtype, point.n, point.k);
-    DeviceBuffer x(checked_mul(x_elements, 2, "activation allocation bytes"));
-    DeviceBuffer out(checked_mul(out_elements, 2, "output allocation bytes"));
+    DeviceBuffer x(ninfer::bench::device_context().device(),
+                   checked_mul(x_elements, 2, "activation allocation bytes"));
+    DeviceBuffer out(ninfer::bench::device_context().device(),
+                     checked_mul(out_elements, 2, "output allocation bytes"));
     const std::size_t workspace_capacity = ops::linear_workspace_capacity_bytes(
         point.qtype, point.n, point.k, point.policy, point.t, point.t);
-    DeviceArena workspace(std::max<std::size_t>(workspace_capacity, 256));
-    fill_activation(x, x_elements, stream);
-    CUDA_CHECK(cudaMemsetAsync(out.p, 0, out.bytes, stream));
+    ninfer::DeviceBuffer workspace_storage(ninfer::bench::device_context().device(),
+                                           std::max<std::size_t>(workspace_capacity, 256));
+    MemoryArena workspace(workspace_storage.span());
+    fill_activation(x, x_elements, cuda);
+    CUDA_CHECK(cudaMemsetAsync(out.data(), 0, out.size(), stream));
     CUDA_CHECK(cudaStreamSynchronize(stream));
 
-    Tensor activation(x.p, DType::BF16, {point.k, point.t});
-    Tensor output(out.p, DType::BF16, {point.n, point.t});
-    const auto body = [&](cudaStream_t launch_stream) {
-        ops::linear(activation, weight.weight, output, point.policy, workspace, launch_stream);
+    Tensor activation(x.span(), DType::BF16, {point.k, point.t});
+    Tensor output(out.span(), DType::BF16, {point.n, point.t});
+    const auto body = [&](CudaExecutionView cuda) {
+        ops::linear(activation, weight.weight, output, point.policy, workspace, cuda);
     };
     bench::TimedGraph graph;
-    if (opt.graph) graph.capture(stream, body);
+    if (opt.graph) graph.capture(cuda, body);
     const auto launch = [&] {
         if (opt.graph)
-            graph.launch(stream);
+            graph.launch(cuda);
         else
-            body(stream);
+            body(cuda);
     };
     std::printf("# execution=%s graph_nodes=%zu\n", opt.graph ? "graph" : "eager", graph.nodes());
     for (int i = 0; i < opt.warmup; ++i) {
-        bench::flush_l2(flush, stream);
+        bench::flush_l2(flush, cuda);
         launch();
     }
     CUDA_CHECK(cudaStreamSynchronize(stream));
-    bench::flush_l2(flush, stream);
+    bench::flush_l2(flush, cuda);
     CUDA_CHECK(cudaStreamSynchronize(stream));
 
     const std::uint64_t x_bytes     = checked_mul(x_elements, 2, "activation bytes");
@@ -886,19 +840,20 @@ int main(int argc, char** argv) {
 
         cudaStream_t stream = nullptr;
         CUDA_CHECK(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
+        const auto cuda = ninfer::bench::device_context().execution_view(stream);
         bench::L2FlushBuffer flush(opt.flush_bytes);
         const std::vector<BenchPoint> points = expand_points(opt);
 
         print_header(opt);
         if (opt.profile) {
-            run_profile(points.front(), opt, flush, stream);
+            run_profile(points.front(), opt, flush, cuda);
             CUDA_CHECK(cudaStreamDestroy(stream));
             return 0;
         }
 
         std::vector<Result> results;
         for (const PointGroup& group : group_points(points)) {
-            std::vector<Result> group_results = run_group(group, opt, flush, stream);
+            std::vector<Result> group_results = run_group(group, opt, flush, cuda);
             results.insert(results.end(), std::make_move_iterator(group_results.begin()),
                            std::make_move_iterator(group_results.end()));
         }

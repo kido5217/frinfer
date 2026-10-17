@@ -3,7 +3,7 @@
 #include "core/gdn_replay_records.h"
 #include "core/linear_attention_state.h"
 
-#include <cuda_runtime.h>
+#include "core/device.h"
 
 #include <cstdint>
 #include <span>
@@ -24,7 +24,9 @@ struct GdnReplayFoldRow {
  * to physical record row b; rows are not filtered, compressed, or reordered. The active row count
  * is rows.size() and must be in [1,records.spec.record_capacity].
  *
- * source_state_slot and destination_state_slot are in [0,states.spec.slot_count). A row may be
+ * Each layer has dense inner state; its Tensor carries the slot stride and the view carries
+ * independent layer strides. Distinct fields/layers must not overlap their actual data blocks.
+ * source_state_slot and destination_state_slot are in [0,states.conv_layer0.ne[2]). A row may be
  * in-place. Destinations are distinct and cannot overwrite another active row's source.
  * source_state_slot is the absolute slot used to produce that row's records. commit_columns is in
  * [0,T]. Zero is a
@@ -41,7 +43,8 @@ struct GdnReplayFoldRow {
  * copies row descriptors by value; replay consumes record/state contents at the bound addresses,
  * while changing host row descriptors requires a new capture.
  *
- * The Op admits the two registered all-layer geometries only, owns no workspace or device
+ * Registered (layers, Q/K heads, V heads, conv channels) geometries are (48,16,48,10240),
+ * (30,16,32,8192), and (36,16,48,10240). The Op owns no workspace or device
  * allocation, and does not read query or generate token output. The four record planes are
  * read-only, disjoint, and do not overlap either state region.
  */
@@ -49,7 +52,7 @@ class GdnReplayFoldPlan {
 public:
     GdnReplayFoldPlan(const GdnReplayRecords& records, LinearAttentionStateAllLayersView states);
 
-    void execute(std::span<const GdnReplayFoldRow> rows, cudaStream_t stream) const;
+    void execute(std::span<const GdnReplayFoldRow> rows, CudaExecutionView execution) const;
 
 private:
     GdnReplayRecords records_;

@@ -59,7 +59,7 @@ CaptureGroup RequestBasePlanImpl::capture_group(std::uint32_t frontier) const {
             .frontier = frontier};
 }
 
-RequestBasePlan ProgramImpl::plan_request(PreparedPromptData&& prompt,
+RequestBasePlan ProgramImpl::plan_request(qwen::PreparedPromptData&& prompt,
                                           const runtime::ResolvedExecutionOptions& options) {
     if (prompt.token_ids.empty()) { throw std::invalid_argument("prompt must contain tokens"); }
     if (prompt.token_ids.size() > capacity) {
@@ -84,7 +84,7 @@ RequestBasePlan ProgramImpl::plan_request(PreparedPromptData&& prompt,
     for (std::size_t i = 0; i < prompt.media_payloads.size(); ++i) {
         if (!prompt.media_payloads[i] ||
             prompt.media_payloads[i]->patch_elements !=
-                prompt.vision_items[i].patch_count * kPreparedVisionPatchFeatures) {
+                prompt.vision_items[i].patch_count * qwen::kPreparedVisionPatchFeatures) {
             throw std::invalid_argument("prepared prompt media item payload has an invalid shape");
         }
     }
@@ -119,11 +119,11 @@ RequestBasePlan ProgramImpl::plan_request(PreparedPromptData&& prompt,
         if (!workspace_plan.vision) {
             throw std::logic_error("Vision prompt has no startup workspace plan");
         }
-        auto vision = std::make_shared<qwen3_5::VisionControlPlan>(
-            qwen3_5::plan_vision_control(prompt, *parameters.model.config().vision));
+        auto vision = std::make_shared<qwen::VisionControlPlan>(
+            qwen::plan_vision_control(prompt, *parameters.model.config().vision));
         std::uint32_t previous_end = 0;
         for (std::size_t index = 0; index < vision->items.size(); ++index) {
-            const qwen3_5::VisionItemControlPlan& item = vision->items[index];
+            const qwen::VisionItemControlPlan& item = vision->items[index];
             const std::uint32_t begin =
                 speculative_backend == SpeculativeBackend::Mtp && item.token_begin != 0
                     ? item.token_begin - 1
@@ -132,7 +132,7 @@ RequestBasePlan ProgramImpl::plan_request(PreparedPromptData&& prompt,
                 throw std::invalid_argument("vision item consumer spans overlap");
             }
             if (item.merged_count > workspace_plan.vision->max_merged_tokens ||
-                execution::VisionContext::workspace_bytes(
+                qwen::VisionContext::workspace_bytes(
                     *parameters.model.config().vision, *parameters.vision,
                     prompt.vision_items[index].patch_count, item.merged_count,
                     *workspace_plan.vision) > workspace_plan.vision->encode_peak_bytes) {
@@ -142,7 +142,6 @@ RequestBasePlan ProgramImpl::plan_request(PreparedPromptData&& prompt,
         }
         base->vision_control_plan = std::move(vision);
     }
-
 
     base->prefix_digests.assign(prompt);
     base->prefix_identity_tag = static_cast<std::uint32_t>(speculative_backend) |
@@ -156,7 +155,7 @@ RequestBasePlan ProgramImpl::plan_request(PreparedPromptData&& prompt,
         }
         previous = frontier;
     }
-    base->prompt = std::make_shared<const PreparedPromptData>(std::move(prompt));
+    base->prompt = std::make_shared<const qwen::PreparedPromptData>(std::move(prompt));
     if (base->summary.publish_continuation) {
         const auto& prepared = *base->prompt;
         auto backing         = std::make_shared<PreparedCaptureBacking>();
@@ -217,7 +216,7 @@ UnitDemand ProgramImpl::prefill_unit(std::uint32_t prompt, std::uint32_t cursor,
 UnitDemand ProgramImpl::next_unit(const SequenceState& sequence, const RequestControl& request,
                                   ExecutionUnitKind kind, std::uint32_t tokens) const {
     UnitDemand demand{.kind = kind, .tokens = tokens};
-    const auto frontier = sequence.execution_frontier;
+    const auto frontier = sequence.continuation.metadata.execution_frontier;
     switch (kind) {
     case ExecutionUnitKind::Prefill: {
         if (request.lifecycle != Lifecycle::Prefilling || !request.prefill) {
@@ -261,14 +260,14 @@ UnitDemand ProgramImpl::next_unit(const SequenceState& sequence, const RequestCo
         demand.backend_frontier = backend_kv_cache() ? demand.main_frontier : 0;
         break;
     case ExecutionUnitKind::Normalize:
-        demand.main_frontier    = sequence.text_kv_valid;
+        demand.main_frontier    = sequence.continuation.metadata.text_kv_valid;
         demand.backend_frontier = backend_kv_cache() ? frontier : 0;
         break;
     }
     return demand;
 }
 
-runtime::ResourceReservation ProgramImpl::reserve_units(std::span<const ExecutionUnit> units) {
+ResourceReservation ProgramImpl::reserve_units(std::span<const ExecutionUnit> units) {
     std::array<UnitDemand, kMaximumConcurrency> demands{};
     std::array<UnitDemand, kMaximumConcurrency> coverage{};
     std::array<std::uint32_t, kMaximumConcurrency> old_main{}, old_backend{};
@@ -298,14 +297,17 @@ runtime::ResourceReservation ProgramImpl::reserve_units(std::span<const Executio
             }
             continue;
         }
-        const auto main = text_kv_addresses->growth_pages_for_tokens(state.kv->text,
-                                                                     coverage[lane].main_frontier);
-        old_main[lane]  = text_kv_addresses->reserved_growth_pages(state.kv->text);
+        const auto main = text_kv_histories->write_pages(state.kv->text.handle(),
+                                                         state.continuation.metadata.text_kv_valid,
+                                                         coverage[lane].main_frontier);
+        old_main[lane]  = text_kv_histories->reserved_growth_pages(state.kv->text.handle());
         main_needed += main > old_main[lane] ? main - old_main[lane] : 0;
         if (state.kv->backend) {
-            const auto backend = backend_kv_addresses->growth_pages_for_tokens(
-                *state.kv->backend, coverage[lane].backend_frontier);
-            old_backend[lane] = backend_kv_addresses->reserved_growth_pages(*state.kv->backend);
+            const auto backend = backend_kv_histories->write_pages(state.kv->backend->handle(),
+                                                                   backend_kv_valid(state),
+                                                                   coverage[lane].backend_frontier);
+            old_backend[lane] =
+                backend_kv_histories->reserved_growth_pages(state.kv->backend->handle());
             backend_needed += backend > old_backend[lane] ? backend - old_backend[lane] : 0;
         }
     }
@@ -313,13 +315,14 @@ runtime::ResourceReservation ProgramImpl::reserve_units(std::span<const Executio
     const auto backend_available =
         backend_kv_pages ? backend_kv_pages->physical_pool().available_pages() : 0;
     if (main_needed > main_available || backend_needed > backend_available) {
-        return {.reserved = false,
-                .shortage = {.main_kv_pages = static_cast<std::uint32_t>(
+        return {
+            .reserved = false,
+            .shortage = {.kv_page_groups = {
+                             static_cast<std::uint32_t>(
                                  main_needed > main_available ? main_needed - main_available : 0),
-                             .backend_kv_pages =
-                                 static_cast<std::uint32_t>(backend_needed > backend_available
-                                                                ? backend_needed - backend_available
-                                                                : 0)}};
+                             static_cast<std::uint32_t>(backend_needed > backend_available
+                                                            ? backend_needed - backend_available
+                                                            : 0)}}};
     }
     std::array<bool, kMaximumConcurrency> added{};
     try {
@@ -328,13 +331,17 @@ runtime::ResourceReservation ProgramImpl::reserve_units(std::span<const Executio
             if (requests[lane].permit) { continue; }
             auto& state = active_sequence(lane);
             added[lane] = true;
-            text_kv_addresses->reserve_growth(state.kv->text,
-                                              text_kv_addresses->growth_pages_for_tokens(
-                                                  state.kv->text, coverage[lane].main_frontier));
+            text_kv_histories->reserve_growth(
+                state.kv->text.handle(),
+                text_kv_histories->write_pages(state.kv->text.handle(),
+                                               state.continuation.metadata.text_kv_valid,
+                                               coverage[lane].main_frontier));
             if (state.kv->backend) {
-                backend_kv_addresses->reserve_growth(
-                    *state.kv->backend, backend_kv_addresses->growth_pages_for_tokens(
-                                            *state.kv->backend, coverage[lane].backend_frontier));
+                backend_kv_histories->reserve_growth(
+                    state.kv->backend->handle(),
+                    backend_kv_histories->write_pages(state.kv->backend->handle(),
+                                                      backend_kv_valid(state),
+                                                      coverage[lane].backend_frontier));
             }
             requests[lane].permit = demands[lane];
         }
@@ -342,9 +349,10 @@ runtime::ResourceReservation ProgramImpl::reserve_units(std::span<const Executio
         for (std::uint32_t lane = 0; lane < max_concurrency; ++lane) {
             if (!added[lane]) { continue; }
             auto& state = active_sequence(lane);
-            text_kv_addresses->reserve_growth(state.kv->text, old_main[lane]);
+            text_kv_histories->reserve_growth(state.kv->text.handle(), old_main[lane]);
             if (state.kv->backend) {
-                backend_kv_addresses->reserve_growth(*state.kv->backend, old_backend[lane]);
+                backend_kv_histories->reserve_growth(state.kv->backend->handle(),
+                                                     old_backend[lane]);
             }
             requests[lane].permit.reset();
         }
@@ -374,20 +382,21 @@ void ProgramImpl::settle_unit(std::uint32_t lane) noexcept {
     if (request.recovery && request.lifecycle != Lifecycle::Replaying &&
         request.lifecycle != Lifecycle::Pending &&
         (request.lifecycle == Lifecycle::Finishable ||
-         state.execution_frontier > request.recovery->frontier ||
+         state.continuation.metadata.execution_frontier > request.recovery->frontier ||
          state.ledger.size() > request.recovery->ledger_tokens ||
          (request.prefill && request.prefill->cursor > request.recovery->frontier))) {
         request.recovery.reset();
     }
     if (state.kv) {
         try {
-            text_kv_addresses->settle_growth(
-                state.kv->text, state.text_kv_valid,
-                request.recovery ? request.recovery->coverage.main_frontier : 0);
+            text_kv_histories->settle_growth(
+                state.kv->text, state.continuation.metadata.text_kv_valid,
+                request.recovery ? request.recovery->coverage.main_frontier : 0, device.stream());
             if (state.kv->backend) {
-                backend_kv_addresses->settle_growth(
+                backend_kv_histories->settle_growth(
                     *state.kv->backend, backend_kv_valid(state),
-                    request.recovery ? request.recovery->coverage.backend_frontier : 0);
+                    request.recovery ? request.recovery->coverage.backend_frontier : 0,
+                    device.stream());
             }
         } catch (...) { std::terminate(); }
     }

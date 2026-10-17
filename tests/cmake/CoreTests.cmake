@@ -4,6 +4,13 @@ add_executable(ninfer_public_api_test "${CMAKE_CURRENT_LIST_DIR}/../test_public_
 target_include_directories(ninfer_public_api_test PRIVATE ${PROJECT_SOURCE_DIR}/include)
 add_test(NAME ninfer_public_api_test COMMAND ninfer_public_api_test)
 
+foreach(part IN ITEMS system task_pool executor)
+  ninfer_add_test(ninfer_cpu_${part}_test
+    SOURCES "${CMAKE_CURRENT_LIST_DIR}/../cpu/test_${part}.cpp"
+    LIBRARIES ninfer_cpu)
+  set_tests_properties(ninfer_cpu_${part}_test PROPERTIES TIMEOUT 30)
+endforeach()
+
 ninfer_add_test(ninfer_device_test       SOURCES "${CMAKE_CURRENT_LIST_DIR}/../test_device.cpp"
   LIBRARIES ninfer_core)
 
@@ -29,6 +36,20 @@ ninfer_add_test(ninfer_decode_graph_test SOURCES "${CMAKE_CURRENT_LIST_DIR}/../t
 
 ninfer_add_test(ninfer_tensor_test       SOURCES "${CMAKE_CURRENT_LIST_DIR}/../test_tensor.cpp"
   LIBRARIES ninfer_core)
+
+ninfer_add_test(ninfer_memory_test SOURCES "${CMAKE_CURRENT_LIST_DIR}/../test_memory.cpp"
+  LIBRARIES ninfer_core)
+
+ninfer_add_test(ninfer_nf4_test SOURCES "${CMAKE_CURRENT_LIST_DIR}/../test_nf4.cpp"
+  LIBRARIES ninfer_core)
+add_test(NAME ninfer_nf4_exact_test
+  COMMAND ${Python3_EXECUTABLE} -B "${CMAKE_CURRENT_LIST_DIR}/../test_nf4_exact.py"
+    $<TARGET_FILE:ninfer_nf4_test>)
+
+ninfer_add_test(ninfer_read_queue_test SOURCES "${CMAKE_CURRENT_LIST_DIR}/../io/test_read_queue.cpp"
+  LIBRARIES ninfer_core PkgConfig::URING)
+target_link_options(ninfer_read_queue_test PRIVATE "LINKER:--wrap=io_uring_submit")
+set_tests_properties(ninfer_read_queue_test PROPERTIES TIMEOUT 30)
 
 ninfer_add_test(ninfer_arena_test        SOURCES "${CMAKE_CURRENT_LIST_DIR}/../test_arena.cpp"
   LIBRARIES ninfer_core)
@@ -73,3 +94,18 @@ ninfer_add_test(ninfer_llama_chat_parse_test
 add_test(NAME ninfer_chat_templates_test
   COMMAND ${Python3_EXECUTABLE} -B ${PROJECT_SOURCE_DIR}/tests/text/test_chat_templates.py
           $<TARGET_FILE:ninfer_jinja_test>)
+
+ninfer_add_test(ninfer_weight_bank_test SOURCES "${CMAKE_CURRENT_LIST_DIR}/../test_weight_bank.cpp"
+  LIBRARIES ninfer_core)
+
+ninfer_add_test(ninfer_expert_cache_test
+  SOURCES "${CMAKE_CURRENT_LIST_DIR}/../test_expert_cache.cu"
+          "${CMAKE_CURRENT_LIST_DIR}/../expert_cache_cuda_errors.cpp"
+  LIBRARIES ninfer_core)
+set_tests_properties(ninfer_expert_cache_test PROPERTIES TIMEOUT 60)
+
+foreach(symbol IN ITEMS
+    cudaEventRecord cudaMemcpyAsync cudaMemcpyBatchAsync cudaStreamSynchronize cudaStreamWaitEvent
+    cudaFree cudaFreeHost)
+  target_link_options(ninfer_expert_cache_test PRIVATE "LINKER:--wrap=${symbol}")
+endforeach()

@@ -313,7 +313,15 @@ def report_rows(report_path: Path, case: BenchCase) -> list[dict[str, Any]]:
                 "general_capacity_bytes", workspace_memory.get("capacity_bytes")
             ),
             "vision_handoff_capacity_bytes": vision_workspace.get("handoff_capacity_bytes"),
-            "cuda_graph_allowance_bytes": memory.get("cuda_graph_allowance_bytes"),
+            "cuda_graph_rebuild_estimate_bytes": memory.get("cuda_graph_rebuild_estimate_bytes"),
+            "cuda_graph_prepare_increment_bytes": memory.get("cuda_graph_prepare_increment_bytes"),
+            "cuda_graph_calibration_increment_bytes": memory.get(
+                "cuda_graph_calibration_increment_bytes"
+            ),
+            "cuda_graph_calibration_retained_bytes": memory.get(
+                "cuda_graph_calibration_retained_bytes"
+            ),
+            "startup_retained_bytes": memory.get("startup_retained_bytes"),
             "workspace_peak_bytes": test.get("workspace_peak_bytes"),
             "workspace_allocator_peak_bytes": test.get("workspace_allocator_peak_bytes"),
             "prefill_tok_s_mean": test.get("prefill_tok_s_mean"),

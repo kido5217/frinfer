@@ -66,6 +66,50 @@ vocabulary`), and a malformed id list is rejected before the model loads.
 The tool loads the artifact through the same public Engine route as `frinfer` and
 `frinfer-perplexity`, so it pays for a weight load. There is no tokenizer-only load path.
 
+For Qwen3.6-35B-A3B, `NINFER_VRAM_BUDGET_MIB` caps the Engine's GPU allocation budget. If the
+model cannot remain fully on GPU, Main MoE experts use CPU/GPU execution with segmented CUDA
+Graph decode:
+
+```bash
+NINFER_VRAM_BUDGET_MIB=16384 ./build/apps/frinfer out/qwen3_6_35b_a3b.ninfer \
+  --prompt "Explain how a compiler works." --max-context 8192 --max-new 128
+```
+
+`--prefill-chunk N` sets a fixed positive multiple of 128. When omitted, the default is 1024 for
+resident models and 4096 for CPU expert offload. Serving and offline scoring use the same Engine
+defaults. See [expert execution](maintainer/expert-weight-cache.md) for ownership and scheduling.
+
+Qwen3.8-Flash-Next uses Qwen4Exp Text/Vision/MTP. CUDA Graph decode is enabled by default:
+
+```bash
+./build/apps/frinfer out/qwen3_8_flash_next.ninfer \
+  --max-context 32768 --prefill-chunk 4096 --kv-dtype fp8 \
+  --prompt "Explain how sparse attention works." --max-new 256
+```
+
+Main experts remain in registered Host memory, with GPU caching and streaming; the current recipe
+requires about 63.3 GiB of Host expert backing plus runtime and system memory. PLE reads its
+NF4 rows from the artifact on disk. Add `--vision` for image/video messages. Native MTP supports
+`--spec mtp --draft-tokens 1..5` with either Text or Vision, using the full shared BF16 head;
+omit `--lm-head-draft`. MTP's own experts remain on GPU. Serving uses the same execution path;
+offline causal scoring remains text-only without speculative decoding. Use `--no-cuda-graph`
+to select eager decode; prefill and Vision encode use the same eager path in both modes.
+The [Qwen4Exp execution reference](maintainer/qwen4_exp-execution.md) records the complete support
+scope, state handling and resource limits.
+
+```bash
+./build/apps/frinfer out/qwen3_8_flash_next.ninfer \
+  --spec mtp --draft-tokens 3 \
+  --max-context 32768 --prefill-chunk 4096 --kv-dtype fp8 \
+  --prompt "Explain how sparse attention works." --max-new 256
+```
+
+```bash
+./build/apps/frinfer out/qwen3_8_flash_next.ninfer \
+  --vision --max-context 32768 --prefill-chunk 4096 --kv-dtype fp8 \
+  --messages examples/cli/messages/image_chart.json --no-thinking --greedy --max-new 64
+```
+
 ## Text input
 
 ```bash
@@ -304,7 +348,11 @@ long-decode, and long-context inputs.
 Speculative decoding is disabled by default. Select MTP with one to five draft positions, or the
 35B-A3B DFlash or Qwen3.8-27B DFlash2 backend with one to fifteen. Both masked-draft backends
 may be combined with `--vision`.
-`--lm-head-draft` selects the optimized proposal head and requires a selected backend:
+`--lm-head-draft` selects the optimized proposal head when the architecture and artifact provide it,
+and requires a selected backend.
+
+Flash Next supports native MTP with the full head only; it does not support `--lm-head-draft`,
+DFlash or DFlash2.
 
 ```bash
 ./build/apps/frinfer models/qwen3_6_35b_a3b.ninfer \
@@ -346,8 +394,8 @@ The table lists executable defaults. The examples above select FP8 KV and MTP3.
 | Option | Meaning | Default |
 |---|---|---:|
 | `--max-context N` | per-sequence logical context ceiling; above the native `max_position_embeddings` it activates the YaRN context extension (DFlash rejects it) | `2048` |
-| `--kv-capacity N\|auto` | explicit shared Main Text KV capacity, or maximize it from remaining GPU memory; omitted means `--max-context` | `2048` |
-| `--prefill-chunk N` | positive text-prefill chunk, in multiples of 128 | `1024` |
+| `--kv-capacity N\|auto` | shared Main Text KV capacity; `auto` maximizes resident-model KV, or reserves one context with CPU expert offload; omitted means `--max-context` | `2048` |
+| `--prefill-chunk N` | text-prefill chunk; positive multiple of 128 | `1024`; CPU expert offload: `4096` |
 | `--max-new N` | requested output-token limit | `128` |
 | `--device N` | CUDA device index | `0` |
 | `--kv-dtype bf16\|int8\|fp8\|nvfp4\|k8v4` | KV-cache storage | `bf16` |
@@ -394,6 +442,9 @@ and rendered prompt mode. The current official models use:
 Frequency penalty is `0` in every registered preset. Task-specific profiles such as Qwen's
 precise-coding profile use explicit sampling overrides.
 
+Flash Next reads temperature, top-p, top-k and min-p from the artifact's `generation_config.json`,
+using the same preset for thinking and non-thinking. Explicit sampling flags override these values.
+
 Repeat `--stop-token-id`, `--stop`, or `--reasoning-stop` to add stop conditions. Use
 `--raw-output` to expose the frontend's raw output stream and `--print-token-ids` to include
 generated token IDs in diagnostics. `--show-prompt` writes the exact rendered prompt (the
@@ -429,16 +480,21 @@ The artifact describes its model configuration and weight representations;
 extension (spec defaults β_fast=32, β_slow=1, ext_factor=1), and the DFlash draft backend rejects
 it. Generation stops at the remaining context capacity when necessary.
 `--kv-capacity N` controls the shared physical Main Text KV pool independently and is rounded up to
-the 64-token page size. `--kv-capacity auto` loads the selected weights, measures the remaining GPU
-memory, and directly chooses the largest legal page capacity for the complete enabled runtime
-layout. This includes the selected speculative backend, fixed sequence state, unified workspace,
-and CUDA Graph allowance, while leaving the default 1 GiB automatic headroom
-unallocated. It does not probe allocations or resize the pool at request time. The single-request
+the 64-token page size. Startup plans the selected weights and complete enabled runtime layout
+from artifact metadata before allocating their backing. With resident weights,
+`--kv-capacity auto` chooses the largest legal page capacity within the available Device budget,
+including the selected speculative backend, fixed sequence state, unified workspace and
+measured CUDA Graph rebuilding cost. Both explicit and automatic capacity use 1 GiB of startup
+planning headroom. Startup calibration releases its temporary storage before sizing the final pools;
+retained driver memory is already included in the remaining free memory. With CPU expert
+offload, `auto` reserves one full context and assigns the remaining budget to expert storage;
+set an explicit capacity when more shared KV is needed. Graph calibration runs only at startup;
+the pool stays fixed while serving requests. The single-request
 CLI normally leaves the option omitted so it follows
 `--max-context`; the distinction matters primarily to a concurrent Engine or server.
 
 At Engine startup FrInfer reserves model weights, persistent sequence state, one phase-reused
-Program workspace, and a separate CUDA Graph driver allowance. With Vision enabled, that one
+Program workspace, and CUDA Graph resources sized through calibration. With Vision enabled, that one
 workspace contains a general execution prefix and a fixed item-output handoff region. Vision encode
 may reuse the full backing before producing the output; Text/MTP/decode work remains inside the
 general prefix while the handoff is live. The capacity is therefore the maximum legal simultaneous

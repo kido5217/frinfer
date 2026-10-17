@@ -1,12 +1,12 @@
 #include "models/qwen3_5/program/internal.h"
-#include "models/qwen3_5/frontend/prepared_prompt.h"
+#include "core/startup.h"
+#include "models/common/qwen/frontend/prepared_prompt.h"
 #include "models/qwen3_5/program/planning/startup.h"
 #include "models/qwen3_5/program/program_impl.h"
 #include <stdexcept>
 #include <utility>
 
 namespace ninfer::models::qwen3_5 {
-
 
 SequencePlan::SequencePlan(std::unique_ptr<detail::SequencePlanImpl> impl) noexcept
     : impl_(std::move(impl)) {}
@@ -74,8 +74,8 @@ const runtime::RequestPlanSummary& RequestBasePlan::summary() const noexcept {
     return impl_ != nullptr ? impl_->summary : empty;
 }
 
-const PreparedContextCache& RequestBasePlan::context_cache() const noexcept {
-    static const PreparedContextCache empty;
+const qwen::PreparedContextCache& RequestBasePlan::context_cache() const noexcept {
+    static const qwen::PreparedContextCache empty;
     return impl_ != nullptr ? impl_->context_cache : empty;
 }
 
@@ -119,13 +119,13 @@ Program::Program(std::unique_ptr<detail::ProgramImpl> impl) noexcept : impl_(std
 
 Program::~Program() noexcept = default;
 
-RequestBasePlan Program::plan_request(PreparedPrompt&& prompt,
+RequestBasePlan Program::plan_request(qwen::PreparedPrompt&& prompt,
                                       const runtime::ResolvedExecutionOptions& options) {
-    return impl_->plan_request(PreparedPromptAccess::take(std::move(prompt)), options);
+    return impl_->plan_request(qwen::PreparedPromptAccess::take(std::move(prompt)), options);
 }
 
-std::vector<float> Program::causal_score(PreparedPrompt&& prompt, std::uint32_t target) {
-    return impl_->causal_score(PreparedPromptAccess::take(std::move(prompt)), target);
+std::vector<float> Program::causal_score(qwen::PreparedPrompt&& prompt, std::uint32_t target) {
+    return impl_->causal_score(qwen::PreparedPromptAccess::take(std::move(prompt)), target);
 }
 
 std::optional<SourceCandidate>
@@ -139,8 +139,11 @@ PrefixShortlistKey Program::checkpoint_key(CheckpointHandle h, std::uint32_t f) 
     return impl_->checkpoint_key(h, f);
 }
 
-runtime::ContextResourceUsage
-Program::checkpoint_footprint(std::span<const CheckpointHandle> handles) const {
+std::span<const runtime::KvPoolDescriptor> Program::kv_pools() const noexcept {
+    return impl_->kv_pools;
+}
+
+ContextResources Program::checkpoint_footprint(std::span<const CheckpointHandle> handles) const {
     return impl_->checkpoint_footprint(handles);
 }
 
@@ -179,7 +182,7 @@ bool Program::revoke_snapshot(ResumeState& paused) noexcept {
     return impl_->revoke_snapshot(paused);
 }
 
-runtime::ContextResourceUsage Program::snapshot_resources(const ResumeState& paused) const {
+ContextResources Program::snapshot_resources(const ResumeState& paused) const {
     return impl_->snapshot_resources(paused);
 }
 
@@ -196,11 +199,11 @@ std::size_t Program::release_redundant_host(std::span<const CheckpointHandle> ex
     return impl_->release_redundant_host(excluded, pending_backup);
 }
 
-runtime::ResourceReservation Program::reserve_units(std::span<const ExecutionUnit> units) {
+ResourceReservation Program::reserve_units(std::span<const ExecutionUnit> units) {
     return impl_->reserve_units(units);
 }
 
-bool Program::reclaim_capture_reservation(runtime::ContextResourceUsage shortage) {
+bool Program::reclaim_capture_reservation(ContextResources shortage) {
     return impl_->reclaim_capture_reservation(shortage);
 }
 
@@ -228,13 +231,13 @@ bool Program::start_demote(const ContextDemotion& plan) { return impl_->start_de
 
 ContextReclaimPlan Program::plan_reclaim(std::span<const CheckpointHandle> allowed,
                                          std::span<const CheckpointHandle> excluded,
-                                         runtime::ContextResourceUsage shortage) const {
+                                         ContextResources shortage) const {
     return impl_->plan_reclaim(allowed, excluded, shortage);
 }
 
 std::vector<ContextRelease> Program::plan_releases(std::span<const CheckpointHandle> allowed,
                                                    std::span<const CheckpointHandle> excluded,
-                                                   runtime::ContextResourceUsage shortage) const {
+                                                   ContextResources shortage) const {
     return impl_->plan_releases(allowed, excluded, shortage);
 }
 
@@ -254,7 +257,7 @@ bool Program::recovery_pending(SequenceHandle sequence) const noexcept {
     return impl_->recovery_pending(sequence);
 }
 
-bool Program::has_context_transaction() const noexcept { return impl_->has_context_transaction(); }
+bool Program::has_context_operation() const noexcept { return impl_->has_context_operation(); }
 
 SpeculativeBackend Program::speculative_backend() const noexcept {
     return impl_->speculative_backend;
@@ -298,20 +301,27 @@ void Program::fail_all_cleanup() noexcept { impl_->fail_all_cleanup(); }
 
 PhysicalUsageSnapshot Program::physical_usage() const noexcept { return impl_->physical_usage(); }
 
-MemorySummary Program::memory_summary() const noexcept { return impl_->memory_summary(); }
+MemorySummary Program::memory_summary() const { return impl_->memory_summary(); }
 
 void Program::reset_memory_peaks() noexcept { impl_->reset_memory_peaks(); }
 
 SequencePlanner make_sequence_planner(const execution::Parameters& parameters,
                                       DeviceContext& device, const EngineOptions& options) {
-    return SequencePlanner(detail::make_sequence_planner_impl(parameters, device, options));
+    return make_sequence_planner(parameters.profile, device, options);
+}
+
+SequencePlanner make_sequence_planner(std::shared_ptr<const execution::ModelProfile> profile,
+                                      DeviceContext& device, const EngineOptions& options,
+                                      std::shared_ptr<const moe::Plan> moe) {
+    return SequencePlanner(
+        detail::make_sequence_planner_impl(std::move(profile), device, options, std::move(moe)));
 }
 
 std::unique_ptr<Program> create_program(const execution::Parameters& parameters,
                                         SequencePlan&& plan, DeviceContext& device,
                                         const StartupObserver& startup_observer) {
     if (plan.impl_ == nullptr) { throw std::invalid_argument("sequence plan is empty"); }
-    if (plan.impl_->parameters != &parameters) {
+    if (plan.impl_->profile != parameters.profile) {
         throw std::invalid_argument("sequence plan belongs to another model instance");
     }
     if (plan.impl_->multiprocessor_count != device.multiprocessor_count()) {
@@ -319,6 +329,11 @@ std::unique_ptr<Program> create_program(const execution::Parameters& parameters,
     }
     auto impl =
         std::make_unique<detail::ProgramImpl>(parameters, *plan.impl_, device, startup_observer);
+    if (plan.impl_->use_cuda_graph) {
+        StartupPhaseScope phase(startup_observer, StartupPhase::CudaGraphPrepare);
+        impl->initialize_graphs();
+        phase.complete();
+    }
     plan.impl_.reset();
     return std::unique_ptr<Program>(new Program(std::move(impl)));
 }

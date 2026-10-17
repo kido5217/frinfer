@@ -1,6 +1,6 @@
 #pragma once
 
-#include "core/arena.h"
+#include "core/buffer.h"
 
 #include <cstddef>
 #include <optional>
@@ -29,6 +29,11 @@ public:
     [[nodiscard]] bool reserved() const noexcept { return valid() && reserved_; }
 
     [[nodiscard]] std::byte* data() const noexcept;
+
+    [[nodiscard]] MemorySpan span() const noexcept {
+        return {data(), bytes(), Device::cpu(), true};
+    }
+
     void publish() noexcept;
     bool release() noexcept;
 

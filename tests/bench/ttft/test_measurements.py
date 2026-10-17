@@ -221,7 +221,7 @@ def logged_campaign(tmp_path, records, events, *, required=()):
 
 def done_event(service_id, wire_id, response_id, *, preemptions=0, replay=0):
     return {
-        "artifact_type": "ninfer_serve_request_log", "schema_version": 23,
+        "artifact_type": "ninfer_serve_request_log", "schema_version": 29,
         "event": "request_done", "server_instance_id": "serve-test",
         "request": {"request_id": service_id, "http_request_id": wire_id,
                     "response_id": response_id},
@@ -268,8 +268,7 @@ def test_unavailable_diagnostics_never_become_zero_counters(tmp_path, problem):
     measured["response_id"] = "response-a"
     event = done_event(1, "req_wire", "response-a")
     if problem == "legacy":
-        event["schema_version"] = 21
-        event["request"] = {"request_id": 1}
+        event["schema_version"] = 26
     elif problem == "conflict":
         event["request"]["response_id"] = "different-response"
     elif problem == "missing_counters":
@@ -295,10 +294,9 @@ def test_mechanism_not_observed_keeps_valid_performance(tmp_path):
     assert summary["ttft_groups"][0]["median_ttft_ns"] == 4_000_000
 
 
-def runtime_interval(*, schema=23, final=None, state_bytes=0, main_bytes=0,
+def runtime_interval(*, schema=29, final=None, state_bytes=0, main_bytes=0,
                      host_seconds=0.0, occupied=0, peak=None):
-    occupancy = {"device_state_slots": 1, "device_main_kv_pages": 8,
-                 "device_backend_kv_pages": 0, "host_state_slots": 1,
+    occupancy = {"device_state_slots": 1, "host_state_slots": 1,
                  "host_kv_bytes": occupied, "host_context_occupied_bytes": occupied,
                  "host_context_reserved_bytes": 0}
     if peak is not None:
@@ -313,13 +311,16 @@ def runtime_interval(*, schema=23, final=None, state_bytes=0, main_bytes=0,
     }
     if final is not None:
         event["final_interval"] = final
-    for resource, amount in (("state", state_bytes), ("main_kv", main_bytes), ("backend_kv", 0)):
-        unit = "count" if resource == "state" else "pages"
-        event["context_cache"][f"{resource}_transfers"] = {
-            direction: {"bytes": amount if direction == "d2h" else 0,
-                        "seconds": 0.001 if direction == "d2h" else 0.0, unit: 1}
-            for direction in ("d2h", "h2d", "d2d")
-        }
+    def transfers(amount):
+        return {direction: {"bytes": amount if direction == "d2h" else 0,
+                            "seconds": 0.001 if direction == "d2h" else 0.0,
+                            "images": 1, "page_groups": 1, "copy_operations": 1}
+                for direction in ("d2h", "h2d", "d2d")}
+    event["context_cache"]["state_transfers"] = transfers(state_bytes)
+    event["context_cache"]["kv_pools"] = [
+        {"pool_id": 0, "occupied_page_groups": 8, "transfers": transfers(main_bytes)},
+        {"pool_id": 1, "occupied_page_groups": 0, "transfers": transfers(0)},
+    ]
     return event
 
 
@@ -336,7 +337,7 @@ def test_global_intervals_include_unowned_demotion_and_shutdown_tail(tmp_path):
     assert global_work["shutdown_tail"] == "observed"
     assert global_work["intervals"] == 2
     assert global_work["reported_interval_seconds"] == 1.125
-    assert global_work["transfers"]["main_kv"]["d2h"]["bytes"] == 150
+    assert global_work["transfers"]["kv_pools"]["0"]["d2h"]["bytes"] == 150
     assert global_work["transfers"]["state"]["d2h"]["bytes"] == 25
     assert global_work["host_work"]["elapsed_seconds"]["total"] == pytest.approx(0.12)
     assert global_work["host_work"]["device_wait_seconds"] == 0.5
@@ -350,19 +351,19 @@ def test_global_intervals_include_unowned_demotion_and_shutdown_tail(tmp_path):
 def test_missing_runtime_fields_remain_explicit(tmp_path):
     measured = record([output(5_000_000), ProtocolEvent("terminal", "done", 15_000_000)])
     event = runtime_interval(main_bytes=100)
-    del event["context_cache"]["backend_kv_transfers"]["h2d"]["seconds"]
+    del event["context_cache"]["kv_pools"][1]["transfers"]["h2d"]["seconds"]
     summary = summarize_campaign(logged_campaign(tmp_path, [measured], [event]))
     global_work = summary["global_runtime_observations"][0]
     assert global_work["status"] == "available"
     assert global_work["shutdown_tail"] == "unconfirmed"
     assert global_work["host_context_peak_occupied_bytes"] is None
-    assert global_work["transfers"]["main_kv"]["d2h"]["bytes"] == 100
-    assert global_work["transfers"]["backend_kv"]["h2d"]["seconds"] is None
+    assert global_work["transfers"]["kv_pools"]["0"]["d2h"]["bytes"] == 100
+    assert global_work["transfers"]["kv_pools"]["1"]["h2d"]["seconds"] is None
     assert summary["stream_observations"][0]["preemptions"] is None
 
 
 def test_unsupported_runtime_schema_is_unavailable(tmp_path):
-    summary = summarize_campaign(logged_campaign(tmp_path, [], [runtime_interval(schema=22)]))
+    summary = summarize_campaign(logged_campaign(tmp_path, [], [runtime_interval(schema=26)]))
     assert summary["global_runtime_observations"][0]["reason"] == "unsupported_runtime_schema"
 
 
@@ -441,7 +442,7 @@ def first_output_event():
                     "post_seconds": 0.001, "gpu_seconds": 0.007},
         "replay": {"submit_seconds": 0, "wait_seconds": 0,
                    "post_seconds": 0, "gpu_seconds": 0},
-        "context_transfers": {"main_kv": {"h2d": {"bytes": 1024, "seconds": 0.008}}},
+        "context_transfers": {"kv_pools": [{"pool_id": 0, "transfers": {"h2d": {"bytes": 1024, "seconds": 0.008}}}]},
     }
     return event
 
@@ -449,7 +450,6 @@ def first_output_event():
 def test_first_output_partition_preserves_terminal_and_overlapping_work(tmp_path):
     measured = record([output(101_000_000), ProtocolEvent("terminal", "done", 102_000_000)])
     done = first_output_event()
-    done["schema_version"] = 25
     done["generation"]["admission"] = {
         "preferred_reused_tokens": 19057, "source_wait_seconds": 0.003,
         "revoked_checkpoints": 1, "fallback_reason": "source_revoked",
@@ -480,7 +480,7 @@ def test_first_output_partition_preserves_terminal_and_overlapping_work(tmp_path
                ("prepare", "queue", "initial_binding", "paused", "resident", "http_residual")) == pytest.approx(100)
     assert row["prefill_program_ms"] == 9
     assert row["prefill_gpu_ms"] == 7
-    assert row["main_kv_h2d_ms"] == 8
+    assert row["kv_pool_0_h2d_ms"] == 8
     assert row["state_d2h_ms"] is None
     assert row["preemptions_before_first"] == 1
     assert summary["stream_observations"][0]["preemptions"] == 9

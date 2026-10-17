@@ -126,10 +126,10 @@ Use `--resume` to skip completed JSON reports in an existing `--output-dir`, and
 for a minimal script/runner check. `--no-build` uses the binary supplied by `--bench` without
 building it.
 
-Each raw report must be `ninfer_bench_report` schema v15. The flattened summary and schema-v4 matrix
+Each raw report must be `ninfer_bench_report` schema v16. The flattened summary and schema-v4 matrix
 manifest carry native facts from the report: architecture, public name, actual formats, prefill signature, artifact,
 load/read/upload/staging values, Engine memory arenas including the non-additive Vision layout
-inside the unified workspace and CUDA Graph allowance, per-test planned logical and
+inside the unified workspace and measured CUDA Graph memory deltas, per-test planned logical and
 allocator-observed workspace peaks, KV capacity and
 payload, configured proposal head and graph mode, phase timings and throughput, and speculative
 rounds/drafts/acceptance/fallbacks. The matrix manifest is descriptive and records the commands and

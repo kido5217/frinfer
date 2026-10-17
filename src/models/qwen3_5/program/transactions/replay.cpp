@@ -1,3 +1,4 @@
+#include "models/common/qwen/vision/prefill.h"
 #include "models/qwen3_5/program/program_impl.h"
 #include "models/qwen3_5/program/execution_context.h"
 #include "core/device.h"
@@ -13,29 +14,31 @@
 namespace ninfer::models::qwen3_5::detail {
 namespace {
 
-PreparedPromptData replay_prompt(const RequestBasePlanImpl& base, const SequenceState& sequence) {
+qwen::PreparedPromptData replay_prompt(const RequestBasePlanImpl& base,
+                                       const SequenceState& sequence) {
     if (!base.prompt || sequence.ledger.size() < base.prompt->token_ids.size()) {
         throw std::logic_error("replay ledger does not retain its prepared prompt");
     }
-    const PreparedPromptData& source = *base.prompt;
-    const std::size_t prompt_tokens  = source.token_ids.size();
-    const std::size_t ledger_tokens  = sequence.ledger.size();
+    const qwen::PreparedPromptData& source = *base.prompt;
+    const std::size_t prompt_tokens        = source.token_ids.size();
+    const std::size_t ledger_tokens        = sequence.ledger.size();
     if (source.token_types.size() != prompt_tokens ||
         source.positions.size() != 3ULL * prompt_tokens ||
         !std::equal(source.token_ids.begin(), source.token_ids.end(), sequence.ledger.begin())) {
         throw std::logic_error("replay input does not match the retained prompt");
     }
 
-    PreparedPromptData out = source;
-    out.token_ids          = sequence.ledger;
+    qwen::PreparedPromptData out = source;
+    out.token_ids                = sequence.ledger;
     out.token_types.resize(ledger_tokens, 0);
     out.positions.resize(3ULL * ledger_tokens);
-    out.rope_delta = sequence.rope_delta;
+    out.rope_delta = sequence.continuation.metadata.rope_delta;
     for (std::size_t axis = 0; axis < 3; ++axis) {
         std::copy_n(source.positions.begin() + axis * prompt_tokens, prompt_tokens,
                     out.positions.begin() + axis * ledger_tokens);
         for (std::size_t token = prompt_tokens; token < ledger_tokens; ++token) {
-            const std::int64_t position = static_cast<std::int64_t>(token) + sequence.rope_delta;
+            const std::int64_t position =
+                static_cast<std::int64_t>(token) + sequence.continuation.metadata.rope_delta;
             if (position < std::numeric_limits<std::int32_t>::min() ||
                 position > std::numeric_limits<std::int32_t>::max()) {
                 throw std::overflow_error("replay RoPE position exceeds int32");
@@ -68,7 +71,7 @@ void ProgramImpl::install_resume_sampling(SequenceState& sequence, RequestContro
 
     try {
         if (penalties) {
-            CUDA_CHECK(cudaMemsetAsync(counts.data, 0, counts.bytes(), device.stream));
+            CUDA_CHECK(cudaMemsetAsync(counts.data, 0, counts.bytes(), device.stream()));
             const auto generated = std::span<const TokenId>(sequence.ledger)
                                        .subspan(request.base->summary.prompt_tokens);
             validate_licensed_tokens(generated);
@@ -85,15 +88,15 @@ void ProgramImpl::install_resume_sampling(SequenceState& sequence, RequestContro
                     Tensor current = ids.slice(0, 0, count);
                     CUDA_CHECK(cudaMemcpyAsync(current.data, generated.data() + begin,
                                                current.bytes(), cudaMemcpyHostToDevice,
-                                               device.stream));
-                    ops::increment_token_counts(current, counts, device.stream);
+                                               device.stream()));
+                    ops::increment_token_counts(current, counts, device.execution_view());
                 }
             }
         }
         Tensor config = sampling_config.slice(1, static_cast<std::int32_t>(sequence.lane), 1);
         CUDA_CHECK(cudaMemcpyAsync(config.data, &request.sampling_host,
                                    sizeof(request.sampling_host), cudaMemcpyHostToDevice,
-                                   device.stream));
+                                   device.stream()));
         // Later workspace users and sampling execute on this same ordered compute stream.
         work.reset();
     } catch (...) {
@@ -146,10 +149,10 @@ ReplayProgress ProgramImpl::advance_replay(SequenceHandle handle,
     };
 
     try {
-        const bool bridge_mtp = speculative_backend == SpeculativeBackend::Mtp &&
-                                request.replay_cursor != 0 &&
-                                sequence.mtp_kv_valid + 1U == request.replay_cursor &&
-                                request.replay_cursor < sequence.ledger.size();
+        const bool bridge_mtp =
+            speculative_backend == SpeculativeBackend::Mtp && request.replay_cursor != 0 &&
+            sequence.continuation.metadata.backend_kv_valid + 1U == request.replay_cursor &&
+            request.replay_cursor < sequence.ledger.size();
         if (request.replay_cursor == request.replay_target && !bridge_mtp) {
             complete_replay();
             settle_unit(lane);
@@ -167,10 +170,12 @@ ReplayProgress ProgramImpl::advance_replay(SequenceHandle handle,
                 ? std::optional<std::uint32_t>(request.capture_reservation->frontier)
                 : std::nullopt;
         ensure_sequence_kv_mapped(sequence, permit.main_frontier, permit.backend_frontier);
-        set_device_i32(io.text_kv_table_row, text_kv_addresses->bound_row(sequence.kv->text));
+        set_device_i32(io.text_kv_table_row,
+                       text_kv_histories->bound_row(sequence.kv->text.handle()));
         set_device_i32(io.backend_kv_table_row,
-                       sequence.kv->backend ? backend_kv_addresses->bound_row(*sequence.kv->backend)
-                                            : 0);
+                       sequence.kv->backend
+                           ? backend_kv_histories->bound_row(sequence.kv->backend->handle())
+                           : 0);
 
         const std::uint32_t cursor        = request.replay_cursor;
         const std::uint32_t prompt_tokens = request.base->summary.prompt_tokens;
@@ -197,12 +202,11 @@ ReplayProgress ProgramImpl::advance_replay(SequenceHandle handle,
             split = capture_frontier;
         }
 
-        const StateImageSelectors selectors = state_selectors(sequence);
+        const context::StateImageSelectors selectors = state_selectors(sequence);
         execution::PrefillContext context{
             {device, parameters, work, state_images->linear(),
              replay_records ? &*replay_records : nullptr, io, prefill_hidden, prefill_chunk,
-             proposal_head},
-            text_kv_view(sequence),
+             proposal_head, moe.get()},
             skip_mtp_alignment ? PagedKVCacheView{} : mtp_kv_view(sequence),
             decoder->text_kv,
             skip_mtp_alignment ? nullptr : decoder->mtp_cache(),
@@ -213,9 +217,10 @@ ReplayProgress ProgramImpl::advance_replay(SequenceHandle handle,
             selectors.source,
             selectors.destination,
             0,
-            sequence.kv->backend ? backend_kv_addresses->bound_row(*sequence.kv->backend) : 0,
+            sequence.kv->backend ? backend_kv_histories->bound_row(sequence.kv->backend->handle())
+                                 : 0,
             dflash_prefill_host_ingress,
-            sequence.rope_delta};
+            sequence.continuation.metadata.rope_delta};
         context.prefill_gpu_timer = &prefill_gpu_timer_;
         mark_workspace_usage(speculative_backend == SpeculativeBackend::Mtp
                                  ? workspace_plan.mtp_prefill
@@ -233,9 +238,9 @@ ReplayProgress ProgramImpl::advance_replay(SequenceHandle handle,
             request.replay.emplace();
             auto& replay  = *request.replay;
             replay.prompt = replay_prompt(*request.base, sequence);
-            VisionPrefillPlan plan;
-            plan.control = std::make_shared<VisionControl>(
-                build_vision_control(replay.prompt, *request.base->vision_control_plan, 0));
+            qwen::VisionPrefillPlan plan;
+            plan.control = std::make_shared<qwen::VisionControl>(
+                qwen::build_vision_control(replay.prompt, *request.base->vision_control_plan, 0));
             const auto& items = request.base->vision_control_plan->items;
             for (std::size_t index = 0; index < items.size(); ++index) {
                 const auto& item = items[index];
@@ -244,22 +249,21 @@ ReplayProgress ProgramImpl::advance_replay(SequenceHandle handle,
                         ? item.token_begin - 1U
                         : item.token_begin;
                 plan.uses.push_back(
-                    VisionUseSpan{.begin               = begin,
-                                  .end                 = item.token_end,
-                                  .prepared_item_index = static_cast<std::uint32_t>(index),
-                                  .control_index       = static_cast<std::uint32_t>(index)});
+                    qwen::VisionUseSpan{.begin               = begin,
+                                        .end                 = item.token_end,
+                                        .prepared_item_index = static_cast<std::uint32_t>(index),
+                                        .control_index       = static_cast<std::uint32_t>(index)});
                 plan.max_merged_count = std::max(plan.max_merged_count, item.merged_count);
             }
             replay.vision_plan.emplace(std::move(plan));
-            replay.vision = std::make_unique<execution::VisionPrefillSession>(
-                device, parameters,
-                DeviceSpan{workspace_storage.base(), workspace_storage.capacity()},
-                *workspace_plan.vision, replay.prompt, *replay.vision_plan, vision_handoff,
-                vision_handoff_peak_bytes);
+            replay.vision = std::make_unique<qwen::VisionPrefillSession>(
+                device, *parameters.model.config().vision, *parameters.vision,
+                workspace_storage.span(), *workspace_plan.vision, replay.prompt,
+                *replay.vision_plan, vision_handoff, vision_handoff_peak_bytes);
         }
 
         if (bridge_mtp) {
-            if (!sequence.tail_hidden_valid || !io.mtp) {
+            if (!sequence.continuation.metadata.tail_hidden_valid || !io.mtp) {
                 throw std::logic_error("MTP replay source has no continuation hidden");
             }
             std::array<std::int32_t, 3> rope;
@@ -267,14 +271,16 @@ ReplayProgress ProgramImpl::advance_replay(SequenceHandle handle,
                 const std::int64_t position =
                     cursor <= prompt_tokens
                         ? request.base->prompt->positions[axis * prompt_tokens + cursor - 1U]
-                        : static_cast<std::int64_t>(cursor - 1U) + sequence.rope_delta;
+                        : static_cast<std::int64_t>(cursor - 1U) +
+                              sequence.continuation.metadata.rope_delta;
                 if (position < std::numeric_limits<std::int32_t>::min() ||
                     position > std::numeric_limits<std::int32_t>::max()) {
                     throw std::overflow_error("MTP replay bridge RoPE position exceeds int32");
                 }
                 rope[axis] = static_cast<std::int32_t>(position);
             }
-            const execution::MtpBridgeInput bridge{.previous_hidden = &sequence.tail_hidden,
+            const Tensor previous_hidden = tail_hidden(sequence);
+            const execution::MtpBridgeInput bridge{.previous_hidden = &previous_hidden,
                                                    .position =
                                                        static_cast<std::int32_t>(cursor - 1U),
                                                    .rope_position = rope};
@@ -284,12 +290,13 @@ ReplayProgress ProgramImpl::advance_replay(SequenceHandle handle,
             } else {
                 Tensor token = io.mtp->target_input_ids.slice(0, 0, 1);
                 CUDA_CHECK(cudaMemcpyAsync(token.data, sequence.ledger.data() + cursor,
-                                           sizeof(TokenId), cudaMemcpyHostToDevice, device.stream));
-                execution::mtp_bridge_and_propose(context, token, sequence.tail_hidden,
+                                           sizeof(TokenId), cudaMemcpyHostToDevice,
+                                           device.stream()));
+                execution::mtp_bridge_and_propose(context, token, tail_hidden(sequence),
                                                   bridge.position, rope, false);
             }
-            sequence.mtp_kv_valid = cursor;
-            commit_sequence_kv(sequence, sequence.text_kv_valid, cursor);
+            sequence.continuation.metadata.backend_kv_valid = cursor;
+            commit_sequence_kv(sequence, sequence.continuation.metadata.text_kv_valid, cursor);
             if (count == 0) {
                 timing.begin_wait();
                 device.synchronize();
@@ -321,15 +328,15 @@ ReplayProgress ProgramImpl::advance_replay(SequenceHandle handle,
         if (result.finalized || result.processed_tokens == 0 || result.processed_tokens > count) {
             throw std::logic_error("replay chunk made invalid or sampling progress");
         }
-        const std::uint32_t end = cursor + result.processed_tokens;
-        sequence.text_kv_valid  = end;
+        const std::uint32_t end                      = cursor + result.processed_tokens;
+        sequence.continuation.metadata.text_kv_valid = end;
         if (speculative_backend == SpeculativeBackend::Mtp) {
-            sequence.mtp_kv_valid = skip_mtp_alignment ? end - 1U : end;
+            sequence.continuation.metadata.backend_kv_valid = skip_mtp_alignment ? end - 1U : end;
         } else if (is_masked_draft_backend(speculative_backend)) {
-            sequence.dflash_context_frontier = end;
+            sequence.continuation.metadata.dflash_context_frontier = end;
         }
         commit_sequence_kv(sequence, end, backend_kv_valid(sequence));
-        settle_state_fork(sequence);
+        complete_state_write(sequence);
         timing.resume_submit();
         copy_tail(sequence, prefill_hidden.slice(
                                 1, static_cast<std::int32_t>(result.processed_tokens) - 1, 1));
@@ -338,9 +345,9 @@ ReplayProgress ProgramImpl::advance_replay(SequenceHandle handle,
         timing.end_wait();
         record_vision_time();
         work.reset();
-        sequence.tail_hidden_valid = true;
-        sequence.mtp_draft_count   = 0;
-        request.replay_cursor      = end;
+        sequence.continuation.metadata.tail_hidden_valid = true;
+        sequence.mtp_draft_count                         = 0;
+        request.replay_cursor                            = end;
 
         const bool capture_ready = capture_frontier && end == *capture_frontier;
         if (capture_ready) { request.capture_pending = true; }

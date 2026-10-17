@@ -47,6 +47,9 @@
           cuda.nsight_systems
           pkgs.ffmpeg
           pkgs.curl
+          # Required by cmake/Dependencies.cmake since upstream 8cea711b (CPU execution).
+          pkgs.hwloc
+          pkgs.liburing
           python
         ];
         shellHook = ''

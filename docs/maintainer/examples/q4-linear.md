@@ -29,7 +29,7 @@
 ## 逻辑带宽与 Tensor Core 利用率
 
 权重包含 `6144 × 5120 / 64 × 34 = 16,711,680` 字节的 code 和 scale。
-沿用 [Linear bench 指标定义](../linear-benchmark.md#5-数学工作量与-route-neutral-指标)：
+沿用 [Linear 指标定义](../linear-tuning.md#5-logical-metrics)：
 
 ```text
 model_bytes = 16,711,680 + 2 × 5120 × T + 2 × 6144 × T
@@ -77,7 +77,7 @@ T=1 的逻辑带宽为 **1069.4 GB/s，标称带宽利用率 59.68%**；采用 b
 
 ## 曲线解读与验证
 
-[shape 实现](../../../src/ops/linear/q4/shapes/n6144_k5120.cu) 在 GEMV、CTA 内 sliced-K 和普通 MMA
+[shape 实现](../../../src/ops/linear/projection/q4/shapes/n6144_k5120.cu) 在 GEMV、CTA 内 sliced-K 和普通 MMA
 之间选择；具体配置以源码为准。
 
 - T=1→2 从 15.648 升至 21.792 µs（+39.26%），是热区最大的相邻涨幅，

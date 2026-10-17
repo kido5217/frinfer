@@ -5,7 +5,7 @@
 ## This fork: `kido5217/frinfer` stands for `Frankenstein + ninfer`
 
 This repository is a fork of [Neroued/ninfer](https://github.com/Neroued/ninfer), kept current
-through periodic true-merge syncs (last sync: `81c8ce09`, 2026-10-08). It adds YaRN context
+through periodic true-merge syncs (last sync: `64d10fbf`, 2026-10-17). It adds YaRN context
 extension, a llama.cpp-derived chat/tool-call parsing stack, and constrained decoding, and ships
 the `frinfer` product binaries. The rest of this README describes the combined product
 (fork + upstream).
@@ -49,7 +49,7 @@ Last updated 2026-10-09 (scheduling and Main-KV capacity reverted to upstream: r
 | Benchmark extensions | Measure fork features at their claimed scope | `ninfer_bench --grammar` (constrained-decoding mode); Qwen3.8 GPQA context-window comparison | shipped | GPQA-Diamond (public benchmark); runners: FrInfer |
 | NVFP4 35B-A3B MoE experts — converter recipe + `.ninfer` codec + loader binding | The MoE line had no native FP4 expert route; prefill is compute-bound on the Q4/Q5 banks | `qwen3_6_35b_a3b_nvfp4` imports the compressed-tensors per-expert gate/up/down tensors as one `nvfp4` parent per expert projection (the source selects a per-expert FP32 divisor and gate/up are separate tensors; gate/up share the source divisor within an expert). `SparseMoeWeights` carries the expert banks and the Op validation/route-plan profiles admit the codec. At `T>=20` the routed prefill path executes end to end on the Blackwell W4A4 `mma_nvfp4_e4m3` path: grouped 64-column/64-row gate/up and down kernels over the packed route, one compact FP4 activation plane per stage with a single private activation divisor, merged with the shared expert. At `T<20` the routed gate/up and down run an A16 SIMT path: each warp decodes the per-expert E2M1 codes and K16 E4M3 scales on the fly, against the BF16 hidden state for gate/up and the FP32 SwiGLU activation for down (FP64-oracle coverage at `T=1` and the small-T boundaries). The e2e/perplexity check (#208) follows | in progress — loads; both routed routes (`T>=20` prefill, `T<20` decode/small-T) execute end to end; e2e/perplexity pending | FrInfer; evidence gate `research/nvfp4-moe-evidence` (#177) |
 | GGUF as a converter source — `--model file.gguf` for `qwen35`/`qwen35moe` (F32/F16/BF16, Q8_0, Q4_K/Q5_K/Q6_K, NVFP4) | The community distributes quantized Qwen checkpoints (including NVFP4 MoE repacks) as GGUF; the converter only read Safetensors | New `tools/convert/sources/gguf.py` `LogicalSource`: ggml-exact dequantization, encoded NVFP4 import through the `.scale`/`.input_scale` sidecars (stored divisors are the sidecar reciprocals), V-head order restore on GDN tensors, recipe-side HF→GGUF name mapping; `docs/weight-conversion.md` | shipped | Container/codecs: llama.cpp-derived, verified against the vendored checkout; reader/mapping: FrInfer |
-| Upstream sync process | Keep the fork current while preserving upstream ancestry | True merge commits per the sync runbook; drift alert on the vendored subset; last sync `81c8ce09` (2026-10-08) | ongoing | Neroued/ninfer (upstream) |
+| Upstream sync process | Keep the fork current while preserving upstream ancestry | True merge commits per the sync runbook; drift alert on the vendored subset; last sync `64d10fbf` (2026-10-17) | ongoing | Neroued/ninfer (upstream) |
 | Product executables renamed to the `frinfer` family | Distinguish the fork's binaries from upstream's | CMake target rename (`frinfer`, `frinfer-serve`, `frinfer-perplexity`) | shipped | FrInfer |
 | Nix flake dev environment | Reproducible build environment | `flake.nix` at the repo root: CUDA 13.1, C++20, CMake/Ninja, FFmpeg, libcurl, Python 3.13 + torch; builds run in `nix develop` | shipped | nixpkgs (CUDA 13.1 `cudaPackages_13_1`) |
 | Agent/governance documentation | The fork is developed with LLM agents in the loop | `AGENTS.md` (product boundaries, verification, reporting), issue tracker + triage-label conventions, branch→commit→push→PR→merge→rebase landing pipeline; the LLM is permitted to open and merge PRs | ongoing | FrInfer |
@@ -92,9 +92,9 @@ project or its maintainer. Use at your own risk.
 
 > Selected checkpoints. Maximum single-GPU inference performance.
 
-FrInfer is a from-scratch C++/CUDA inference engine for Qwen3.5 Dense and MoE architectures on a
-single NVIDIA GeForce RTX 5090. It runs text, image, and video prompts through a local CLI or
-OpenAI-/Anthropic-compatible HTTP APIs. The runtime is deliberately specialized: one GPU, one
+FrInfer is a from-scratch C++/CUDA inference engine for Qwen3.5 Dense/MoE and
+Qwen4Exp (Qwen3.8-Flash-Next) architectures on a single NVIDIA GeForce RTX 5090. It
+runs text, image, and video prompts through a local CLI or
 resident model, and one to eight execution lanes fixed at startup.
 
 Five official artifacts are available. The quick-start commands use Qwen3.8-27B NVFP4.
@@ -120,8 +120,9 @@ the weights again.
 
 FrInfer requires 64-bit Linux, an NVIDIA GeForce RTX 5090, a CUDA toolkit supporting `sm_120a`,
 CMake 3.28 or newer, a C++20 host compiler, Ninja, `pkg-config`, FFmpeg development libraries
-(`libavformat`, `libavcodec`, `libavutil`, and `libswscale`), and `libcurl >= 7.85`.
-CUDA 13.1 is the validated development toolkit; CMake does not impose a CUDA version floor.
+(`libavformat`, `libavcodec`, `libavutil`, and `libswscale`), `hwloc >= 2.5`, `liburing >= 2.5`,
+and `libcurl >= 7.85`.
+CUDA 13.4 is the validated development toolkit; CMake does not impose a CUDA version floor.
 The build rejects CUDA architectures other than `sm_120a`.
 
 Build the product binaries:
@@ -335,26 +336,36 @@ The official artifacts provide the following capabilities, with optional compone
   tools, local response state, token counting, and usage accounting.
 
 The 35B-A3B target additionally supports DFlash with draft windows from one to fifteen for Text and
-image/video Vision prompts. Qwen3.8-27B artifacts with the DFlash2 companion weights support
+image/video Vision prompts, plus CPU/GPU MoE expert offload with CUDA Graph decode under a
+[GPU memory budget](docs/cli.md). Qwen3.8-27B artifacts with the DFlash2 companion weights support
 `--spec dflash2 --draft-tokens 7` for the same Text/Vision Engine path, with draft counts 1..15
 and either full or optimized proposal heads.
+
+Qwen3.8-Flash-Next uses CPU/GPU Main experts, disk-backed NF4 PLE and segmented CUDA Graph.
+Its native MTP uses the full shared head; DFlash/DFlash2 and optimized proposal heads are not
+supported for this architecture. See the [CLI commands](docs/cli.md),
+[conversion recipe](docs/weight-conversion.md) and
+[current support reference](docs/maintainer/qwen4_exp-execution.md).
 
 The product boundary remains intentionally small:
 
 - one RTX 5090 and one resident model per Engine;
 - one to eight resident execution lanes with bounded FIFO ingress;
-- no priority/QoS, weight offload, multi-GPU, or distributed serving;
-- one shared startup-fixed KV pool across active requests and retained prefixes;
+- resource-pressure preemption with snapshot or token-replay recovery;
+- no priority/QoS, multi-GPU, or distributed serving;
+- startup-fixed typed KV pools shared by active requests and retained prefixes;
 - model architectures and format/shape combinations use explicitly implemented native paths;
 - parsed tool calls are returned to the client; FrInfer does not execute tools;
 - the in-tree C++ headers are not distributed as an installed SDK.
 
-`--max-context` is each sequence's logical limit. When it exceeds the model's native position
-capacity (`max_position_embeddings`), FrInfer activates the YaRN context extension (spec defaults
-β_fast=32, β_slow=1, ext_factor=1), which the DFlash draft backend does not support. `--kv-capacity`
-sizes the shared Main Text KV pool used by active requests and retained prefixes; `auto` resolves
-the largest legal capacity at startup from the memory remaining after weights while keeping 1 GiB
-of sizing headroom. Explicit capacities remain fixed for the process lifetime.
+`--max-context` is each sequence's logical limit. When it exceeds the model's native
+position capacity (`max_position_embeddings`), FrInfer activates the YaRN context
+extension (spec defaults β_fast=32, β_slow=1, ext_factor=1), which the DFlash draft
+backend does not support. `--kv-capacity` sizes the shared Main Text KV pool used by
+active requests and retained prefixes; `auto` resolves the largest legal capacity at
+startup from the memory remaining after weights. Both explicit and automatic modes use
+1 GiB of startup planning headroom. Explicit capacities remain fixed for the process
+lifetime.
 
 ## Documentation
 

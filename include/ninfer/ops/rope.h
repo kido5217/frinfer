@@ -26,15 +26,15 @@ struct YarnTable {
  * Applies split-half NeoX RoPE in place. For pair i in [0,rotary_dim/2), angle phi(i,t), and
  * each head:
  *
- *   ideal[i]              = x[i] * cos(phi) - x[i+R/2] * sin(phi)
- *   ideal[i+rotary_dim/2] = x[i+R/2] * cos(phi) + x[i] * sin(phi).
+ *   y[i]     = x[i] * cos(phi) - x[i+R/2] * sin(phi)
+ *   y[i+R/2] = x[i+R/2] * cos(phi) + x[i] * sin(phi), R = rotary_dim.
  *
  * Dimensions [rotary_dim,head_dim) are unchanged. The per-pair inverse frequency is the pure
  * power law theta^(-2*i/rotary_dim) unless a YaRN table is supplied (see below). Supported modes
  * are:
  *
  * - Text 1-D: positions I32 [T], either head_dim=256 with even 0<rotary_dim<=256, or the
- *   DFlash full-head domain head_dim=rotary_dim=128; phi=positions[t]*inv_freq[i].
+ *   head_dim=rotary_dim=128; phi=positions[t]*theta^(-2*i/rotary_dim).
  * - Text MRoPE: positions I32 [T,3], head_dim=256, rotary_dim=64; pair i uses axis i%3 with
  *   the same frequency as Text 1-D.
  * - Vision 2-D: positions I32 [T,2], head_dim=rotary_dim=72; pairs 0..17 use axis 0 and pairs
@@ -50,36 +50,29 @@ struct YarnTable {
  *
  * positions is contiguous and theta is positive and finite. Q/K tensors are BF16
  * [head_dim,heads,T] with positive head counts, contiguous head features and heads, and an optional
- * padded token stride. The registered optimized domains are D256/R64 Text Q/K head geometries
- * 24/4 and 16/2, D128/R128 1-D Text geometry 32/8, plus Vision geometry 16/16. q and k must not
- * overlap one another or positions. The Op mutates only dimensions [0,rotary_dim) of the supplied
- * Q/K tensor storage. The oracle evaluates the rotated dimensions naively in FP64 from the
- * represented inputs (for the YaRN path, positions + the fp32 inv_freq table + mscale), modeling
- * the fp32 angle quantization (phi = float(p * inv_freq[i]) before the FP64 trig). The updated
- * BF16 values are promoted and compared directly with that result; output storage rounding belongs
- * to the Op's numerical criterion, not the oracle. Unrotated dimensions remain bit-exact. Private
- * kernel arithmetic is implementation-defined. The Op uses no workspace or persistent state.
- * `execution` supplies the stream and the selected device's positive physical SM count; the count
- * selects launch geometry, not the transformation.
+ * padded token stride. q and k must not overlap one another or positions. The Op mutates only
+ * dimensions [0,rotary_dim); unrotated dimensions and token padding remain bit-exact. Empty token
+ * extents perform no device work. The Op uses no workspace or persistent state. `execution`
+ * supplies the stream and the selected device's positive physical SM count.
  */
 void rope(const Tensor& positions, int rotary_dim, float theta, Tensor& q, Tensor& k,
-          DeviceExecutionView execution);
+          CudaExecutionView execution);
 
 // Single-tensor form with the same formula and storage contract. The head count comes directly
 // from x; Q versus K role does not change the transformation.
 void rope(const Tensor& positions, int rotary_dim, float theta, Tensor& x,
-          DeviceExecutionView execution);
+          CudaExecutionView execution);
 
 // YaRN extension pair form: the rotation reads the device-resident per-pair frequency table and
 // applies `yarn.mscale` to cos/sin. `yarn.inv_freq` must be non-null and point to
 // `rotary_dim / 2` device-resident fp32 values. theta is retained for the call signature but the
 // YaRN path keys on table presence, not theta.
 void rope(const Tensor& positions, int rotary_dim, float theta, const YarnScale& yarn, Tensor& q,
-          Tensor& k, DeviceExecutionView execution);
+          Tensor& k, CudaExecutionView execution);
 
 // YaRN extension single-tensor form.
 void rope(const Tensor& positions, int rotary_dim, float theta, const YarnScale& yarn, Tensor& x,
-          DeviceExecutionView execution);
+          CudaExecutionView execution);
 
 // Host-side YaRN table construction (fp64 math, cast to fp32). Computes the per-pair inverse
 // frequencies (rotary_dim / 2 fp32 values) and the fp32 attention magnitude for the extension

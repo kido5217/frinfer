@@ -22,6 +22,8 @@ namespace ninfer::runtime {
 template <class Instance>
 class CausalScoreCore {
 public:
+    static constexpr EnginePurpose purpose = EnginePurpose::CausalScoring;
+
     using ModelContract  = typename Instance::ModelContract;
     using PreparedPrompt = typename ModelContract::PreparedPrompt;
 
@@ -81,12 +83,15 @@ public:
     [[nodiscard]] MemorySummary memory_summary() const {
         std::scoped_lock lock(execution_mutex_);
         MemorySummary out                      = instance_.program->memory_summary();
+        out.device_budget_bytes                = instance_.device_budget_bytes;
+        out.startup_retained_bytes             = instance_.startup_retained_bytes;
+        out.cuda_graph                         = instance_.cuda_graph;
         const KvCapacityResolution& resolution = instance_.kv_capacity_resolution;
         out.kv_capacity_mode                   = resolution.mode;
-        out.kv_capacity_page_groups            = resolution.main_page_groups;
-        out.kv_capacity_max_page_groups        = resolution.maximum_main_page_groups;
+        out.kv_capacity_page_groups            = resolution.primary_page_groups;
+        out.kv_capacity_max_page_groups        = resolution.maximum_primary_page_groups;
         out.minimum_runtime_reservation_bytes  = resolution.minimum_runtime_reservation_bytes;
-        out.kv_capacity_increment_bytes        = resolution.bytes_per_additional_main_page_group;
+        out.kv_capacity_increment_bytes        = resolution.bytes_per_additional_primary_page_group;
         out.runtime_reservation_bytes          = resolution.runtime_reservation_bytes;
         out.available_after_weights_bytes      = resolution.available_after_weights_bytes;
         out.available_after_startup_bytes      = resolution.available_after_startup_bytes;

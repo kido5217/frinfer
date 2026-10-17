@@ -215,8 +215,9 @@ int main(int argc, char** argv) {
                   << ", kv_cache=" << ninfer::bench::kv_cache_name(options.kv_cache) << ")\n";
         ninfer::Engine engine(std::move(engine_options));
         fill_cuda_environment(env, options.device);
-        env.load   = engine.load_summary();
-        env.memory = engine.memory_summary();
+        env.load          = engine.load_summary();
+        env.memory        = engine.memory_summary();
+        env.prefill_chunk = env.memory.prefill_chunk;
 
         prime_decode_graph(engine, env, corpus, grammar);
 
@@ -234,7 +235,8 @@ int main(int argc, char** argv) {
             for (int warmup = 0; warmup < options.warmup; ++warmup) {
                 (void)run_repetition(engine, test, corpus, grammar);
             }
-            result.reps.reserve(static_cast<std::size_t>(options.repetitions));
+            const auto before = engine.memory_summary();
+            result.reps.reserve(static_cast<std::size_t>(options.repetitions) * env.concurrency);
             if (options.profile_measured) {
                 require_cuda(cudaDeviceSynchronize(), "profile pre-boundary synchronize");
                 require_cuda(cudaProfilerStart(), "cudaProfilerStart");
@@ -249,6 +251,10 @@ int main(int argc, char** argv) {
             const ninfer::MemorySummary memory    = engine.memory_summary();
             result.workspace_peak_bytes           = memory.workspace_logical_peak_bytes;
             result.workspace_allocator_peak_bytes = memory.workspace.peak_used_bytes;
+            if (memory.moe) {
+                result.expert_upload_bytes =
+                    memory.moe->uploaded_bytes - before.moe->uploaded_bytes;
+            }
             results.push_back(std::move(result));
         }
 

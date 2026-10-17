@@ -27,17 +27,6 @@ void require(bool condition, const char* message) {
     if (!condition) { throw std::runtime_error(message); }
 }
 
-// These addresses belong to the fixture, rather than to an admitted Program continuation.
-// Release their page and table leases before Program destroys its backing cache pools.
-struct AddressOwner {
-    qwen::detail::KVAddressSpaceStore* store = nullptr;
-    qwen::detail::KVAddressSpaceHandle handle;
-
-    ~AddressOwner() {
-        if (store && !store->release_after_deactivate(handle)) { std::terminate(); }
-    }
-};
-
 void append_bytes(std::vector<std::byte>& bytes, const Tensor& tensor) {
     const auto offset = bytes.size();
     bytes.resize(offset + tensor.bytes());
@@ -131,41 +120,43 @@ void run(const char* artifact, SpeculativeBackend backend) {
     options.speculative.backend               = backend;
     options.speculative.draft_tokens          = 3;
     options.speculative.proposal_head         = ProposalHead::Full;
-    auto planner = qwen::detail::make_sequence_planner_impl(parameters, device, options);
+    auto planner = qwen::detail::make_sequence_planner_impl(parameters.profile, device, options);
     auto plan    = qwen::detail::finalize_sequence_plan_impl(std::move(planner), 2 * pages);
     qwen::detail::ProgramImpl program(parameters, *plan, device, {});
 
     auto& states      = *program.state_store;
-    const auto source = states.reserve_reset(device.stream);
-    const auto other  = states.reserve_reset(device.stream);
+    const auto source = states.reserve_destination();
+    const auto other  = states.reserve_destination();
     require(source && other, "fixture state allocation failed");
     const auto source_slot = states.physical_slot(*source);
     const auto other_slot  = states.physical_slot(*other);
-    const auto text        = program.text_kv_addresses->create_active(pages, 1, device.stream);
-    require(text.has_value(), "fixture text KV allocation failed");
-    AddressOwner text_owner{program.text_kv_addresses.get(), *text};
-    program.text_kv_addresses->ensure_mapped_to_tokens(*text, capacity, device.stream);
-    std::array<AddressOwner, 2> full_owners;
-    if (program.backend_kv_addresses) {
-        for (const auto row : {0, 1}) {
-            const auto address =
-                program.backend_kv_addresses->create_active(pages, row, device.stream);
-            require(address.has_value(), "fixture full KV allocation failed");
-            full_owners[row].store  = program.backend_kv_addresses.get();
-            full_owners[row].handle = *address;
-            program.backend_kv_addresses->ensure_mapped_to_tokens(*address, capacity,
-                                                                  device.stream);
-        }
+    for (const auto handle : {*source, *other}) {
+        program.state_images->storage().clear(states.physical_slot(handle),
+                                              device.execution_view());
+        states.complete_initialization(handle);
+    }
+    const auto bind = [&](models::context::KVHistoryStore& histories, int row) {
+        auto binding = histories.prepare_binding(nullptr, 0, capacity, row);
+        binding.publish_restores();
+        binding.prepare_tail_copy();
+        binding.enqueue_mapping(device.stream());
+        auto history = binding.commit();
+        histories.prepare_write(history, 0, capacity, device.stream());
+        return history;
+    };
+    auto text_owner = bind(*program.text_kv_histories, 1);
+    std::array<models::context::KVHistory, 2> full_owners;
+    if (program.backend_kv_histories) {
+        for (const auto row : {0, 1}) full_owners[row] = bind(*program.backend_kv_histories, row);
         auto& pool = program.dflash->full->page_pool();
         for (std::size_t plane = 0; plane < pool.plane_count(); ++plane) {
             CUDA_CHECK(cudaMemsetAsync(pool.plane(plane).data, 0, pool.plane(plane).bytes(),
-                                       device.stream));
+                                       device.stream()));
         }
     }
     execution::PrefillContext context{
         {device, parameters, program.work, program.state_images->linear(), &*program.replay_records,
          program.io, program.prefill_hidden, program.prefill_chunk, program.proposal_head},
-        program.decoder->text_kv.execution_view(program.text_kv_addresses->execution_row(*text)),
         {},
         program.decoder->text_kv,
         nullptr,
@@ -187,7 +178,7 @@ void run(const char* artifact, SpeculativeBackend backend) {
         program.dflash_host_ingress->dflash_kv_table_rows[0]    = row;
         CUDA_CHECK(cudaMemcpyAsync(program.io.dflash_decode->ingress.data,
                                    program.dflash_host_ingress, sizeof(qwen::DFlashDecodeIngress),
-                                   cudaMemcpyHostToDevice, device.stream));
+                                   cudaMemcpyHostToDevice, device.stream()));
     };
     const auto prefill = [&](std::uint32_t nominal, std::optional<std::uint32_t> split = {}) {
         const auto result   = execution::prefill_text_chunk(context, tokens, nominal, split, false);
@@ -210,12 +201,14 @@ void run(const char* artifact, SpeculativeBackend backend) {
     states.freeze(*source);
     const auto destination = states.reserve_destination();
     require(destination.has_value(), "fixture fork destination allocation failed");
-    const auto binding = states.begin_fork(*source, *destination);
-    program.state_images->copy_dflash_local(binding.source, binding.destination, device.stream);
+    const auto binding = states.begin_write(*source, *destination);
+    program.state_images->storage().copy_group(program.state_images->dflash_local_group(),
+                                               binding.source, binding.destination,
+                                               device.execution_view());
     context.state_source_slot      = binding.source;
     context.state_destination_slot = binding.destination;
     prefill(23, 23); // Actual chunk is seven tokens, shortened at the capture frontier.
-    states.commit_fork(*source, *destination);
+    states.complete_write(*source, *destination);
     require(local_bytes(program, source_slot) == frozen,
             "prefill mutated the frozen checkpoint after a StateImage fork");
     const auto active = local_bytes(program, binding.destination);

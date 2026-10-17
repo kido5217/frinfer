@@ -130,6 +130,22 @@ int main() {
     const ninfer::cli::Options show_prompt =
         parse({"ninfer-cli", "model.ninfer", "--prompt", "hello", "--show-prompt"});
     failures += check(show_prompt.show_prompt, "--show-prompt did not request the rendered dump");
+    int failures = 0;
+    failures +=
+        check(parse({"ninfer", "model.ninfer", "--prompt", "hello", "--prefill-chunk", "8192"})
+                      .prefill_chunk == 8192,
+              "explicit prefill chunk was not preserved");
+    for (const auto* value : {"auto", "0", "129"}) {
+        failures += check(rejects([&] {
+                              (void)parse({"ninfer", "model.ninfer", "--prompt", "hello",
+                                           "--prefill-chunk", value});
+                          }),
+                          "invalid prefill chunk was accepted");
+    }
+    const auto choice = parse({"ninfer", "model.ninfer", "--prompt", "hello", "--choice", "",
+                               "--choice", "a|b", "--choice", "你好"});
+    failures += check(choice.choices == std::vector<std::string>{"", "a|b", "你好"},
+                      "choice flags changed literal text or order");
     failures +=
         check(ninfer::cli::usage_text("ninfer-cli").find("--show-prompt") != std::string::npos,
               "CLI help omits --show-prompt");

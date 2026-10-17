@@ -9,9 +9,6 @@
 
 namespace ninfer::models::qwen3_5 {
 
-inline constexpr std::int32_t kKvInt8QuantGroup = 64;
-inline constexpr std::int32_t kKvFp8QuantGroup  = 256;
-
 struct DecoderStateSpec {
     std::uint32_t full_attention_layers     = 0;
     std::uint32_t mtp_layers                = 0;
@@ -57,7 +54,7 @@ private:
 
 class PagedKVCache {
 public:
-    PagedKVCache(DeviceSpan backing, const PagedKVCacheLayout& layout);
+    PagedKVCache(MemorySpan backing, const PagedKVCacheLayout& layout);
 
     PagedKVCache(const PagedKVCache&)            = delete;
     PagedKVCache& operator=(const PagedKVCache&) = delete;
@@ -108,7 +105,7 @@ struct DecoderState {
     PagedKVCache text_kv;
     std::optional<PagedKVCache> mtp_kv;
 
-    DecoderState(DeviceSpan backing, const DecoderStateLayout& layout);
+    DecoderState(MemorySpan backing, const DecoderStateLayout& layout);
 
     [[nodiscard]] PagedKVCache* mtp_cache() noexcept;
     [[nodiscard]] const PagedKVCache* mtp_cache() const noexcept;

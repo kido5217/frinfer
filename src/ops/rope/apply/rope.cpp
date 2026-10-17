@@ -1,0 +1,247 @@
+#include "ninfer/ops/rope.h"
+#include "ops/rope/apply/dispatch.h"
+#include "ops/common/host/operands.h"
+
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <stdexcept>
+#include <string>
+
+namespace ninfer::ops {
+namespace {
+
+constexpr std::int32_t kTextHeadDim = 256;
+constexpr std::int32_t kVisionDim   = 72;
+
+int position_axes(const Tensor& positions, std::int32_t tokens) {
+    if (positions.ne[0] != tokens || positions.ne[2] != 1 || positions.ne[3] != 1 ||
+        (positions.ne[1] != 1 && positions.ne[1] != 2 && positions.ne[1] != 3)) {
+        throw std::invalid_argument("rope: positions must have shape [T], [T,2], or [T,3]");
+    }
+    return positions.ne[1];
+}
+
+void require_tensor_layout(const Tensor& tensor, const char* label, std::int32_t head_dim,
+                           std::int32_t heads, std::int32_t tokens) {
+    if (heads <= 0) {
+        throw std::invalid_argument(std::string("rope: ") + label + " must have positive heads");
+    }
+    if (tensor.ne[0] != head_dim || tensor.ne[1] != heads || tensor.ne[2] != tokens ||
+        tensor.ne[3] != 1) {
+        throw std::invalid_argument(std::string("rope: invalid ") + label + " shape");
+    }
+    constexpr std::int64_t elem = 2;
+    if (tensor.nb[0] != elem || tensor.nb[1] != elem * head_dim ||
+        tensor.nb[2] < elem * static_cast<std::int64_t>(head_dim) * heads ||
+        (tensor.nb[2] % elem) != 0) {
+        throw std::invalid_argument(std::string("rope: invalid ") + label + " strides");
+    }
+}
+
+void require_common(const Tensor& positions, int rotary_dim, float theta) {
+    if (positions.dtype != DType::I32) {
+        throw std::invalid_argument("rope: positions must be I32");
+    }
+    if (!(theta > 0.0f) || !std::isfinite(theta)) {
+        throw std::invalid_argument("rope: theta must be positive and finite");
+    }
+    if (rotary_dim <= 0 || (rotary_dim & 1) != 0) {
+        throw std::invalid_argument("rope: rotary_dim must be positive and even");
+    }
+}
+
+// Validated after the empty-tensor early return so a zero-numel call with a default-constructed
+// execution view still no-ops, matching the pre-refactor behavior.
+void require_execution(CudaExecutionView execution) {
+    if (execution.multiprocessor_count() <= 0) {
+        throw std::invalid_argument("rope: positive multiprocessor count required");
+    }
+}
+
+void require_positions_storage(const Tensor& positions) {
+    if (!positions.is_contiguous()) {
+        throw std::invalid_argument("rope: positions must be contiguous");
+    }
+    if (positions.data == nullptr) {
+        throw std::invalid_argument("rope: positions data must be non-null");
+    }
+}
+
+void require_yarn_scale(const YarnScale& yarn) {
+    if (yarn.inv_freq == nullptr) {
+        throw std::invalid_argument("rope: YaRN inv_freq table must be non-null");
+    }
+    if (!(yarn.mscale > 0.0f) || !std::isfinite(yarn.mscale)) {
+        throw std::invalid_argument("rope: YaRN mscale must be positive and finite");
+    }
+}
+
+void require_rotary_geometry(int axes, int rotary_dim, std::int32_t head_dim) {
+    if (axes == 2) {
+        if (head_dim != kVisionDim || rotary_dim != kVisionDim) {
+            throw std::invalid_argument("rope: 2-D Vision mode requires head_dim=rotary_dim=72");
+        }
+        return;
+    }
+    if (axes == 1 && head_dim == 128 && rotary_dim == 128) { return; }
+    if (head_dim != kTextHeadDim || rotary_dim > kTextHeadDim) {
+        throw std::invalid_argument("rope: Text mode requires D256 or one-dimensional D128/R128");
+    }
+    if (axes == 3 && rotary_dim != 64) {
+        throw std::invalid_argument("rope: 3-D Text MRoPE requires rotary_dim=64");
+    }
+}
+
+} // namespace
+
+void rope(const Tensor& positions, int rotary_dim, float theta, Tensor& q, Tensor& k,
+          CudaExecutionView execution) {
+    require_common(positions, rotary_dim, theta);
+    if (q.dtype != DType::BF16 || k.dtype != DType::BF16) {
+        throw std::invalid_argument("rope: q/k must be BF16");
+    }
+    (void)common::operand::numel(positions, "rope");
+    const std::int64_t q_numel = common::operand::numel(q, "rope");
+    (void)common::operand::numel(k, "rope");
+    const std::int32_t tokens   = q.ne[2];
+    const int axes              = position_axes(positions, tokens);
+    const std::int32_t head_dim = axes == 2 ? kVisionDim : q.ne[0];
+    const std::int32_t q_heads  = q.ne[1];
+    const std::int32_t k_heads  = k.ne[1];
+    require_rotary_geometry(axes, rotary_dim, head_dim);
+    require_tensor_layout(q, "q", head_dim, q_heads, tokens);
+    require_tensor_layout(k, "k", head_dim, k_heads, tokens);
+    if (q_numel == 0) { return; }
+    common::operand::device(positions.device, execution.device(), "rope", "positions");
+    require_execution(execution);
+    require_positions_storage(positions);
+    common::operand::device(q.device, execution.device(), "rope", "query");
+    common::operand::device(k.device, execution.device(), "rope", "key");
+    if (q.data == nullptr || k.data == nullptr) {
+        throw std::invalid_argument("rope: q/k data must be non-null");
+    }
+    detail::rope_dispatch(positions, rotary_dim, theta, q, k, execution);
+}
+
+void rope(const Tensor& positions, int rotary_dim, float theta, Tensor& x,
+          CudaExecutionView execution) {
+    require_common(positions, rotary_dim, theta);
+    if (x.dtype != DType::BF16) { throw std::invalid_argument("rope: tensor must be BF16"); }
+    (void)common::operand::numel(positions, "rope");
+    const std::int64_t x_numel  = common::operand::numel(x, "rope");
+    const std::int32_t tokens   = x.ne[2];
+    const int axes              = position_axes(positions, tokens);
+    const std::int32_t head_dim = axes == 2 ? kVisionDim : x.ne[0];
+    const std::int32_t heads    = x.ne[1];
+    require_rotary_geometry(axes, rotary_dim, head_dim);
+    require_tensor_layout(x, "tensor", head_dim, heads, tokens);
+    if (x_numel == 0) { return; }
+    common::operand::device(positions.device, execution.device(), "rope", "positions");
+    require_execution(execution);
+    require_positions_storage(positions);
+    common::operand::device(x.device, execution.device(), "rope", "input");
+    if (x.data == nullptr) { throw std::invalid_argument("rope: tensor data must be non-null"); }
+    detail::rope_dispatch(positions, rotary_dim, theta, x, execution);
+}
+
+void rope(const Tensor& positions, int rotary_dim, float theta, const YarnScale& yarn, Tensor& q,
+          Tensor& k, CudaExecutionView execution) {
+    require_common(positions, rotary_dim, theta);
+    require_yarn_scale(yarn);
+    if (q.dtype != DType::BF16 || k.dtype != DType::BF16) {
+        throw std::invalid_argument("rope: q/k must be BF16");
+    }
+    (void)numel_allow_zero(positions, "positions");
+    const std::int64_t q_numel = numel_allow_zero(q, "q");
+    (void)numel_allow_zero(k, "k");
+    const std::int32_t tokens   = q.ne[2];
+    const int axes              = position_axes(positions, tokens);
+    const std::int32_t head_dim = axes == 2 ? kVisionDim : q.ne[0];
+    const std::int32_t q_heads  = q.ne[1];
+    const std::int32_t k_heads  = k.ne[1];
+    require_rotary_geometry(axes, rotary_dim, head_dim);
+    require_tensor_layout(q, "q", head_dim, q_heads, tokens);
+    require_tensor_layout(k, "k", head_dim, k_heads, tokens);
+    if (q_numel == 0) { return; }
+    require_execution(execution);
+    require_positions_storage(positions);
+    if (q.data == nullptr || k.data == nullptr) {
+        throw std::invalid_argument("rope: q/k data must be non-null");
+    }
+    detail::rope_yarn_dispatch(positions, rotary_dim, theta, yarn, q, k, execution);
+}
+
+void rope(const Tensor& positions, int rotary_dim, float theta, const YarnScale& yarn, Tensor& x,
+          CudaExecutionView execution) {
+    require_common(positions, rotary_dim, theta);
+    require_yarn_scale(yarn);
+    if (x.dtype != DType::BF16) { throw std::invalid_argument("rope: tensor must be BF16"); }
+    (void)numel_allow_zero(positions, "positions");
+    const std::int64_t x_numel  = numel_allow_zero(x, "tensor");
+    const std::int32_t tokens   = x.ne[2];
+    const int axes              = position_axes(positions, tokens);
+    const std::int32_t head_dim = axes == 2 ? kVisionDim : x.ne[0];
+    const std::int32_t heads    = x.ne[1];
+    require_rotary_geometry(axes, rotary_dim, head_dim);
+    require_tensor_layout(x, "tensor", head_dim, heads, tokens);
+    if (x_numel == 0) { return; }
+    require_execution(execution);
+    require_positions_storage(positions);
+    if (x.data == nullptr) { throw std::invalid_argument("rope: tensor data must be non-null"); }
+    detail::rope_yarn_dispatch(positions, rotary_dim, theta, yarn, x, execution);
+}
+
+YarnTable compute_rope_yarn_table(float theta, int rotary_dim, std::int64_t original_max,
+                                  double scale, int beta_fast, int beta_slow, double ext_factor) {
+    if (!(theta > 0.0f) || !std::isfinite(theta)) {
+        throw std::invalid_argument("compute_rope_yarn_table: theta must be positive and finite");
+    }
+    if (rotary_dim <= 0 || (rotary_dim & 1) != 0) {
+        throw std::invalid_argument(
+            "compute_rope_yarn_table: rotary_dim must be positive and even");
+    }
+    if (original_max <= 0) {
+        throw std::invalid_argument("compute_rope_yarn_table: original_max must be positive");
+    }
+    if (beta_fast < 0 || beta_slow < 0 || beta_slow > beta_fast) {
+        throw std::invalid_argument("compute_rope_yarn_table: invalid beta_fast/beta_slow");
+    }
+    if (!(ext_factor >= 0.0)) {
+        throw std::invalid_argument("compute_rope_yarn_table: ext_factor must be nonnegative");
+    }
+
+    const double base   = static_cast<double>(theta);
+    const double r      = static_cast<double>(rotary_dim);
+    const double log_b  = std::log(base);
+    const double two_pi = 2.0 * std::acos(-1.0);
+    const auto corr_dim = [&](double n_rot) {
+        return r * std::log(static_cast<double>(original_max) / (n_rot * two_pi)) / (2.0 * log_b);
+    };
+    double low         = std::floor(corr_dim(static_cast<double>(beta_fast)));
+    double high        = std::ceil(corr_dim(static_cast<double>(beta_slow)));
+    const double r_max = static_cast<double>(rotary_dim - 1);
+    if (low < 0.0) { low = 0.0; }
+    if (low > r_max) { low = r_max; }
+    if (high < 0.0) { high = 0.0; }
+    if (high > r_max) { high = r_max; }
+    if (high - low < 1e-9) { high += 0.001; }
+
+    const int half = rotary_dim / 2;
+    YarnTable table;
+    table.inv_freq.reserve(static_cast<std::size_t>(half));
+    for (int i = 0; i < half; ++i) {
+        double ramp = (static_cast<double>(i) - low) / (high - low);
+        if (ramp < 0.0) { ramp = 0.0; }
+        if (ramp > 1.0) { ramp = 1.0; }
+        const double mask   = (1.0 - ramp) * ext_factor;
+        const double extrap = std::pow(base, -2.0 * static_cast<double>(i) / r);
+        const double interp = extrap / scale;
+        const double freq   = interp * (1.0 - mask) + extrap * mask;
+        table.inv_freq.push_back(static_cast<float>(freq));
+    }
+    table.mscale = (scale <= 1.0) ? 1.0f : static_cast<float>(0.1 * std::log(scale) + 1.0);
+    return table;
+}
+
+} // namespace ninfer::ops

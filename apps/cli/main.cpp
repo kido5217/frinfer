@@ -181,15 +181,30 @@ void print_generation_summary(const ninfer::GenerationResult& result,
     print_metric("throughput (overall)",
                  format_rate(static_cast<double>(generated), model_seconds));
 
-    const std::uint64_t reserved = static_cast<std::uint64_t>(memory.weights.capacity_bytes) +
-                                   memory.runtime_reservation_bytes;
+    const std::uint64_t reserved =
+        static_cast<std::uint64_t>(memory.weights.capacity_bytes) +
+        memory.runtime_reservation_bytes +
+        memory.cuda_graph.value_or(ninfer::GraphMemorySummary{}).rebuild_estimate_bytes +
+        static_cast<std::size_t>(std::max<std::int64_t>(0, memory.startup_retained_bytes));
     print_metric("device", std::to_string(memory.device));
     print_metric("max context", std::to_string(memory.max_context));
+    print_metric("prefill chunk", std::to_string(memory.prefill_chunk));
+    print_metric("device budget", format_bytes(memory.device_budget_bytes));
     print_metric("KV capacity policy", format_kv_capacity_mode(memory.kv_capacity_mode));
     print_metric("KV capacity", std::to_string(memory.kv_capacity));
     print_metric("KV page groups", std::to_string(memory.kv_capacity_page_groups) + " / " +
                                        std::to_string(memory.kv_capacity_max_page_groups));
     print_metric("gpu weights used", format_arena_used(memory.weights));
+    if (memory.moe) {
+        print_metric("expert Host weights", format_bytes(memory.moe->host_weights_bytes));
+        print_metric("expert GPU cache", format_bytes(memory.moe->cache_bytes));
+        print_metric("expert fixed", format_bytes(memory.moe->fixed_bytes));
+        print_metric("expert windows", format_bytes(memory.moe->window_bytes));
+        print_metric("expert cache used", format_bytes(memory.moe->used_bytes));
+        print_metric("expert cache target", format_bytes(memory.moe->target_bytes));
+        print_metric("expert cache ready", format_bytes(memory.moe->ready_bytes));
+        print_metric("expert CPU workers", std::to_string(memory.moe->cpu_workers));
+    }
     print_metric("gpu sequence used", format_arena_used(memory.sequence));
     print_metric("kv cache dtype", format_kv_cache(memory.kv_cache));
     print_metric("kv cache payload", format_bytes(memory.kv_payload_bytes));
@@ -199,7 +214,17 @@ void print_generation_summary(const ninfer::GenerationResult& result,
     print_metric("free after startup", format_bytes(memory.available_after_startup_bytes));
     print_metric("KV capacity headroom", format_bytes(memory.kv_capacity_headroom_bytes));
     print_metric("planned slack", format_bytes(memory.planned_slack_bytes));
-    print_metric("CUDA Graph allowance", format_bytes(memory.cuda_graph_allowance_bytes));
+    if (memory.cuda_graph) {
+        print_metric("graph rebuild estimate",
+                     format_bytes(memory.cuda_graph->rebuild_estimate_bytes));
+        print_metric("graph prepare increment",
+                     std::to_string(memory.cuda_graph->preparation_increment_bytes) + " B");
+        print_metric("graph calibration growth",
+                     std::to_string(memory.cuda_graph->calibration_increment_bytes) + " B");
+        print_metric("graph calibration retained",
+                     std::to_string(memory.cuda_graph->calibration_retained_bytes) + " B");
+    }
+    print_metric("startup retained", std::to_string(memory.startup_retained_bytes) + " B");
     print_metric("planned device total", format_bytes(reserved));
 
     const ninfer::SpeculativeStats& speculative = result.speculative;

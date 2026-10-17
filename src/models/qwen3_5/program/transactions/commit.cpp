@@ -1,5 +1,5 @@
 #include "models/qwen3_5/program/program_impl.h"
-#include "models/qwen3_5/program/context_work.h"
+#include "models/common/context/work.h"
 #include "models/qwen3_5/program/execution_context.h"
 #include "core/device.h"
 #include "ninfer/ops/sampling.h"
@@ -97,11 +97,11 @@ PendingBatch ProgramImpl::decode(std::span<const SequenceHandle> members,
         if (failed_timing != nullptr) { *failed_timing += round.timing; }
         return wrap_pending(lane_span, std::move(round));
     } catch (...) {
-        const Clock::time_point cleanup_started = Clock::now();
+        const context::Clock::time_point cleanup_started = context::Clock::now();
         clear_execution_failure_lanes(lane_span);
         pending_transaction_.reset();
         if (failed_timing != nullptr) {
-            failed_timing->post_host_ns += elapsed_ns(cleanup_started);
+            failed_timing->post_host_ns += context::elapsed_ns(cleanup_started);
         }
         throw;
     }
@@ -134,10 +134,11 @@ void ProgramImpl::commit_generated_prefix_identity(
     if (already_appended && !prefix_execution_split_after) { return; }
     sequence.prefix_identity.truncate(base_ledger_frontier);
     sequence.prefix_digests.truncate(base_ledger_frontier);
-    sequence.prefix_identity.append_generated(accepted_tokens.size(), sequence.rope_delta,
+    sequence.prefix_identity.append_generated(accepted_tokens.size(),
+                                              sequence.continuation.metadata.rope_delta,
                                               prefix_execution_split_after);
-    sequence.prefix_digests.append_generated(accepted_tokens, sequence.rope_delta,
-                                             prefix_execution_split_after);
+    sequence.prefix_digests.append_generated(
+        accepted_tokens, sequence.continuation.metadata.rope_delta, prefix_execution_split_after);
     if (sequence.prefix_identity.size() != sequence.ledger.size() ||
         sequence.prefix_digests.size() != sequence.ledger.size()) {
         throw std::logic_error("committed generated-prefix identity changed the ledger shape");
@@ -167,17 +168,23 @@ runtime::ExecutionTiming ProgramImpl::append_forced_tokens(
             throw std::logic_error("forced-token membership is duplicate or not active");
         }
         const SequenceState& sequence = active_sequence(lane);
-        if (sequence.execution_frontier == std::numeric_limits<std::uint32_t>::max() ||
-            sequence.ledger_frontier != sequence.execution_frontier + 1U ||
+        if (sequence.continuation.metadata.execution_frontier ==
+                std::numeric_limits<std::uint32_t>::max() ||
+            sequence.ledger_frontier != sequence.continuation.metadata.execution_frontier + 1U ||
             sequence.ledger.size() != sequence.ledger_frontier ||
             sequence.prefix_identity.size() != sequence.ledger_frontier ||
             sequence.prefix_digests.size() != sequence.ledger_frontier ||
-            sequence.text_kv_valid != sequence.execution_frontier ||
+            sequence.continuation.metadata.text_kv_valid !=
+                sequence.continuation.metadata.execution_frontier ||
             (speculative_backend == SpeculativeBackend::Mtp &&
-             sequence.mtp_kv_valid != sequence.execution_frontier) ||
+             sequence.continuation.metadata.backend_kv_valid !=
+                 sequence.continuation.metadata.execution_frontier) ||
             (is_masked_draft_backend(speculative_backend) &&
-             sequence.dflash_context_frontier > sequence.execution_frontier) ||
-            static_cast<std::uint64_t>(sequence.execution_frontier) + row_stride > capacity) {
+             sequence.continuation.metadata.dflash_context_frontier >
+                 sequence.continuation.metadata.execution_frontier) ||
+            static_cast<std::uint64_t>(sequence.continuation.metadata.execution_frontier) +
+                    row_stride >
+                capacity) {
             throw std::logic_error("forced-token sequence frontier is invalid");
         }
         validate_licensed_tokens(row_major_tokens.subspan(row * row_stride, row_stride));
@@ -194,11 +201,11 @@ runtime::ExecutionTiming ProgramImpl::append_forced_tokens(
         [&](std::uint32_t lane) { return requests[lane].sampling_host.token_counts != nullptr; });
     if (count_forced_tokens) {
         work.reset();
-        Tensor forced_ids =
-            work.alloc(DType::I32, {checked_i32(static_cast<std::uint32_t>(row_major_tokens.size()),
-                                                "forced-token batch exceeds int32")});
+        Tensor forced_ids = work.alloc(
+            DType::I32, {context::checked_i32(static_cast<std::uint32_t>(row_major_tokens.size()),
+                                              "forced-token batch exceeds int32")});
         CUDA_CHECK(cudaMemcpyAsync(forced_ids.data, row_major_tokens.data(), forced_ids.bytes(),
-                                   cudaMemcpyHostToDevice, device.stream));
+                                   cudaMemcpyHostToDevice, device.stream()));
         for (std::size_t row = 0; row < members.size(); ++row) {
             const std::uint32_t lane = lanes[row];
             if (requests[lane].sampling_host.token_counts == nullptr) { continue; }
@@ -206,7 +213,7 @@ runtime::ExecutionTiming ProgramImpl::append_forced_tokens(
                                              static_cast<std::int32_t>(row_stride));
             Tensor counts = token_counts.slice(1, static_cast<std::int32_t>(lane), 1)
                                 .view({dimension(parameters.model.resources().public_token_count)});
-            ops::increment_token_counts(ids, counts, device.stream);
+            ops::increment_token_counts(ids, counts, device.execution_view());
         }
         work.reset();
     }
@@ -220,23 +227,25 @@ runtime::ExecutionTiming ProgramImpl::append_forced_tokens(
             const std::span<const TokenId> forced =
                 row_major_tokens.subspan(row * row_stride, row_stride);
             const std::uint32_t base_ledger_frontier = sequence.ledger_frontier;
-            const std::uint32_t base                 = sequence.execution_frontier;
-            const std::uint32_t end                  = base + row_stride;
-            const auto started                       = Clock::now();
+            const std::uint32_t base = sequence.continuation.metadata.execution_frontier;
+            const std::uint32_t end  = base + row_stride;
+            const auto started       = context::Clock::now();
 
             ensure_sequence_kv_mapped(sequence, end, backend_kv_cache() ? end : 0U);
             if (is_masked_draft_backend(speculative_backend) &&
-                sequence.dflash_context_frontier < base) {
+                sequence.continuation.metadata.dflash_context_frontier < base) {
                 const std::array<std::uint32_t, 1> append_lanes{lane};
-                const std::array<std::uint32_t, 1> append_starts{sequence.dflash_context_frontier};
-                const std::array<std::uint32_t, 1> append_counts{base -
-                                                                 sequence.dflash_context_frontier};
+                const std::array<std::uint32_t, 1> append_starts{
+                    sequence.continuation.metadata.dflash_context_frontier};
+                const std::array<std::uint32_t, 1> append_counts{
+                    base - sequence.continuation.metadata.dflash_context_frontier};
                 enqueue_dflash_context_append(append_lanes, append_starts, append_counts);
                 timing.begin_wait();
                 device.synchronize();
                 timing.end_wait();
-                sequence.dflash_context_frontier = base;
-                commit_sequence_kv(sequence, sequence.text_kv_valid, backend_kv_valid(sequence));
+                sequence.continuation.metadata.dflash_context_frontier = base;
+                commit_sequence_kv(sequence, sequence.continuation.metadata.text_kv_valid,
+                                   backend_kv_valid(sequence));
                 work.reset();
                 timing.resume_submit();
             }
@@ -255,20 +264,20 @@ runtime::ExecutionTiming ProgramImpl::append_forced_tokens(
                 }
             }
 
-            set_device_i32(io.text_kv_table_row, text_kv_addresses->bound_row(sequence.kv->text));
+            set_device_i32(io.text_kv_table_row,
+                           text_kv_histories->bound_row(sequence.kv->text.handle()));
             if (sequence.kv->backend) {
                 set_device_i32(io.backend_kv_table_row,
-                               backend_kv_addresses->bound_row(*sequence.kv->backend));
+                               backend_kv_histories->bound_row(sequence.kv->backend->handle()));
             }
             std::uint32_t cursor = base;
             while (cursor < end) {
-                const std::uint32_t count           = std::min(prefill_chunk, end - cursor);
-                const StateImageSelectors selectors = state_selectors(sequence);
+                const std::uint32_t count = std::min(prefill_chunk, end - cursor);
+                const context::StateImageSelectors selectors = state_selectors(sequence);
                 execution::PrefillContext schedule_state{
                     {device, parameters, work, state_images->linear(),
                      replay_records ? &*replay_records : nullptr, io, prefill_hidden, prefill_chunk,
-                     proposal_head},
-                    text_kv_view(sequence),
+                     proposal_head, moe.get()},
                     mtp_kv_view(sequence),
                     decoder->text_kv,
                     decoder->mtp_cache(),
@@ -279,10 +288,11 @@ runtime::ExecutionTiming ProgramImpl::append_forced_tokens(
                     selectors.source,
                     selectors.destination,
                     0,
-                    sequence.kv->backend ? backend_kv_addresses->bound_row(*sequence.kv->backend)
-                                         : 0,
+                    sequence.kv->backend
+                        ? backend_kv_histories->bound_row(sequence.kv->backend->handle())
+                        : 0,
                     dflash_prefill_host_ingress,
-                    sequence.rope_delta};
+                    sequence.continuation.metadata.rope_delta};
                 schedule_state.prefill_gpu_timer = &prefill_gpu_timer_;
                 mark_workspace_usage(speculative_backend == SpeculativeBackend::Mtp
                                          ? workspace_plan.mtp_prefill
@@ -300,14 +310,15 @@ runtime::ExecutionTiming ProgramImpl::append_forced_tokens(
                     throw std::logic_error("forced-token prefill made invalid progress");
                 }
                 cursor += result.processed_tokens;
-                sequence.text_kv_valid = cursor;
+                sequence.continuation.metadata.text_kv_valid = cursor;
                 if (speculative_backend == SpeculativeBackend::Mtp) {
-                    sequence.mtp_kv_valid = cursor;
+                    sequence.continuation.metadata.backend_kv_valid = cursor;
                 } else if (is_masked_draft_backend(speculative_backend)) {
-                    sequence.dflash_context_frontier = cursor;
+                    sequence.continuation.metadata.dflash_context_frontier = cursor;
                 }
-                commit_sequence_kv(sequence, sequence.text_kv_valid, backend_kv_valid(sequence));
-                settle_state_fork(sequence);
+                commit_sequence_kv(sequence, sequence.continuation.metadata.text_kv_valid,
+                                   backend_kv_valid(sequence));
+                complete_state_write(sequence);
                 copy_tail(sequence,
                           prefill_hidden.slice(
                               1, static_cast<std::int32_t>(result.processed_tokens) - 1, 1));
@@ -319,20 +330,21 @@ runtime::ExecutionTiming ProgramImpl::append_forced_tokens(
 
             commit_generated_prefix_identity(sequence, base_ledger_frontier, forced,
                                              prefix_execution_splits[row]);
-            sequence.execution_frontier = end;
-            sequence.ledger_frontier    = end + 1U;
-            sequence.mtp_draft_count    = 0;
-            sequence.tail_hidden_valid  = true;
+            sequence.continuation.metadata.execution_frontier = end;
+            sequence.ledger_frontier                          = end + 1U;
+            sequence.mtp_draft_count                          = 0;
+            sequence.continuation.metadata.tail_hidden_valid  = true;
             if (sequence.ledger.size() != sequence.ledger_frontier ||
                 sequence.prefix_identity.size() != sequence.ledger_frontier ||
                 sequence.prefix_digests.size() != sequence.ledger_frontier ||
                 sequence.ledger.back() != forced.back()) {
                 throw std::logic_error("forced-token commit did not establish a valid frontier");
             }
-            trim_sequence_kv(sequence, sequence.text_kv_valid, backend_kv_valid(sequence));
+            trim_sequence_kv(sequence, sequence.continuation.metadata.text_kv_valid,
+                             backend_kv_valid(sequence));
             settle_unit(lane);
             request.timings.decode_seconds +=
-                std::chrono::duration<double>(Clock::now() - started).count();
+                std::chrono::duration<double>(context::Clock::now() - started).count();
         }
         return timing.finish();
     } catch (...) {
@@ -537,10 +549,7 @@ AbortResult ProgramImpl::abort(SequenceHandle handle) noexcept {
     try {
         device.synchronize();
     } catch (...) { return out; }
-    if (context_transaction_ && context_transaction_->kind != ContextOperationKind::Demote &&
-        context_transaction_->lane == lane) {
-        abort_context();
-    }
+    if (context_operation_ && context_operation_->lane() == lane) { abort_context(); }
     clear_lane(sequences[lane], requests[lane]);
     out.status = runtime::ConsumeStatus::Consumed;
     return out;

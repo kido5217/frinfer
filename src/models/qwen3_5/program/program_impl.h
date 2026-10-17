@@ -1,24 +1,30 @@
 #pragma once
+
+#include "models/common/context/migration.h"
+#include "models/common/moe/resources.h"
 #include "models/qwen3_5/program/internal.h"
 
 #include "core/arena.h"
+#include "core/buffer.h"
 #include "core/gdn_replay_records.h"
 #include "core/host_kv_arena.h"
 #include "ninfer/ops/gdn_replay.h"
 #include "ninfer/ops/sampling.h"
 #include "core/decode_graph.h"
-#include "models/qwen3_5/frontend/prepared_prompt.h"
+#include "models/qwen3_5/program/text_graph.h"
+#include "models/common/qwen/frontend/prepared_prompt.h"
 
 #include "models/qwen3_5/program/planning/startup.h"
 #include "models/qwen3_5/program/storage/draft_context.h"
-#include "models/qwen3_5/program/storage/host_kv_store.h"
-#include "models/qwen3_5/program/storage/kv_address_space.h"
-#include "models/qwen3_5/program/storage/state_store.h"
-#include "models/qwen3_5/program/prefix_identity.h"
+#include "models/common/context/host_kv_store.h"
+#include "models/common/context/kv_history.h"
+#include "models/common/context/snapshot.h"
+#include "models/qwen3_5/state/state_image.h"
+#include "models/common/qwen/prefix_identity.h"
 #include "core/host_context_arena.h"
 #include "models/qwen3_5/execution/text.h"
-#include "models/qwen3_5/execution/vision.h"
-#include "models/qwen3_5/program/vision_prefill.h"
+#include "models/common/qwen/vision/vision.h"
+#include "models/common/qwen/vision/prefill.h"
 #include "models/qwen3_5/program/logprob_assembly.h"
 
 #include <algorithm>
@@ -35,12 +41,11 @@
 
 namespace ninfer::models::qwen3_5::detail {
 using execution::dimension;
-using PreparedPromptData = qwen3_5::PreparedPromptData;
 
 struct PreparedCaptureBacking {
-    PrefixShortlistDigests digests;
+    qwen::PrefixShortlistDigests digests;
     std::vector<TokenId> ledger;
-    qwen3_5::detail::ResidentPrefixIdentity prefix_identity;
+    qwen::ResidentPrefixIdentity prefix_identity;
 };
 
 struct CaptureGroup {
@@ -57,16 +62,16 @@ enum class MtpBridgeMode : std::uint8_t {
 };
 
 struct RequestBasePlanImpl {
-    std::shared_ptr<const PreparedPromptData> prompt;
+    std::shared_ptr<const qwen::PreparedPromptData> prompt;
     runtime::RequestPlanSummary summary;
-    qwen3_5::PreparedContextCache context_cache;
+    qwen::PreparedContextCache context_cache;
     ops::SamplingConfig sampling;
     // Request opted into per-token log probabilities.
     bool logprobs = false;
-    std::shared_ptr<const VisionControlPlan> vision_control_plan;
+    std::shared_ptr<const qwen::VisionControlPlan> vision_control_plan;
     std::vector<CaptureGroup> capture_groups;
     std::shared_ptr<const PreparedCaptureBacking> capture_backing;
-    PrefixShortlistDigests prefix_digests;
+    qwen::PrefixShortlistDigests prefix_digests;
     std::uint32_t prefix_identity_tag = 0;
     bool allow_prefix_reuse           = false;
 
@@ -76,8 +81,8 @@ struct RequestBasePlanImpl {
 enum class PendingKind : std::uint8_t { None, Begin, Ordinary, Speculative };
 
 struct PendingCandidate {
-    PendingKind kind            = PendingKind::None;
-    std::uint32_t base_E        = 0;
+    PendingKind kind = PendingKind::None;
+    Continuation base;
     std::uint32_t base_S        = 0;
     std::uint32_t prompt_tokens = 0;
     std::uint32_t produced      = 0;
@@ -101,25 +106,26 @@ struct UnitDemand {
 };
 
 struct RecoveryPermit {
-    // The active KV addresses hold the physical reservation through this coverage.
+    // The active KV histories hold the physical reservation through this coverage.
     // These frontiers distinguish reconstructed work from committed new progress.
     UnitDemand coverage;
     std::uint32_t frontier    = 0;
     std::size_t ledger_tokens = 0;
 };
 
-struct SequenceKVBundle {
-    KVAddressSpaceHandle text;
-    std::optional<KVAddressSpaceHandle> backend;
+struct KVHistoryView {
+    context::KVHistoryHandle text;
+    std::optional<context::KVHistoryHandle> backend;
+    friend bool operator==(const KVHistoryView&, const KVHistoryView&) = default;
 };
 
-// One mutable KV directory shared by the internal recovery points of a private history.
-// Independent public/branch views own a different history and share only physical prefix pages.
-struct KVHistory {
-    ProgramImpl* owner = nullptr;
-    KVAddressSpaceHandle text;
-    std::optional<KVAddressSpaceHandle> backend;
-    ~KVHistory();
+struct SequenceKVBundle {
+    context::KVHistory text;
+    std::optional<context::KVHistory> backend;
+
+    [[nodiscard]] KVHistoryView view() const {
+        return {text.handle(), backend ? std::optional(backend->handle()) : std::nullopt};
+    }
 };
 
 struct DecodeGraphProfile {
@@ -128,11 +134,13 @@ struct DecodeGraphProfile {
     std::uint32_t max_execution_frontier = 0;
     std::uint32_t topology_class         = 0;
     DecodeGraphDefinition definition;
+    std::unique_ptr<execution::TextGraphDefinition> text;
 };
 
 struct DecodeGraphTopology {
     std::uint32_t topology_class = 0;
     DecodeGraphExecutable executable;
+    std::unique_ptr<execution::TextGraphExecutable> text;
     std::optional<std::size_t> installed_profile;
 };
 
@@ -140,7 +148,7 @@ struct DecodeGraphFamily {
     std::vector<DecodeGraphProfile> profiles;
     std::vector<DecodeGraphTopology> topologies;
     DecodeGraphProfile& select(std::uint32_t batch_size, std::uint32_t frontier);
-    DecodeGraphExecutable& install(DecodeGraphProfile& profile);
+    DecodeGraphTopology& install(DecodeGraphProfile& profile);
 };
 
 // A Forward stage publishes these IDs before target execution finishes. Program owns the
@@ -152,30 +160,27 @@ struct DFlashDraftHandoff {
     DFlashDraftHandoff(const DeviceContext& device, std::size_t count)
         : ids(count * sizeof(TokenId)), ready(device) {}
 
-    [[nodiscard]] std::span<TokenId> tokens() const noexcept {
+    [[nodiscard]] std::span<TokenId> tokens() noexcept {
         return {static_cast<TokenId*>(ids.data()), ids.size() / sizeof(TokenId)};
     }
 };
 
 struct SequenceState {
-    std::shared_ptr<KVHistory> kv;
-    ActiveStateBinding state;
-    Tensor tail_hidden;
+    std::optional<SequenceKVBundle> kv;
+    Continuation continuation;
+    StateImageHandle pending_write;
     std::uint32_t lane = 0;
 
-    std::uint32_t execution_frontier = 0;
-    std::uint32_t ledger_frontier    = 0;
+    std::uint32_t ledger_frontier = 0;
     std::vector<TokenId> ledger;
-    qwen3_5::detail::ResidentPrefixIdentity prefix_identity;
-    qwen3_5::detail::PrefixShortlistDigests prefix_digests;
-    std::int32_t rope_delta               = 0;
-    std::uint32_t text_kv_valid           = 0;
-    std::uint32_t mtp_kv_valid            = 0;
-    std::uint32_t dflash_context_frontier = 0;
+    qwen::ResidentPrefixIdentity prefix_identity;
+    qwen::PrefixShortlistDigests prefix_digests;
     std::array<TokenId, qwen3_5::kMtpDecodeMaximumDrafts> mtp_drafts{};
     std::uint32_t mtp_draft_count = 0;
-    bool tail_hidden_valid        = false;
-    bool endpoint_valid           = false;
+
+    [[nodiscard]] StateImageHandle write_state() const noexcept {
+        return pending_write.valid() ? pending_write : continuation.image;
+    }
 };
 
 struct CaptureReservation {
@@ -183,8 +188,6 @@ struct CaptureReservation {
     std::vector<std::pair<CheckpointHandle, runtime::CheckpointRole>> points;
     StateImageHandle state;
     std::optional<HostContextAllocation> host;
-    std::optional<DeviceKVPageReservation> main_tail;
-    std::optional<DeviceKVPageReservation> backend_tail;
     std::uint32_t frontier = 0;
     ~CaptureReservation();
 };
@@ -210,9 +213,9 @@ struct RequestControl {
     bool capture_pending     = false;
 
     struct Prefill {
-        PreparedPromptData prompt;
-        std::optional<VisionPrefillPlan> vision_plan;
-        std::unique_ptr<execution::VisionPrefillSession> vision;
+        qwen::PreparedPromptData prompt;
+        std::optional<qwen::VisionPrefillPlan> vision_plan;
+        std::unique_ptr<qwen::VisionPrefillSession> vision;
         std::uint32_t base               = 0;
         std::uint32_t cursor             = 0;
         std::uint32_t prompt_tokens      = 0;
@@ -228,24 +231,38 @@ struct RequestControl {
     std::optional<Prefill> replay;
 };
 
+using Snapshot = context::ContextSnapshot<ContinuationMetadata, PreparedCaptureBacking>;
+
 struct CheckpointState {
-    std::shared_ptr<KVHistory> kv;
+    Snapshot snapshot;
     runtime::CheckpointRole role = runtime::CheckpointRole::Continuation;
-    StateImageHandle state;
-    std::shared_ptr<const PreparedCaptureBacking> identity;
     PrefixShortlistKey key;
-    std::uint32_t frontier         = 0;
-    std::uint32_t backend_frontier = 0;
-    std::int32_t rope_delta        = 0;
-    bool tail_hidden_valid         = false;
+
+    [[nodiscard]] const Continuation& continuation() const noexcept {
+        return snapshot.continuation();
+    }
+
+    [[nodiscard]] std::uint32_t frontier() const noexcept {
+        return continuation().metadata.execution_frontier;
+    }
+
+    [[nodiscard]] std::uint32_t backend_frontier() const noexcept {
+        return continuation().metadata.backend_kv_valid;
+    }
+
+    [[nodiscard]] const context::KVPrefixRef& text_prefix() const { return snapshot.prefix(0); }
+
+    [[nodiscard]] const context::KVPrefixRef* backend_prefix() const {
+        return snapshot.prefixes().size() == 2 ? &snapshot.prefix(1) : nullptr;
+    }
+
+    [[nodiscard]] KVHistoryView history() const {
+        return {text_prefix().history(),
+                backend_prefix() ? std::optional(backend_prefix()->history()) : std::nullopt};
+    }
 };
 
-struct CheckpointSlot {
-    std::optional<CheckpointState> value;
-    std::uint64_t generation = 1;
-    std::uint32_t pins       = 0;
-    bool reserved            = false;
-};
+using Checkpoints = context::CheckpointStore<CheckpointState>;
 
 struct ResumeStateImpl {
     ProgramImpl* owner = nullptr;
@@ -261,16 +278,18 @@ public:
     ProgramImpl(const execution::Parameters&, const SequencePlanImpl&, DeviceContext&,
                 const StartupObserver&);
     ~ProgramImpl() noexcept;
-    [[nodiscard]] RequestBasePlan plan_request(PreparedPromptData&&,
+    void initialize_graphs();
+    void release_graphs();
+    [[nodiscard]] RequestBasePlan plan_request(qwen::PreparedPromptData&&,
                                                const runtime::ResolvedExecutionOptions&);
-    [[nodiscard]] std::vector<float> causal_score(PreparedPromptData&&, std::uint32_t first_target);
+    [[nodiscard]] std::vector<float> causal_score(qwen::PreparedPromptData&&,
+                                                  std::uint32_t first_target);
     [[nodiscard]] std::optional<SourceCandidate>
     inspect_source(const RequestBasePlan&, std::optional<CheckpointHandle>, bool = false,
                    std::span<const CheckpointHandle> = {},
                    std::span<const CheckpointHandle> = {}) const;
     [[nodiscard]] PrefixShortlistKey checkpoint_key(CheckpointHandle, std::uint32_t frontier) const;
-    [[nodiscard]] runtime::ContextResourceUsage
-        checkpoint_footprint(std::span<const CheckpointHandle>) const;
+    [[nodiscard]] ContextResources checkpoint_footprint(std::span<const CheckpointHandle>) const;
     [[nodiscard]] CheckpointSummary checkpoint_summary(CheckpointHandle) const;
     [[nodiscard]] CheckpointMetadata checkpoint_metadata(CheckpointHandle) const;
     [[nodiscard]] bool checkpoint_matches(CheckpointHandle, const RequestBasePlan&) const;
@@ -280,13 +299,11 @@ public:
     [[nodiscard]] std::uint64_t checkpoint_recovery_loss(std::span<const CheckpointHandle>,
                                                          std::span<const CheckpointHandle>) const;
     [[nodiscard]] bool can_release_checkpoint(CheckpointHandle) const noexcept;
-    [[nodiscard]] std::optional<runtime::ContextResourceUsage>
-        checkpoint_release_resources(std::span<const CheckpointHandle>,
-                                     runtime::ContextResourceUsage) const;
+    [[nodiscard]] std::optional<ContextResources>
+        checkpoint_release_resources(std::span<const CheckpointHandle>, ContextResources) const;
     [[nodiscard]] bool release_checkpoint(CheckpointHandle) noexcept;
-    void refresh_history_requirements(const std::shared_ptr<KVHistory>&, bool trim_unused = false);
     [[nodiscard]] bool revoke_snapshot(ResumeState&) noexcept;
-    [[nodiscard]] runtime::ContextResourceUsage snapshot_resources(const ResumeState& paused) const;
+    [[nodiscard]] ContextResources snapshot_resources(const ResumeState& paused) const;
     // Exact Host bytes freed by deleting this fixed set, with physical sharing counted once.
     [[nodiscard]] std::size_t
     host_bytes_released(std::span<const CheckpointHandle> checkpoints) const;
@@ -294,8 +311,8 @@ public:
     [[nodiscard]] std::size_t
     release_redundant_host(std::span<const CheckpointHandle> excluded,
                            std::optional<SequenceHandle> pending_backup = std::nullopt);
-    [[nodiscard]] runtime::ResourceReservation reserve_units(std::span<const ExecutionUnit>);
-    [[nodiscard]] bool reclaim_capture_reservation(runtime::ContextResourceUsage shortage);
+    [[nodiscard]] ResourceReservation reserve_units(std::span<const ExecutionUnit>);
+    [[nodiscard]] bool reclaim_capture_reservation(ContextResources shortage);
     void release_units(std::span<const SequenceHandle>) noexcept;
     [[nodiscard]] BindingReservation start_binding(const RequestBasePlan&, runtime::LaneId,
                                                    const SourceCandidate&, ResumeState*,
@@ -306,16 +323,16 @@ public:
     void skip_capture(SequenceHandle);
     [[nodiscard]] ContextReclaimPlan plan_reclaim(std::span<const CheckpointHandle>,
                                                   std::span<const CheckpointHandle>,
-                                                  runtime::ContextResourceUsage) const;
+                                                  ContextResources) const;
     [[nodiscard]] std::vector<ContextRelease> plan_releases(std::span<const CheckpointHandle>,
                                                             std::span<const CheckpointHandle>,
-                                                            runtime::ContextResourceUsage) const;
+                                                            ContextResources) const;
     [[nodiscard]] bool start_demote(const ContextDemotion&);
     [[nodiscard]] bool start_pause(SequenceHandle, bool save_snapshot, runtime::ExecutionTiming*);
     [[nodiscard]] ContextProgress poll_context(runtime::CancellationFlagView);
 
-    [[nodiscard]] bool has_context_transaction() const noexcept {
-        return context_transaction_.has_value();
+    [[nodiscard]] bool has_context_operation() const noexcept {
+        return context_operation_.has_value();
     }
 
     [[nodiscard]] bool context_blocks(SequenceHandle) const noexcept;
@@ -337,7 +354,7 @@ public:
     [[nodiscard]] AbortResult abort(SequenceHandle) noexcept;
     void fail_all_cleanup() noexcept;
     [[nodiscard]] PhysicalUsageSnapshot physical_usage() const noexcept;
-    [[nodiscard]] MemorySummary memory_summary() const noexcept;
+    [[nodiscard]] MemorySummary memory_summary() const;
     void reset_memory_peaks() noexcept;
 
     const execution::Parameters& parameters;
@@ -355,24 +372,25 @@ public:
     const bool use_cuda_graph;
     const bool causal_scoring;
     const std::size_t kv_payload_bytes;
-    const std::size_t graph_allowance_bytes;
+    std::optional<GraphMemorySummary> graph_memory;
     const WorkspacePlan workspace_plan;
 
-    DeviceArena persistent;
-    DeviceArena workspace_storage;
-    WorkspaceArena work;
+    DeviceBuffer persistent;
+    DeviceBuffer workspace_storage;
+    MemoryArena work;
+    std::unique_ptr<moe::Resources> moe;
     std::unique_ptr<qwen3_5::DecoderState> decoder;
     std::unique_ptr<HostContextArena> host_context_arena;
     std::unique_ptr<HostKVArena> host_kv_arena;
-    std::unique_ptr<LogicalKVPageStore> text_kv_pages;
-    std::unique_ptr<KVAddressSpaceStore> text_kv_addresses;
-    std::unique_ptr<LogicalKVPageStore> backend_kv_pages;
-    std::unique_ptr<KVAddressSpaceStore> backend_kv_addresses;
-    std::unique_ptr<HostKVExtentStore> host_kv_extents;
+    std::unique_ptr<context::LogicalKVPageStore> text_kv_pages;
+    std::unique_ptr<context::KVHistoryStore> text_kv_histories;
+    std::unique_ptr<context::LogicalKVPageStore> backend_kv_pages;
+    std::unique_ptr<context::KVHistoryStore> backend_kv_histories;
+    std::unique_ptr<context::HostKVExtentStore> host_kv_extents;
+    std::vector<runtime::KvPoolDescriptor> kv_pools;
     std::size_t text_host_kv_page_stride    = 0;
     std::size_t backend_host_kv_page_stride = 0;
-    std::unique_ptr<qwen3_5::StateImageDevicePool> state_images;
-    std::unique_ptr<qwen3_5::HostStatePool> host_state_images;
+    std::unique_ptr<qwen3_5::StateImageViews> state_images;
     std::unique_ptr<StateImageStore> state_store;
     std::optional<GdnReplayRecords> replay_records;
     std::optional<ops::GdnReplayFoldPlan> replay_fold;
@@ -390,7 +408,7 @@ public:
                                         std::span<const TokenId> drafts);
     Tensor token_counts;
 
-    VisionHandoffState vision_handoff;
+    qwen::VisionHandoffState vision_handoff;
     std::array<SequenceState, kMaximumConcurrency> sequences;
     std::array<RequestControl, kMaximumConcurrency> requests;
     std::array<std::uint64_t, kMaximumConcurrency> lane_epochs{};
@@ -399,7 +417,7 @@ public:
     std::array<runtime::RawTokenLogprob,
                kMaximumConcurrency * kDFlashDecodeMaximumWidth>
         pending_logprobs_{};
-    std::vector<CheckpointSlot> checkpoints;
+    Checkpoints checkpoints;
 
     std::optional<PinnedHostBuffer> round_host;
     std::optional<PinnedHostBuffer> score_logprobs_host;
@@ -428,71 +446,76 @@ public:
     std::optional<PendingTransaction> pending_transaction_;
     std::uint64_t next_transaction_id_ = 1;
 
-    struct KVTransfer {
-        LogicalKVPageStore* pages              = nullptr;
-        runtime::ContextResourceClass resource = runtime::ContextResourceClass::MainKV;
-        std::vector<LogicalKVPageHandle> logical;
-        std::vector<DeviceKVPageHandle> physical;
-        std::optional<HostKVExtentReservation> host_destination;
-        std::optional<DeviceKVPageReservation> device_reservation;
-        bool restore     = false;
-        bool drop_device = false;
-    };
-
-    struct ContextTransaction {
-        ContextOperationKind kind = ContextOperationKind::Bind;
-        std::uint32_t lane        = 0;
-        std::uint64_t epoch       = 0;
+    struct BindOperation {
+        static constexpr auto kind = ContextOperationKind::Bind;
+        std::uint32_t lane         = 0;
         std::optional<CheckpointHandle> source;
-        std::vector<std::pair<CheckpointHandle, runtime::CheckpointRole>> capture_points;
+        Checkpoints::Lease source_lease;
         std::vector<CheckpointHandle> carried_points;
-        std::vector<CheckpointHandle> carried_pins;
+        std::vector<Checkpoints::Lease> carried_pins;
         std::vector<std::pair<CheckpointHandle, CheckpointHandle>> carried_clones;
         std::vector<CheckpointHandle> retired_points;
         std::shared_ptr<const RequestBasePlanImpl> base;
-        ResumeState* resume  = nullptr;
-        bool resume_snapshot = false;
-        std::optional<ResumeState> paused;
-        std::optional<StateImageTransfer> state_transfer;
-        std::vector<KVTransfer> kv_transfers;
-        std::optional<KVPrefixForkReservation> text_fork;
-        std::optional<KVPrefixForkReservation> backend_fork;
-        std::optional<KVActivationReservation> text_activation;
-        std::optional<KVActivationReservation> backend_activation;
-        std::optional<KVActivePrefixViewReservation> text_view;
-        std::optional<KVActivePrefixViewReservation> backend_view;
-        std::optional<StateImageHandle> reserved_state;
-        std::optional<DeviceKVPageReservation> main_growth;
-        std::optional<DeviceKVPageReservation> backend_growth;
-        bool binding_prepared          = false;
+        ResumeState* resume            = nullptr;
         std::uint32_t reuse_frontier   = 0;
         std::uint32_t backend_frontier = 0;
         UnitDemand first_unit;
         UnitDemand reservation_demand;
         std::optional<RecoveryPermit> recovery;
-        std::optional<SequenceKVBundle> reserved_kv;
-        std::shared_ptr<KVHistory> binding_history;
-        std::shared_ptr<KVHistory> source_history;
-        std::vector<runtime::ContextTransferRequirement> transfers;
-        std::vector<runtime::ContextTransferObservation> observations;
-        runtime::ContextOperationCounts operations;
-        bool submitted             = false;
-        bool preserve_state_device = true;
-        bool consume_source        = false;
-        bool take_private          = false;
-        bool split_state           = false;
-        bool backup_state          = false;
-        bool adopted               = false;
-        bool borrow_text           = false;
-        bool borrow_backend        = false;
-        bool borrow_state          = false;
-        bool source_tail_hidden    = false;
+        StateBindingAction state_action = StateBindingAction::Root;
+        bool consume_source             = false;
+        bool take_private               = false;
+        bool resume_snapshot            = false;
+        bool source_tail_hidden         = false;
     };
 
-    std::optional<ContextTransaction> context_transaction_;
-    CudaCompletionEvent context_source_ready_;
-    CudaCompletionEvent context_completion_;
-    std::array<CudaEventTimer, 3> context_transfer_timers_;
+    struct CaptureOperation {
+        static constexpr auto kind     = ContextOperationKind::Capture;
+        std::uint32_t lane             = 0;
+        std::uint32_t frontier         = 0;
+        std::uint32_t backend_frontier = 0;
+        std::vector<std::pair<CheckpointHandle, runtime::CheckpointRole>> points;
+    };
+
+    struct DemoteOperation {
+        static constexpr auto kind = ContextOperationKind::Demote;
+    };
+
+    struct PauseOperation {
+        static constexpr auto kind = ContextOperationKind::Pause;
+        std::uint32_t lane;
+        ResumeState paused;
+        bool preserve_state_device = true;
+        bool discard_snapshot      = false;
+    };
+
+    struct ContextOperation {
+        using Action =
+            std::variant<BindOperation, CaptureOperation, DemoteOperation, PauseOperation>;
+
+        ContextOperation(context::MigrationContext& context, context::HostKVExtentStore* host,
+                         Action action)
+            : migration(context, host), action(std::move(action)) {}
+
+        context::MigrationBatch migration;
+        Action action;
+
+        [[nodiscard]] std::optional<std::uint32_t> lane() const noexcept {
+            return std::visit(
+                [](const auto& value) -> std::optional<std::uint32_t> {
+                    if constexpr (requires { value.lane; }) return value.lane;
+                    return std::nullopt;
+                },
+                action);
+        }
+
+        [[nodiscard]] ContextOperationKind kind() const noexcept {
+            return std::visit([](const auto& value) { return value.kind; }, action);
+        }
+    };
+
+    std::optional<context::MigrationContext> migration_context_;
+    std::optional<ContextOperation> context_operation_;
     CudaEventTimer prefill_gpu_timer_;
 
     // Captured transfers and external events reference the buffers and events declared above.
@@ -516,20 +539,15 @@ public:
     [[nodiscard]] std::optional<CheckpointHandle> reserve_checkpoint();
     [[nodiscard]] std::optional<CheckpointHandle> detach_checkpoint(SequenceState&);
     void abort_context() noexcept;
-    void enqueue_context_transfers(ContextTransaction&);
-    void enqueue_state_backup(ContextTransaction&);
-    void copy_local_for_context(ContextTransaction&, std::int32_t source, std::int32_t destination);
-    void copy_context_tail(ContextTransaction&, LogicalKVPageStore&, DeviceKVPageHandle source,
-                           DeviceKVPageHandle destination, runtime::ContextResourceClass);
-    void publish_context_transfers(ContextTransaction&);
-    [[nodiscard]] bool prepare_backup(ContextTransaction&, CheckpointState&, bool shared_device);
-    void install_binding(ContextTransaction&);
-    void prepare_binding(ContextTransaction&);
-    void complete_binding(ContextTransaction&, ContextProgress&);
-    void publish_capture(ContextTransaction&);
+    [[nodiscard]] bool prepare_backup(context::MigrationBatch&, CheckpointState&,
+                                      bool shared_device, bool& preserve_state_device);
+    void install_binding(BindOperation&);
+    void complete_binding(BindOperation&, context::MigrationBatch&, ContextProgress&);
+    void publish_capture(CaptureOperation&, context::MigrationBatch&,
+                         runtime::ContextOperationCounts&);
     [[nodiscard]] bool reserve_capture_destination(std::uint32_t lane, std::uint32_t frontier);
     void prepare_capture_boundary(std::uint32_t lane);
-    [[nodiscard]] ResumeState complete_pause(ContextTransaction&);
+    [[nodiscard]] ResumeState complete_pause(PauseOperation&);
     void install_resume_sampling(SequenceState&, RequestControl&);
     void initialize_prefill(std::uint32_t lane, std::uint32_t base);
     void initialize_captures(std::uint32_t lane, std::uint32_t from, std::uint32_t through);
@@ -539,10 +557,9 @@ public:
     [[nodiscard]] const SequenceState& active_sequence(std::uint32_t lane) const;
     void clear_lane(SequenceState&, RequestControl&) noexcept;
     void clear_execution_failure_lanes(std::span<const std::uint32_t>) noexcept;
-    void ordered_reset(SequenceState&);
-    void refresh_state_views(SequenceState&);
-    [[nodiscard]] StateImageSelectors state_selectors(const SequenceState&) const;
-    void settle_state_fork(SequenceState&);
+    [[nodiscard]] Tensor tail_hidden(const SequenceState&) const;
+    [[nodiscard]] context::StateImageSelectors state_selectors(const SequenceState&) const;
+    void complete_state_write(SequenceState&);
     void release_sequence_state(SequenceState&) noexcept;
     void release_sequence_kv(SequenceState&) noexcept;
     void ensure_sequence_kv_mapped(SequenceState&, std::uint32_t main, std::uint32_t backend = 0);
@@ -551,25 +568,16 @@ public:
     [[nodiscard]] PagedKVCache* backend_kv_cache() noexcept;
     [[nodiscard]] const PagedKVCache* backend_kv_cache() const noexcept;
     [[nodiscard]] std::uint32_t backend_kv_valid(const SequenceState&) const noexcept;
-    [[nodiscard]] PagedKVCacheView text_kv_view(const SequenceState&) const;
     [[nodiscard]] PagedKVCacheView mtp_kv_view(const SequenceState&) const;
     [[nodiscard]] PrefillProgress wrap_prefill(std::uint32_t lane, runtime::PrefillStepResult);
     [[nodiscard]] PendingBatch wrap_pending(std::span<const std::uint32_t>,
                                             const runtime::BatchedGeneratedRound&);
     [[nodiscard]] runtime::PrefillStepResult advance_prefill_raw(std::uint32_t,
                                                                  runtime::ExecutionTiming*);
-    [[nodiscard]] runtime::ExecutionTiming resolve_prefill_raw(std::uint32_t, bool,
-                                                               runtime::ExecutionTiming*);
     [[nodiscard]] runtime::ExecutionTiming
     resolve_pending_raw(std::span<const std::uint32_t>, std::span<const std::uint32_t>,
                         std::span<const std::uint8_t>, std::span<const std::uint8_t>,
                         std::span<const std::optional<std::uint32_t>>, runtime::ExecutionTiming*);
-    void start_context_transfer_timer(runtime::ContextResourceClass);
-    void stop_context_transfer_timer(runtime::ContextResourceClass);
-    [[nodiscard]] runtime::ContextTransferObservation
-        context_transfer_observation(runtime::ContextResourceClass,
-                                     runtime::ContextTransferDirection, TransferWork, std::uint32_t,
-                                     std::uint64_t) const;
     [[nodiscard]] runtime::BatchedGeneratedRound decode_raw(std::span<const std::uint32_t>,
                                                             std::span<const runtime::RoundBudget>,
                                                             runtime::ExecutionTiming*,

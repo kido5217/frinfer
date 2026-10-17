@@ -1,0 +1,60 @@
+#pragma once
+
+#include "core/tensor.h"
+#include "core/weight.h"
+#include "core/weight_bank.h"
+
+#include <span>
+
+#include <cuda_bf16.h>
+#include <cuda_runtime.h>
+
+#include <cstdint>
+
+namespace ninfer::ops::detail {
+
+inline constexpr int kNvfp4RoutedExperts = 256;
+
+// The routed expert parents of the fork NVFP4 MoE route: 512 gate/up parents (gate, up
+// interleaved per expert) and 256 down parents, each a complete encoded BlockScaleK16M128x4
+// weight carrying its own positive weight divisor. Successor of the retired SparseMoeWeights
+// nvfp4 fields; admission mirrors the former prepare_sparse_moe_weights validation.
+struct Nvfp4RoutedWeights {
+    std::span<const Weight> routed_gate_up_experts; // 2 * kNvfp4RoutedExperts
+    std::span<const Weight> routed_down_experts;    // kNvfp4RoutedExperts
+};
+
+// The per-expert weight bases the grouped W4A4 routed gate/up GEMM reads. One complete encoded
+// parent per expert projection (gate and up are separate source tensors); the Op launches the
+// kernel with this table by value, so it needs no device-resident weight table and stays valid
+// across CUDA-graph capture and replay.
+struct Nvfp4GateUpBases {
+    const void* gate_codes[kNvfp4RoutedExperts];
+    const void* gate_scales[kNvfp4RoutedExperts];
+    const void* up_codes[kNvfp4RoutedExperts];
+    const void* up_scales[kNvfp4RoutedExperts];
+    float gate_divisor[kNvfp4RoutedExperts];
+    float up_divisor[kNvfp4RoutedExperts];
+};
+
+// Builds the per-expert weight bases table from the bound nvfp4 routed parents. Shared by the
+// T>=20 prefill route and the T<20 SIMT route; the table is passed to the kernel by value.
+[[nodiscard]] Nvfp4GateUpBases make_nvfp4_gate_up_bases(const Nvfp4RoutedWeights& weights);
+
+// Runs the nvfp4 routed gate/up prefill stage: quantises the routed activation x into a compact
+// FP4 plane shared by every expert a token routes to, then executes the grouped W4A4 gate/up GEMM
+// over the packed route, writing the BF16 SwiGLU activation [512, assignments].
+//
+// expert_offsets [257], route_job_experts/columns [jobs] and route_job_count [2] are the prefill
+// route's packed-route maps (route_job_count[0] is the job count). activation_codes/scales are the
+// compact FP4 plane scratch (tokens * 2048/2 and tokens * 2048/16 bytes). multiprocessor_count
+// sizes the persistent grid cap (32 queued CTAs per SM), mirroring the packed prefill seam.
+void sparse_moe_nvfp4_gate_up_launch(const Tensor& x, const Nvfp4RoutedWeights& weights,
+                                     const int* packed_token, const int* expert_offsets,
+                                     const int* route_job_experts,
+                                     const int* route_job_columns, const int* route_job_count,
+                                     std::uint8_t* activation_codes, std::uint8_t* activation_scales,
+                                     __nv_bfloat16* routed_activation,
+                                     std::int32_t multiprocessor_count, cudaStream_t stream);
+
+} // namespace ninfer::ops::detail

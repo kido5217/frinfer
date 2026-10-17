@@ -77,15 +77,11 @@ LinearPolicy common_policy(std::span<const WeightInput> inputs) {
     return result;
 }
 
-SingleProjectionWeight single(std::span<const WeightInput> inputs) {
-    auto view         = concatenate_rows(inputs);
+SingleProjectionWeight single(const WeightView& view, std::span<const WeightInput> inputs) {
     const auto region = contiguous_weight_region(view);
     const auto policy = common_policy(inputs);
     float divisor     = 0;
     if (region.parent->geometry.format == QType::NVFP4) {
-        require(std::isfinite(region.parent->weight_scale_divisor) &&
-                    region.parent->weight_scale_divisor > 0,
-                "NVFP4 parent requires a positive weight divisor");
         for (const auto& input : inputs) {
             if (!input.activation_input_divisor) {
                 require(!allows_a4(policy), "NVFP4 A4 native input requires an activation divisor");
@@ -112,39 +108,60 @@ SingleProjectionWeight single(std::span<const WeightInput> inputs) {
     return {native_weight(view, divisor), policy};
 }
 
-ProjectionWeights input_projection(std::span<const WeightInput, 4> inputs, bool attention) {
-    const auto& q      = matrix(inputs[0]);
-    const auto& k      = matrix(inputs[1]);
-    const auto& third  = matrix(inputs[2]);
-    const auto& fourth = matrix(inputs[3]);
-    const bool dense =
-        attention ? q == std::vector<std::uint64_t>{6144, 5120} &&
-                        k == std::vector<std::uint64_t>{1024, 5120} && third == q && fourth == k
-                  : q == std::vector<std::uint64_t>{2048, 5120} && k == q &&
-                        third == std::vector<std::uint64_t>{6144, 5120} && fourth == third;
-    const bool moe =
-        attention ? q == std::vector<std::uint64_t>{4096, 2048} &&
-                        k == std::vector<std::uint64_t>{512, 2048} && third == q && fourth == k
-                  : q == std::vector<std::uint64_t>{2048, 2048} && k == q &&
-                        third == std::vector<std::uint64_t>{4096, 2048} && fourth == third;
-    require(dense || moe, "input projection: unsupported logical projection geometry");
-    const auto joined = concatenate_rows(inputs);
-    if (contiguous(joined)) {
-        auto result       = single(inputs);
-        const auto format = result.weight.qtype;
-        const bool supported =
-            (moe && format == QType::Q8_G32_FP16) ||
-            (dense && (format == QType::NVFP4 || format == QType::FP8_E4M3FN_ROW_BF16 ||
-                       (attention && format == QType::BF16)));
-        require(supported, "input projection: unsupported single-parent format");
-        return result;
+SingleProjectionWeight single(std::span<const WeightInput> inputs) {
+    return single(concatenate_rows(inputs), inputs);
+}
+
+LinearProfile describe_single(const WeightView& view, std::span<const WeightInput> inputs) {
+    const auto region = contiguous_weight_region(view);
+    require(view.shape.size() == 2 && view.shape[0] <= INT32_MAX && view.shape[1] <= INT32_MAX,
+            "projection dimensions exceed int32");
+    const auto& geometry = region.parent->geometry;
+    const auto layout    = geometry.layout == QuantLayout::BatchedBlockScaleK16M128x4
+                               ? QuantLayout::BlockScaleK16M128x4
+                               : geometry.layout;
+    return {geometry.format, static_cast<std::int32_t>(view.shape[0]),
+            static_cast<std::int32_t>(view.shape[1]), common_policy(inputs), layout};
+}
+
+template <class Make>
+auto projection_regions(std::span<const WeightInput> rows, Make make) {
+    const auto view = concatenate_rows(rows);
+    if (contiguous(view)) return std::vector{make(view, rows)};
+
+    const auto columns = view.shape[1];
+    WeightView bank{{0, columns}, {}};
+    std::uint64_t elements = 0;
+    std::vector<WeightInput> bank_rows;
+    using Result = decltype(make(view, rows));
+    std::vector<Result> banks;
+    const auto finish_bank = [&] {
+        require(elements % columns == 0, "projection parent boundary must align to a matrix row");
+        bank.shape[0] = elements / columns;
+        banks.push_back(make(bank, bank_rows));
+    };
+    for (const auto& input : rows) {
+        bool included = false;
+        for (const auto& part : input.weight.parts) {
+            if (!bank.parts.empty() &&
+                (part.parent != bank.parts.back().parent || part.begin != bank.parts.back().end)) {
+                finish_bank();
+                require(banks.size() < 2, "projection bank requires more than two native regions");
+                bank.parts.clear();
+                bank_rows.clear();
+                elements = 0;
+                included = false;
+            }
+            bank.parts.push_back(part);
+            elements += part.end - part.begin;
+            if (!included) {
+                bank_rows.push_back(input);
+                included = true;
+            }
+        }
     }
-    require(dense, "input projection: unsupported multi-parent geometry");
-    const auto first  = single(inputs.first<2>());
-    const auto second = single(inputs.last<2>());
-    require(first.weight.qtype == QType::Q4_G64_FP16 && second.weight.qtype == QType::Q5_G64_FP16,
-            "input projection: paired native form requires Q4 and Q5");
-    return PairedProjectionWeights{first.weight, second.weight};
+    finish_bank();
+    return banks;
 }
 
 } // namespace
@@ -157,39 +174,31 @@ SingleProjectionWeight prepare_linear_weight(std::span<const WeightInput> rows) 
     return single(rows);
 }
 
-SingleProjectionWeight prepare_attn_input_proj_weights(const WeightInput& query,
-                                                       const WeightInput& key,
-                                                       const WeightInput& value) {
-    const auto& q = matrix(query);
-    require((q == std::vector<std::uint64_t>{4096, 2048} ||
-             q == std::vector<std::uint64_t>{4096, 5120}) &&
-                matrix(key) == std::vector<std::uint64_t>{1024, q[1]} &&
-                matrix(value) == matrix(key),
-            "QKV input projection: unsupported logical geometry");
-    const std::array inputs{query, key, value};
-    auto result = single(inputs);
-    require(result.weight.qtype == QType::Q8_G32_FP16,
-            "QKV input projection: native form requires Q8");
-    return result;
+LinearProfile describe_linear_weight(std::span<const WeightInput> rows) {
+    return describe_single(concatenate_rows(rows), rows);
 }
 
-ProjectionWeights prepare_attn_input_proj_weights(const WeightInput& query, const WeightInput& key,
-                                                  const WeightInput& gate,
-                                                  const WeightInput& value) {
-    const std::array inputs{query, key, gate, value};
-    return input_projection(inputs, true);
+ProjectionProfile describe_projection_weights(std::span<const WeightInput> rows) {
+    auto banks = projection_regions(rows, describe_single);
+    if (banks.size() == 1) return {banks[0], {}};
+    banks[0].policy = banks[1].policy = LinearPolicy::A16Only;
+    return {banks[0], banks[1]};
 }
 
-ProjectionWeights prepare_gdn_input_proj_weights(const WeightInput& query, const WeightInput& key,
-                                                 const WeightInput& value, const WeightInput& z) {
-    const std::array inputs{query, key, value, z};
-    return input_projection(inputs, false);
+ProjectionWeights prepare_projection_weights(std::span<const WeightInput> rows) {
+    const auto banks =
+        projection_regions(rows, [](const WeightView& view, std::span<const WeightInput> inputs) {
+            return single(view, inputs);
+        });
+    if (banks.size() == 1) return banks[0];
+    return PairedProjectionWeights{banks[0].weight, banks[1].weight};
 }
 
-ProjectionWeights prepare_gdn_gating_proj_weights(const WeightInput& a, const WeightInput& b) {
+ProjectionWeights prepare_gdn_control_proj_weights(const WeightInput& a, const WeightInput& b) {
     const auto& shape = matrix(a);
     require(shape == matrix(b) && (shape == std::vector<std::uint64_t>{48, 5120} ||
-                                   shape == std::vector<std::uint64_t>{32, 2048}),
+                                   shape == std::vector<std::uint64_t>{32, 2048} ||
+                                   shape == std::vector<std::uint64_t>{48, 2560}),
             "GDN control: unsupported A/B geometry");
     const std::array inputs{a, b};
     if (contiguous(concatenate_rows(inputs))) {
@@ -197,7 +206,8 @@ ProjectionWeights prepare_gdn_gating_proj_weights(const WeightInput& a, const We
         require(result.weight.qtype == QType::BF16, "GDN control requires BF16 weights");
         return result;
     }
-    require(shape[0] == 48, "GDN control: this geometry requires a combined parent");
+    require(shape == std::vector<std::uint64_t>{48, 5120},
+            "GDN control: this geometry requires a combined parent");
     const auto first  = prepare_linear_weight(a);
     const auto second = prepare_linear_weight(b);
     require(first.weight.qtype == QType::BF16 && second.weight.qtype == QType::BF16,
@@ -210,98 +220,6 @@ SingleProjectionWeight prepare_linear_swiglu_weight(const WeightInput& gate,
     require(matrix(gate) == matrix(up), "SwiGLU gate and up geometry differs");
     const std::array inputs{gate, up};
     return single(inputs);
-}
-
-SparseMoeWeights
-prepare_sparse_moe_weights(const WeightInput& router, const WeightInput& shared_score,
-                           std::span<const WeightInput> expert_gate_up,
-                           std::span<const WeightInput> expert_down, const WeightInput& shared_gate,
-                           const WeightInput& shared_up, const WeightInput& shared_down) {
-    require(expert_gate_up.size() == 512 && expert_down.size() == 256,
-            "SparseMoe native input requires 256 experts");
-    require(matrix(router) == std::vector<std::uint64_t>{256, 2048} &&
-                matrix(shared_score) == std::vector<std::uint64_t>{1, 2048},
-            "SparseMoe router geometry differs");
-    for (const auto& input : expert_gate_up) {
-        require(matrix(input) == std::vector<std::uint64_t>{512, 2048},
-                "SparseMoe gate/up geometry differs");
-    }
-    for (const auto& input : expert_down) {
-        require(matrix(input) == std::vector<std::uint64_t>{2048, 512},
-                "SparseMoe down geometry differs");
-    }
-    require(matrix(shared_gate) == std::vector<std::uint64_t>{512, 2048} &&
-                matrix(shared_up) == matrix(shared_gate) &&
-                matrix(shared_down) == std::vector<std::uint64_t>{2048, 512},
-            "SparseMoe shared expert geometry differs");
-    const std::array router_inputs{router, shared_score};
-    const auto router_bank = single(router_inputs);
-    const auto shared      = prepare_linear_swiglu_weight(shared_gate, shared_up);
-    const auto down        = prepare_linear_weight(shared_down);
-    require(router_bank.weight.qtype == QType::BF16 && shared.weight.qtype == QType::Q8_G32_FP16 &&
-                down.weight.qtype == QType::Q8_G32_FP16,
-            "SparseMoe router/shared bank formats are unsupported");
-    const auto& gate_parent = expert_gate_up.front().weight.parts.front().parent;
-    const auto& down_parent = expert_down.front().weight.parts.front().parent;
-    require(gate_parent != nullptr && down_parent != nullptr, "SparseMoe routed bank has no parent");
-    const auto gate_format = gate_parent->geometry.format;
-    const auto down_format = down_parent->geometry.format;
-
-    if (gate_format == QType::NVFP4 || down_format == QType::NVFP4) {
-        require(gate_format == QType::NVFP4 && down_format == QType::NVFP4,
-                "SparseMoe routed banks must share the nvfp4 codec");
-        const auto expert_divisor = [](const WeightInput& input) {
-            if (!input.activation_input_divisor) {
-                require(!allows_a4(input.policy),
-                        "NVFP4 A4 native input requires an activation divisor");
-                return 1.0F;
-            }
-            require(std::isfinite(*input.activation_input_divisor) &&
-                        *input.activation_input_divisor > 0,
-                    "NVFP4 native input requires a positive activation divisor");
-            return *input.activation_input_divisor;
-        };
-        SparseMoeWeights out;
-        out.router_shared_gate = router_bank.weight;
-        out.shared_gate_up     = shared.weight;
-        out.shared_down        = down.weight;
-        out.routed_gate_up.qtype = QType::NVFP4;
-        out.routed_down.qtype    = QType::NVFP4;
-        out.routed_gate_up_experts.reserve(expert_gate_up.size());
-        out.routed_down_experts.reserve(expert_down.size());
-        for (std::size_t index = 0; index < expert_gate_up.size(); index += 2) {
-            const float gate_divisor = expert_divisor(expert_gate_up[index]);
-            const float up_divisor   = expert_divisor(expert_gate_up[index + 1]);
-            require(gate_divisor == up_divisor,
-                    "SparseMoe nvfp4 gate/up activation divisors differ");
-            const auto gate = native_weight(expert_gate_up[index].weight, gate_divisor);
-            const auto up   = native_weight(expert_gate_up[index + 1].weight, up_divisor);
-            for (const auto* weight : {&gate, &up}) {
-                require(weight->qtype == QType::NVFP4 &&
-                            std::isfinite(weight->weight_scale_divisor) &&
-                            weight->weight_scale_divisor > 0,
-                        "SparseMoe nvfp4 gate/up parent is invalid");
-            }
-            out.routed_gate_up_experts.push_back(gate);
-            out.routed_gate_up_experts.push_back(up);
-        }
-        for (const auto& input : expert_down) {
-            const auto weight = native_weight(input.weight, expert_divisor(input));
-            require(weight.qtype == QType::NVFP4 && std::isfinite(weight.weight_scale_divisor) &&
-                        weight.weight_scale_divisor > 0,
-                    "SparseMoe nvfp4 down parent is invalid");
-            out.routed_down_experts.push_back(weight);
-        }
-        return out;
-    }
-
-    const auto gate_up_bank = single(expert_gate_up);
-    const auto down_bank    = single(expert_down);
-    require((gate_format == QType::Q4_G64_FP16 &&
-             (down_format == QType::Q5_G64_FP16 || down_format == QType::Q6_G64_FP16)) ||
-                (gate_format == QType::Q8_G32_FP16 && down_format == QType::Q8_G32_FP16),
-            "SparseMoe native bank formats are unsupported");
-    return {router_bank.weight, gate_up_bank.weight, down_bank.weight, shared.weight, down.weight};
 }
 
 } // namespace ninfer::ops

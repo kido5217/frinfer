@@ -16,15 +16,8 @@ run the CLI or HTTP server.
 
 The executable `--help` output is the exact source for command-line option spelling and defaults.
 
-## Model artifacts
-
-| Model | Weights | Download | Versioned model card source |
-|---|---|---|---|
-| Qwen3.6-27B | `groupwise-int` | [Hugging Face](https://huggingface.co/neroued/Qwen3.6-27B-NInfer) | [model card](../model-cards/Qwen3.6-27B-NInfer/README.md) |
-| Qwen3.6-27B | `nvfp4` | [Hugging Face](https://huggingface.co/neroued/Qwen3.6-27B-nvfp4-NInfer) | [model card](../model-cards/Qwen3.6-27B-nvfp4-NInfer/README.md) |
-| Qwen3.8-27B | `groupwise-int` | [Hugging Face](https://huggingface.co/neroued/Qwen3.8-27B-NInfer) | [model card](../model-cards/Qwen3.8-27B-NInfer/README.md) |
-| Qwen3.8-27B | `nvfp4` | [Hugging Face](https://huggingface.co/neroued/Qwen3.8-27B-nvfp4-NInfer) | [model card](../model-cards/Qwen3.8-27B-nvfp4-NInfer/README.md) |
-| Qwen3.6-35B-A3B | `groupwise-int` | [Hugging Face](https://huggingface.co/neroued/Qwen3.6-35B-A3B-NInfer) | [model card](../model-cards/Qwen3.6-35B-A3B-NInfer/README.md) |
+Published artifact downloads are listed in the [project README](../README.md).
+[Versioned model cards](../model-cards/) own each artifact's identity, provenance and evaluation results.
 
 ## Repository-local guides
 
@@ -50,14 +43,16 @@ other references own narrower contracts:
 | [Numeric formats](maintainer/tensor-formats.md) | represented values, codes/scales, conversion arithmetic and numerical interpretation |
 | [Storage layouts](maintainer/storage-layouts.md) | packing, plane offsets, padding, encoded sizes and view addressing |
 | [Qwen3.5 model](maintainer/qwen3_5-model.md) | Dense/MoE mathematics, instance config, logical parameters, MTP, Vision and state semantics |
+| [Qwen4Exp model and weights](maintainer/qwen4_exp-model.md) | Flash Next architecture, quantization recipe, merged projections, expert banks and PLE representation |
+| [Qwen4Exp execution and state](maintainer/qwen4_exp-execution.md) | current support, layer flow, PLE pipeline, MTP/Vision, continuation, resource planning and CUDA Graph |
+| [Expert weight cache](maintainer/expert-weight-cache.md) | Host/GPU bank sources, replica cache, mixed CPU/GPU execution, streaming and graph handoffs |
 | [DFlash and DFlash2](maintainer/dflash.md) | conditioning, masked draft computation, proposal distributions and backend state |
 | [Resource scheduling and context cache](maintainer/resource-scheduling-and-context-cache.md) | core design for continuation, retention, incremental resources, inactive-cache reclaim, and upstream preemption/recovery |
 | [Paged KV context store](maintainer/paged-kv-cache.md) | typed pools, pages, replicas, address spaces, reservations and consumer views |
 | [ReplaySSM GDN](maintainer/replayssm-gdn.md) | raw transition records and faithful commitment of the verified state prefix |
 | [Op development](maintainer/op-development.md) | semantic boundaries, source ownership, numerical qualification and performance evidence |
 | [Operational logging](maintainer/logging.md) | log ownership, presentation, severity and data policy |
-| [Linear benchmark](maintainer/linear-benchmark.md) | pure Linear measurement, metrics and suites |
-| [Linear tuning and reports](maintainer/linear-tuning.md) | tuning ranges, priority points, dispatch tradeoffs and final performance report format |
+| [Linear tuning and measurement](maintainer/linear-tuning.md) | logical metrics, timing, tuning ranges, dispatch tradeoffs and performance reports |
 | [Upstream sync](maintainer/upstream-sync.md) | fork patches vs upstream `Neroued/ninfer`: read-only rules, sync procedure, conflict policy, verification and drift alert |
 | [Vendored llama.cpp chat stack](maintainer/llama-chat-vendor.md) | `third_party/llama-chat`: recorded baseline, re-vendor procedure, drift alert and verification |
 | [Constrained decoding](maintainer/constrained-decoding.md) | the adopted upstream XGrammar architecture: one token-constraint mechanism behind GBNF, JSON/Schema, regex/choice and tool-call entry points, the request-owned matcher, and the shared execution contract |
@@ -80,3 +75,12 @@ these references.
 | [0002](adr/0002-g1-demotion-recovery-and-signaling.md) | demotion recovery and signaling for tool-call parsing |
 | [0003](adr/0003-full-resident-capacity-under-pinned-preemption.md) | full worst-case Main KV capacity under pinned preemption (superseded by 0004) |
 | [0004](adr/0004-match-upstream-scheduling-and-capacity.md) | match upstream scheduling and Main-KV capacity (supersedes 0003) |
+
+Qwen3.8-Flash-Next is the Qwen4Exp instance; Qwen3.8-27B uses the Qwen3.5 architecture.
+The model references own mathematical and stored-representation facts, and the execution reference
+owns integrated support and its limits. Concrete Op contracts live in `include/ninfer/ops/`.
+
+## Planned work
+
+[Linear test maintenance](maintainer/linear-test-reorganization-plan.md) tracks the pending
+consolidation of test runners and explicit case contracts.

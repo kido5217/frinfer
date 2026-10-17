@@ -358,6 +358,28 @@ Json vision_workspace_json(const std::optional<ninfer::VisionWorkspaceMemorySumm
                 {"handoff_peak_bytes", vision->handoff_peak_bytes}};
 }
 
+Json moe_memory_json(const std::optional<ninfer::MoeMemorySummary>& moe) {
+    if (!moe) return nullptr;
+    return Json{{"host_weights_bytes", moe->host_weights_bytes},
+                {"registered_host_bytes", moe->registered_host_bytes},
+                {"cache_bytes", moe->cache_bytes},
+                {"fixed_bytes", moe->fixed_bytes},
+                {"window_bytes", moe->window_bytes},
+                {"window_count", moe->window_count},
+                {"fixed_experts_per_layer", moe->fixed_experts_per_layer},
+                {"used_bytes", moe->used_bytes},
+                {"target_bytes", moe->target_bytes},
+                {"ready_bytes", moe->ready_bytes},
+                {"cpu_workers", moe->cpu_workers},
+                {"target_experts_per_layer", moe->target_experts_per_layer},
+                {"ready_experts_per_layer", moe->ready_experts_per_layer},
+                {"bridge_device_bytes", moe->bridge_device_bytes},
+                {"bridge_pinned_bytes", moe->bridge_pinned_bytes},
+                {"cpu_workspace_bytes", moe->cpu_workspace_bytes},
+                {"uploaded_bytes", moe->uploaded_bytes},
+                {"prefetched_bytes", moe->prefetched_bytes}};
+}
+
 Json speculative_json(const GenerationMetrics& metrics) {
     return Json{{"backend", product::speculative_backend_name(metrics.speculative_backend)},
                 {"draft_window", metrics.speculative_draft_window},
@@ -446,17 +468,31 @@ Json work_timing_json(const ninfer::GenerationWorkTiming& timing) {
                 {"gpu_seconds", timing.gpu_seconds}};
 }
 
-Json first_output_timing_json(const ninfer::GenerationFirstOutputTiming& timing) {
-    Json transfers = Json::object();
-    constexpr std::array resources{"state", "main_kv", "backend_kv"};
+Json transfer_timings_json(const std::array<ninfer::GenerationTransferTiming, 3>& current,
+                           const std::array<ninfer::GenerationTransferTiming, 3>& previous = {}) {
+    Json result = Json::object();
     constexpr std::array directions{"d2h", "h2d", "d2d"};
-    for (std::size_t resource = 0; resource < resources.size(); ++resource) {
-        for (std::size_t direction = 0; direction < directions.size(); ++direction) {
-            const auto& transfer = timing.context_transfers[resource][direction];
-            transfers[resources[resource]][directions[direction]] =
-                Json{{"bytes", transfer.bytes}, {"seconds", transfer.seconds}};
-        }
+    for (std::size_t i = 0; i < directions.size(); ++i) {
+        const auto& now       = current[i];
+        const auto& before    = previous[i];
+        result[directions[i]] = {
+            {"images", monotonic_delta(before.images, now.images)},
+            {"page_groups", monotonic_delta(before.page_groups, now.page_groups)},
+            {"bytes", monotonic_delta(before.bytes, now.bytes)},
+            {"copy_operations", monotonic_delta(before.copy_operations, now.copy_operations)},
+            {"seconds", monotonic_delta(before.seconds, now.seconds)}};
     }
+    return result;
+}
+
+Json first_output_timing_json(const ninfer::GenerationFirstOutputTiming& timing) {
+    Json pools = Json::array();
+    for (std::size_t i = 0; i < timing.context_transfers.kv.size(); ++i) {
+        pools.push_back(
+            {{"pool_id", i}, {"transfers", transfer_timings_json(timing.context_transfers.kv[i])}});
+    }
+    Json transfers{{"state", transfer_timings_json(timing.context_transfers.state)},
+                   {"kv_pools", std::move(pools)}};
     return Json{{"elapsed_seconds", timing.elapsed_seconds},
                 {"initial_binding_seconds", timing.initial_binding_seconds},
                 {"engine", request_engine_timing_json(timing.engine)},
@@ -561,8 +597,11 @@ std::string format_server_start_json(
              {"server_overrides", overrides_json(options.sampling_overrides)},
              {"omitted_seed", "random"},
              {"greedy", options.greedy}};
+    const auto graph = memory.cuda_graph.value_or(ninfer::GraphMemorySummary{});
     record["memory"] =
         Json{{"weights", arena_json(memory.weights)},
+             {"device_budget_bytes", memory.device_budget_bytes},
+             {"moe", moe_memory_json(memory.moe)},
              {"sequence", arena_json(memory.sequence)},
              {"workspace", arena_json(memory.workspace)},
              {"vision_workspace", vision_workspace_json(memory.vision_workspace)},
@@ -573,7 +612,11 @@ std::string format_server_start_json(
              {"available_after_startup_bytes", memory.available_after_startup_bytes},
              {"kv_capacity_headroom_bytes", memory.kv_capacity_headroom_bytes},
              {"planned_slack_bytes", memory.planned_slack_bytes},
-             {"cuda_graph_allowance_bytes", memory.cuda_graph_allowance_bytes},
+             {"cuda_graph_rebuild_estimate_bytes", graph.rebuild_estimate_bytes},
+             {"cuda_graph_prepare_increment_bytes", graph.preparation_increment_bytes},
+             {"cuda_graph_calibration_increment_bytes", graph.calibration_increment_bytes},
+             {"cuda_graph_calibration_retained_bytes", graph.calibration_retained_bytes},
+             {"startup_retained_bytes", memory.startup_retained_bytes},
              {"kv_payload_bytes", memory.kv_payload_bytes},
              {"host_context_capacity_bytes", memory.host_context_capacity_bytes},
              {"host_context_occupied_bytes", memory.host_context_occupied_bytes},
@@ -778,60 +821,7 @@ std::string format_throughput_json(const std::string& server_instance_id, std::u
                                                         current.materialization_state_forks)},
               {"restores", monotonic_delta(previous.state_restores, current.state_restores)}}},
         {"state_transfers",
-         Json{{"d2h",
-               Json{{"count", monotonic_delta(previous.state_d2h_count, current.state_d2h_count)},
-                    {"bytes", monotonic_delta(previous.state_d2h_bytes, current.state_d2h_bytes)},
-                    {"seconds",
-                     monotonic_delta(previous.state_d2h_seconds, current.state_d2h_seconds)}}},
-              {"h2d",
-               Json{{"count", monotonic_delta(previous.state_h2d_count, current.state_h2d_count)},
-                    {"bytes", monotonic_delta(previous.state_h2d_bytes, current.state_h2d_bytes)},
-                    {"seconds",
-                     monotonic_delta(previous.state_h2d_seconds, current.state_h2d_seconds)}}},
-              {"d2d",
-               Json{{"count", monotonic_delta(previous.state_d2d_count, current.state_d2d_count)},
-                    {"bytes", monotonic_delta(previous.state_d2d_bytes, current.state_d2d_bytes)},
-                    {"seconds",
-                     monotonic_delta(previous.state_d2d_seconds, current.state_d2d_seconds)}}}}},
-        {"main_kv_transfers",
-         Json{
-             {"d2h",
-              Json{
-                  {"pages", monotonic_delta(previous.main_kv_d2h_pages, current.main_kv_d2h_pages)},
-                  {"bytes", monotonic_delta(previous.main_kv_d2h_bytes, current.main_kv_d2h_bytes)},
-                  {"seconds",
-                   monotonic_delta(previous.main_kv_d2h_seconds, current.main_kv_d2h_seconds)}}},
-             {"h2d",
-              Json{
-                  {"pages", monotonic_delta(previous.main_kv_h2d_pages, current.main_kv_h2d_pages)},
-                  {"bytes", monotonic_delta(previous.main_kv_h2d_bytes, current.main_kv_h2d_bytes)},
-                  {"seconds",
-                   monotonic_delta(previous.main_kv_h2d_seconds, current.main_kv_h2d_seconds)}}},
-             {"d2d",
-              Json{
-                  {"pages", monotonic_delta(previous.main_kv_d2d_pages, current.main_kv_d2d_pages)},
-                  {"bytes", monotonic_delta(previous.main_kv_d2d_bytes, current.main_kv_d2d_bytes)},
-                  {"seconds",
-                   monotonic_delta(previous.main_kv_d2d_seconds, current.main_kv_d2d_seconds)}}}}},
-        {"backend_kv_transfers",
-         Json{{"d2h", Json{{"pages", monotonic_delta(previous.backend_kv_d2h_pages,
-                                                     current.backend_kv_d2h_pages)},
-                           {"bytes", monotonic_delta(previous.backend_kv_d2h_bytes,
-                                                     current.backend_kv_d2h_bytes)},
-                           {"seconds", monotonic_delta(previous.backend_kv_d2h_seconds,
-                                                       current.backend_kv_d2h_seconds)}}},
-              {"h2d", Json{{"pages", monotonic_delta(previous.backend_kv_h2d_pages,
-                                                     current.backend_kv_h2d_pages)},
-                           {"bytes", monotonic_delta(previous.backend_kv_h2d_bytes,
-                                                     current.backend_kv_h2d_bytes)},
-                           {"seconds", monotonic_delta(previous.backend_kv_h2d_seconds,
-                                                       current.backend_kv_h2d_seconds)}}},
-              {"d2d", Json{{"pages", monotonic_delta(previous.backend_kv_d2d_pages,
-                                                     current.backend_kv_d2d_pages)},
-                           {"bytes", monotonic_delta(previous.backend_kv_d2d_bytes,
-                                                     current.backend_kv_d2d_bytes)},
-                           {"seconds", monotonic_delta(previous.backend_kv_d2d_seconds,
-                                                       current.backend_kv_d2d_seconds)}}}}},
+         transfer_timings_json(current.context_transfers.state, previous.context_transfers.state)},
         {"pressure",
          Json{{"spill_pages",
                monotonic_delta(previous.pressure_spill_pages, current.pressure_spill_pages)},
@@ -840,14 +830,25 @@ std::string format_throughput_json(const std::string& server_instance_id, std::u
         {"occupancy",
          Json{{"device_state_slots", current.device_state_occupied_slots},
               {"host_state_slots", current.host_state_occupied_slots},
-              {"device_main_kv_pages", current.device_main_kv_occupied_pages},
-              {"device_backend_kv_pages", current.device_backend_kv_occupied_pages},
               {"host_kv_bytes", current.host_kv_occupied_bytes},
               {"host_context_occupied_bytes", current.host_context_occupied_bytes},
               {"host_context_peak_occupied_bytes", current.host_context_peak_occupied_bytes},
               {"host_context_reserved_bytes", current.host_context_reserved_bytes}}},
         {"actual_transfer_seconds", monotonic_delta(previous.actual_context_transfer_seconds,
                                                     current.actual_context_transfer_seconds)}};
+    Json pools = Json::array();
+    for (const auto& pool : current.kv_pools) {
+        const auto before = pool.id < previous.context_transfers.kv.size()
+                                ? previous.context_transfers.kv[pool.id]
+                                : std::array<ninfer::GenerationTransferTiming, 3>{};
+        pools.push_back({{"pool_id", pool.id},
+                         {"label", pool.label},
+                         {"occupied_page_groups", pool.occupied_page_groups},
+                         {"capacity_page_groups", pool.capacity_page_groups},
+                         {"transfers", transfer_timings_json(
+                                           current.context_transfers.kv.at(pool.id), before)}});
+    }
+    record["context_cache"]["kv_pools"] = std::move(pools);
     return record.dump();
 }
 

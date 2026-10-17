@@ -300,7 +300,7 @@ std::string usage_text(std::string_view program) {
         << ")\n"
         << "  --max-ctx <tokens>          override auto-sized context capacity\n"
         << "  --prefill-chunk <tokens>    multiple of " << kPrefillChunkAlignment
-        << " (default: " << kDefaultPrefillChunk << ")\n"
+        << " (default: 1024; CPU expert offload: 4096)\n"
         << "  --kv-dtype <bf16|int8|fp8|nvfp4|k8v4>  KV cache storage (default: bf16)\n"
         << "  --spec <mtp|dflash|dflash2> speculative backend (default: none)\n"
         << "  --draft-tokens <n>         MTP 1..5; DFlash/DFlash2 1..15\n"
@@ -604,9 +604,10 @@ std::string format_table(const BenchEnvironment& env, const std::vector<TestResu
         << (env.memory.vision_workspace
                 ? format_bytes(env.memory.vision_workspace->handoff_capacity_bytes)
                 : "disabled")
-        << " (within workspace), graph allowance "
-        << format_bytes(env.memory.cuda_graph_allowance_bytes) << ", KV payload "
-        << format_bytes(env.memory.kv_payload_bytes) << '\n'
+        << " (within workspace), graph rebuild estimate "
+        << format_bytes(
+               env.memory.cuda_graph.value_or(ninfer::GraphMemorySummary{}).rebuild_estimate_bytes)
+        << ", KV payload " << format_bytes(env.memory.kv_payload_bytes) << '\n'
         << "  corpus:     " << env.corpus_path << " (" << env.corpus_tokens << " tokens)\n"
         << "  grammar:    "
         << (env.grammar_path.empty() ? "(none)" : env.grammar_path) << '\n'
@@ -663,6 +664,7 @@ std::string format_table(const BenchEnvironment& env, const std::vector<TestResu
 
 std::string format_json(const BenchEnvironment& env, const std::string& command,
                         const std::vector<TestResult>& results) {
+    const auto graph = env.memory.cuda_graph.value_or(ninfer::GraphMemorySummary{});
     std::ostringstream formats;
     formats << '[';
     for (std::size_t i = 0; i < env.load.weight_formats.size(); ++i) {
@@ -698,6 +700,7 @@ std::string format_json(const BenchEnvironment& env, const std::string& command,
         << "  },\n"
         << "  \"memory\": {\n"
         << "    \"device\": " << env.memory.device << ",\n"
+        << "    \"device_budget_bytes\": " << env.memory.device_budget_bytes << ",\n"
         << "    \"max_context\": " << env.memory.max_context << ",\n"
         << "    \"kv_capacity_mode\": \""
         << (env.memory.kv_capacity_mode == KvCapacityMode::Automatic ? "auto" : "explicit")
@@ -707,6 +710,39 @@ std::string format_json(const BenchEnvironment& env, const std::string& command,
         << "    \"kv_capacity_max_page_groups\": " << env.memory.kv_capacity_max_page_groups
         << ",\n"
         << "    \"kv_cache\": \"" << kv_cache_name(env.memory.kv_cache) << "\",\n";
+    if (env.memory.moe) {
+        const auto& m = *env.memory.moe;
+        out << "    \"moe\": {\n"
+            << "      \"host_weights_bytes\": " << m.host_weights_bytes << ",\n"
+            << "      \"registered_host_bytes\": " << m.registered_host_bytes << ",\n"
+            << "      \"cache_bytes\": " << m.cache_bytes << ",\n"
+            << "      \"fixed_bytes\": " << m.fixed_bytes << ",\n"
+            << "      \"window_bytes\": " << m.window_bytes << ",\n"
+            << "      \"window_count\": " << m.window_count << ",\n"
+            << "      \"used_bytes\": " << m.used_bytes << ",\n"
+            << "      \"target_bytes\": " << m.target_bytes << ",\n"
+            << "      \"ready_bytes\": " << m.ready_bytes << ",\n"
+            << "      \"cpu_workers\": " << m.cpu_workers << ",\n"
+            << "      \"bridge_device_bytes\": " << m.bridge_device_bytes << ",\n"
+            << "      \"bridge_pinned_bytes\": " << m.bridge_pinned_bytes << ",\n"
+            << "      \"cpu_workspace_bytes\": " << m.cpu_workspace_bytes << ",\n"
+            << "      \"uploaded_bytes\": " << m.uploaded_bytes << ",\n"
+            << "      \"prefetched_bytes\": " << m.prefetched_bytes << ",\n";
+        const auto counts = [&](std::string_view name, const auto& values, bool comma) {
+            out << "      \"" << name << "\": [";
+            for (std::size_t i = 0; i < values.size(); ++i) {
+                if (i) out << ',';
+                out << values[i];
+            }
+            out << ']' << (comma ? ",\n" : "\n");
+        };
+        counts("fixed_experts_per_layer", m.fixed_experts_per_layer, true);
+        counts("target_experts_per_layer", m.target_experts_per_layer, true);
+        counts("ready_experts_per_layer", m.ready_experts_per_layer, false);
+        out << "    },\n";
+    } else {
+        out << "    \"moe\": null,\n";
+    }
     append_arena_json(out, "weights", env.memory.weights, "    ", true);
     append_arena_json(out, "sequence", env.memory.sequence, "    ", true);
     append_arena_json(out, "workspace", env.memory.workspace, "    ", true);
@@ -722,7 +758,14 @@ std::string format_json(const BenchEnvironment& env, const std::string& command,
         << ",\n"
         << "    \"kv_capacity_headroom_bytes\": " << env.memory.kv_capacity_headroom_bytes << ",\n"
         << "    \"planned_slack_bytes\": " << env.memory.planned_slack_bytes << ",\n"
-        << "    \"cuda_graph_allowance_bytes\": " << env.memory.cuda_graph_allowance_bytes << ",\n"
+        << "    \"cuda_graph_rebuild_estimate_bytes\": " << graph.rebuild_estimate_bytes << ",\n"
+        << "    \"cuda_graph_prepare_increment_bytes\": " << graph.preparation_increment_bytes
+        << ",\n"
+        << "    \"cuda_graph_calibration_increment_bytes\": " << graph.calibration_increment_bytes
+        << ",\n"
+        << "    \"cuda_graph_calibration_retained_bytes\": " << graph.calibration_retained_bytes
+        << ",\n"
+        << "    \"startup_retained_bytes\": " << env.memory.startup_retained_bytes << ",\n"
         << "    \"kv_payload_bytes\": " << env.memory.kv_payload_bytes << "\n"
         << "  },\n"
         << "  \"config\": {\n"
@@ -772,7 +815,8 @@ std::string format_json(const BenchEnvironment& env, const std::string& command,
         append_stat(out, "total_seconds", total_time_series(result), "      ");
         out << ",\n      \"workspace_peak_bytes\": " << result.workspace_peak_bytes
             << ",\n      \"workspace_allocator_peak_bytes\": "
-            << result.workspace_allocator_peak_bytes << ",\n";
+            << result.workspace_allocator_peak_bytes
+            << ",\n      \"expert_upload_bytes\": " << result.expert_upload_bytes << ",\n";
         append_speculative_json(out, aggregate_speculative(result), "      ");
         out << ",\n      \"reps\": [\n";
         for (std::size_t r = 0; r < result.reps.size(); ++r) {
@@ -809,6 +853,7 @@ std::string csv_field(std::string_view value) {
 } // namespace
 
 std::string format_csv(const BenchEnvironment& env, const std::vector<TestResult>& results) {
+    const auto graph = env.memory.cuda_graph.value_or(ninfer::GraphMemorySummary{});
     std::ostringstream out;
     out << "label,kind,n_prompt,n_gen,architecture,prefill_signature,model_name,artifact_path,"
            "grammar_path,max_context,prefill_chunk,"
@@ -817,8 +862,10 @@ std::string format_csv(const BenchEnvironment& env, const std::vector<TestResult
            "proposal_head,decode_path,kv_cache,kv_payload_bytes,load_host_to_device_bytes,"
            "weights_capacity_bytes,sequence_capacity_bytes,workspace_capacity_bytes,"
            "workspace_general_capacity_bytes,vision_handoff_capacity_bytes,"
-           "cuda_graph_allowance_bytes,"
-           "workspace_peak_bytes,workspace_allocator_peak_bytes,"
+           "cuda_graph_rebuild_estimate_bytes,cuda_graph_prepare_increment_bytes,"
+           "cuda_graph_calibration_increment_bytes,cuda_graph_calibration_retained_bytes,"
+           "startup_retained_bytes,"
+           "workspace_peak_bytes,workspace_allocator_peak_bytes,expert_upload_bytes,"
            "spec_rounds,spec_fallback_steps,spec_acceptance_rate,"
            "repetitions,prefill_tok_s_mean,prefill_tok_s_stddev,decode_output_tok_s_mean,"
            "decode_output_tok_s_stddev,decode_engine_tok_s_mean,decode_engine_tok_s_stddev,"
@@ -855,11 +902,14 @@ std::string format_csv(const BenchEnvironment& env, const std::vector<TestResult
             << (env.memory.vision_workspace
                     ? std::to_string(env.memory.vision_workspace->handoff_capacity_bytes)
                     : std::string())
-            << ',' << env.memory.cuda_graph_allowance_bytes << ',' << result.workspace_peak_bytes
-            << ',' << result.workspace_allocator_peak_bytes << ',' << spec.rounds << ','
-            << spec.fallback_steps << ',' << acceptance << ',' << result.reps.size() << ','
-            << mean(prefill_tok_s_series(result)) << ',' << stddev(prefill_tok_s_series(result))
-            << ',' << mean(decode_output_tok_s_series(result)) << ','
+            << ',' << graph.rebuild_estimate_bytes << ',' << graph.preparation_increment_bytes
+            << ',' << graph.calibration_increment_bytes << ',' << graph.calibration_retained_bytes
+            << ',' << env.memory.startup_retained_bytes << ',' << result.workspace_peak_bytes << ','
+            << result.workspace_allocator_peak_bytes << ',' << result.expert_upload_bytes << ','
+            << spec.rounds << ',' << spec.fallback_steps << ',' << acceptance << ','
+            << result.reps.size() / result.concurrency << ',' << mean(prefill_tok_s_series(result))
+            << ',' << stddev(prefill_tok_s_series(result)) << ','
+            << mean(decode_output_tok_s_series(result)) << ','
             << stddev(decode_output_tok_s_series(result)) << ','
             << mean(decode_engine_tok_s_series(result)) << ','
             << stddev(decode_engine_tok_s_series(result)) << ','

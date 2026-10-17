@@ -100,6 +100,7 @@ enum class StartupPhase : std::uint8_t {
     ProgramInitialize,
     HostContextPin,
     CudaGraphPrepare,
+    CudaGraphCalibration,
     EngineFinalize,
 };
 
@@ -150,6 +151,15 @@ struct ContextCostOptions {
     std::filesystem::path preset_path;
 };
 
+struct MoeOptions {
+    // Descending cache priority: a permutation of all logical expert IDs per Main layer.
+    // Dense layers have empty rows. nullopt uses the model's calibrated default when available,
+    // otherwise ID order. Capacity determines each prefix.
+    std::optional<std::vector<std::vector<std::uint32_t>>> expert_priority;
+    // Zero selects physical cores while reserving a control-thread core when available.
+    std::uint32_t cpu_workers = 0;
+};
+
 struct EngineOptions {
     std::filesystem::path artifact_path;
     std::filesystem::path chat_template_path;
@@ -162,8 +172,10 @@ struct EngineOptions {
     std::uint32_t max_concurrency      = 1;
     std::uint32_t max_pending_requests = 16;
     std::uint32_t pending_timeout_ms   = 30000;
-    std::uint32_t prefill_chunk        = 1024;
-    KvCacheStorage kv_cache            = KvCacheStorage::BFloat16;
+    // Zero uses 1024 tokens, or 4096 with CPU expert offload.
+    std::uint32_t prefill_chunk = 0;
+    MoeOptions moe;
+    KvCacheStorage kv_cache = KvCacheStorage::BFloat16;
     SpeculativeOptions speculative;
     std::size_t media_cache_bytes = kDefaultMediaCacheBytes;
     std::size_t media_live_bytes  = kDefaultMediaLiveBytes;
@@ -859,8 +871,28 @@ struct GenerationWorkTiming {
 };
 
 struct GenerationTransferTiming {
-    std::uint64_t bytes = 0;
-    double seconds      = 0.0;
+    std::uint64_t bytes                                     = 0;
+    double seconds                                          = 0.0;
+    std::uint64_t images                                    = 0;
+    std::uint64_t page_groups                               = 0;
+    std::uint64_t copy_operations                           = 0;
+    friend bool operator==(const GenerationTransferTiming&,
+                           const GenerationTransferTiming&) = default;
+};
+
+// Directions are D2H, H2D and D2D. KV entries are indexed by the startup pool ID.
+struct ContextTransferStats {
+    std::array<GenerationTransferTiming, 3> state{};
+    std::vector<std::array<GenerationTransferTiming, 3>> kv;
+    friend bool operator==(const ContextTransferStats&, const ContextTransferStats&) = default;
+};
+
+struct ContextKvPoolUsage {
+    std::uint16_t id = 0;
+    std::string label;
+    std::uint32_t occupied_page_groups                                           = 0;
+    std::uint32_t capacity_page_groups                                           = 0;
+    friend bool operator==(const ContextKvPoolUsage&, const ContextKvPoolUsage&) = default;
 };
 
 // Frozen immediately before the first nonempty public output delta is published. This boundary
@@ -875,9 +907,8 @@ struct GenerationFirstOutputTiming {
     GenerationWorkTiming replay;
     GenerationSchedulingStats scheduling;
     std::uint32_t computed_prefill_tokens = 0;
-    // Resources: State, Main KV, Backend KV. Directions: D2H, H2D, D2D.
     // Completed request-owned transfers only; background reclamation remains Engine-wide.
-    std::array<std::array<GenerationTransferTiming, 3>, 3> context_transfers{};
+    ContextTransferStats context_transfers;
 };
 
 struct SpeculativeStats {
@@ -991,9 +1022,41 @@ struct VisionWorkspaceMemorySummary {
     std::size_t handoff_peak_bytes        = 0;
 };
 
+struct MoeMemorySummary {
+    std::size_t host_weights_bytes    = 0;
+    std::size_t registered_host_bytes = 0;
+    std::size_t cache_bytes           = 0;
+    std::size_t fixed_bytes           = 0;
+    std::size_t window_bytes          = 0;
+    std::uint32_t window_count        = 0;
+    std::size_t used_bytes            = 0;
+    std::size_t target_bytes          = 0;
+    std::size_t ready_bytes           = 0;
+    std::uint32_t cpu_workers         = 0;
+    std::vector<std::uint32_t> fixed_experts_per_layer;
+    std::vector<std::uint32_t> target_experts_per_layer;
+    std::vector<std::uint32_t> ready_experts_per_layer;
+    std::size_t bridge_device_bytes = 0;
+    std::size_t bridge_pinned_bytes = 0;
+    std::size_t cpu_workspace_bytes = 0;
+    std::uint64_t uploaded_bytes    = 0;
+    std::uint64_t prefetched_bytes  = 0;
+};
+
+struct GraphMemorySummary {
+    std::size_t rebuild_estimate_bytes = 0;
+    // Signed free-memory deltas; calibration holds its backing while releasing graphs.
+    std::int64_t preparation_increment_bytes = 0;
+    std::int64_t calibration_increment_bytes = 0;
+    std::int64_t calibration_retained_bytes  = 0;
+};
+
 struct MemorySummary {
-    int device                                = 0;
-    std::uint32_t max_context                 = 0;
+    int device                      = 0;
+    std::uint32_t max_context       = 0;
+    std::uint32_t prefill_chunk     = 0;
+    std::size_t device_budget_bytes = 0;
+    std::optional<MoeMemorySummary> moe;
     KvCapacityMode kv_capacity_mode           = KvCapacityMode::Explicit;
     std::uint32_t kv_capacity                 = 0; // Resolved page-aligned Main KV capacity.
     std::uint32_t kv_capacity_page_groups     = 0;
@@ -1005,14 +1068,17 @@ struct MemorySummary {
     std::optional<VisionWorkspaceMemorySummary> vision_workspace;
     std::size_t minimum_runtime_reservation_bytes = 0;
     std::size_t kv_capacity_increment_bytes       = 0;
-    std::size_t runtime_reservation_bytes         = 0;
-    std::size_t available_after_weights_bytes     = 0;
-    std::size_t available_after_startup_bytes     = 0;
-    std::size_t kv_capacity_headroom_bytes        = 0;
-    std::size_t planned_slack_bytes               = 0;
-    std::size_t workspace_logical_peak_bytes      = 0;
-    std::size_t cuda_graph_allowance_bytes        = 0;
-    std::size_t kv_payload_bytes                  = 0;
+    // Explicit Program backing, excluding Graphs.
+    std::size_t runtime_reservation_bytes     = 0;
+    std::size_t available_after_weights_bytes = 0;
+    std::size_t available_after_startup_bytes = 0;
+    std::size_t kv_capacity_headroom_bytes    = 0;
+    std::size_t planned_slack_bytes           = 0;
+    std::size_t workspace_logical_peak_bytes  = 0;
+    std::optional<GraphMemorySummary> cuda_graph;
+    // Growth before final Program backing, minus owned weights.
+    std::int64_t startup_retained_bytes = 0;
+    std::size_t kv_payload_bytes        = 0;
     // One shared physical Host context backing. Reserved bytes are included in occupied bytes;
     // State/KV occupancy below is a breakdown and must not be added to this ledger again.
     std::size_t host_context_capacity_bytes = 0;
@@ -1092,42 +1158,14 @@ struct RuntimeStats {
     std::uint64_t state_forks                 = 0;
     std::uint64_t materialization_state_forks = 0;
     std::uint64_t state_restores              = 0;
-    std::uint64_t state_d2h_count             = 0;
-    std::uint64_t state_h2d_count             = 0;
-    std::uint64_t state_d2d_count             = 0;
-    std::uint64_t state_d2h_bytes             = 0;
-    std::uint64_t state_h2d_bytes             = 0;
-    std::uint64_t state_d2d_bytes             = 0;
-    double state_d2h_seconds                  = 0.0;
-    double state_h2d_seconds                  = 0.0;
-    double state_d2d_seconds                  = 0.0;
+    ContextTransferStats context_transfers;
+    std::vector<ContextKvPoolUsage> kv_pools;
 
-    std::uint64_t main_kv_d2h_pages    = 0;
-    std::uint64_t main_kv_h2d_pages    = 0;
-    std::uint64_t main_kv_d2d_pages    = 0;
-    std::uint64_t main_kv_d2h_bytes    = 0;
-    std::uint64_t main_kv_h2d_bytes    = 0;
-    std::uint64_t main_kv_d2d_bytes    = 0;
-    double main_kv_d2h_seconds         = 0.0;
-    double main_kv_h2d_seconds         = 0.0;
-    double main_kv_d2d_seconds         = 0.0;
-    std::uint64_t backend_kv_d2h_pages = 0;
-    std::uint64_t backend_kv_h2d_pages = 0;
-    std::uint64_t backend_kv_d2d_pages = 0;
-    std::uint64_t backend_kv_d2h_bytes = 0;
-    std::uint64_t backend_kv_h2d_bytes = 0;
-    std::uint64_t backend_kv_d2d_bytes = 0;
-    double backend_kv_d2h_seconds      = 0.0;
-    double backend_kv_h2d_seconds      = 0.0;
-    double backend_kv_d2d_seconds      = 0.0;
-
-    std::uint64_t pressure_spill_pages             = 0;
-    std::uint64_t partial_tail_cow_pages           = 0;
-    std::uint32_t device_state_occupied_slots      = 0;
-    std::uint32_t host_state_occupied_slots        = 0;
-    std::uint32_t device_main_kv_occupied_pages    = 0;
-    std::uint32_t device_backend_kv_occupied_pages = 0;
-    std::size_t host_kv_occupied_bytes             = 0;
+    std::uint64_t pressure_spill_pages        = 0;
+    std::uint64_t partial_tail_cow_pages      = 0;
+    std::uint32_t device_state_occupied_slots = 0;
+    std::uint32_t host_state_occupied_slots   = 0;
+    std::size_t host_kv_occupied_bytes        = 0;
     // Unified physical Host context occupancy. Reserved destinations are included in occupied.
     std::size_t host_context_occupied_bytes = 0;
     std::size_t host_context_reserved_bytes = 0;

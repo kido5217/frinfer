@@ -72,12 +72,23 @@ Main KV 页为 64 token；每种 KV 的物理字节数由其层数、几何和�
 
 Main KV 容量曲线的页数下界为 `max(ceil(max_context / 64), C)`，上界为
 `C × ceil(max_context / 64)`。下界分别满足单请求独占最大上下文和 C 个最小页的几何要求。Native 同时
-计算所选后端、state、workspace 和 Graph 的布局；显式或自动容量都要落在这条曲线内并满足可用
-显存。容量并不平均切给每个 lane。
+计算所选后端、state、workspace 和 MoE backing 的布局；Graph 重建开销在权重加载后校准，
+按[启动生命周期](engine-architecture.md#25-实例生命周期与固定执行)从剩余显存中单独扣除。
+显式或自动容量都要落在这条曲线内并满足预算。容量并不平均切给每个 lane。
+
+Program 的 pool 目录在启动时固定，`KvPoolId` 标识具体 pool；目录给出几何、Device 容量与
+Host page stride，名称仅用于诊断。模型内部保留 Text/MTP/Draft Full 角色；Runtime 的需求、
+缺口、占用和释放量使用 `ContextResources<N>`：State slots、按 pool ID 索引的 KV page groups、
+Host allocated bytes。`N` 由原生架构声明，普通执行查询不分配动态容器。
+回收每次针对一个具体缺口；另一个 pool 的空闲页不能满足它。现有容量曲线和恢复许可策略保留。
+传输需求与观测另外记录 image count、page groups、payload bytes、copy operations；前两项
+是内容范围，Host allocated bytes 包含分配对齐，payload bytes 是实际 DMA 量。
 
 Host 缺省容量为 `8 GiB + 8 × 当前模型 Host StateImage 大小`。它是一个共享 backing，State 与
 KV 的分项占用用于观测，不能再次相加成额外配额。传输目标从预留时就计费，发布只改变其状态，
-不减少占用。Host extent 的分裂、最后引用释放和合并由 allocator 管理。
+不减少占用。State 副本和传输目的直接持有 Host allocation，capture 预留的 allocation
+直接用于传输。Device 和 Host 的完整 image 使用同一内部布局；复制的对齐间隙计入真实传输
+字节数。Host extent 的分裂、最后引用释放和合并由 allocator 管理。
 
 必要请求输入、token 账本、prepared media、Responses 存储和 Frontend 媒体缓存各有自己的
 生命周期与现有数量、长度或媒体预算约束。Host context 容量不覆盖这些内存，也不限制进程总 RAM。
@@ -86,7 +97,7 @@ KV 的分项占用用于观测，不能再次相加成额外配额。传输目�
 ### 3.2 执行与恢复许可
 
 Program 根据实际绑定状态计算 Prefill、Replay、Decode/Verify、Control 或 Normalize 的 typed KV
-覆盖，包含 speculative 峰值与后端需要。State、缺失副本和尾页 COW 在绑定或捕获时另外取得。
+覆盖，包含 speculative 峰值与后端需要。State 与缺失副本另外取得；写入冲突所需的尾页 COW 计入绑定或 unit 许可。
 一次 unit 的多个 typed pool 申请共同成功，失败归还本次部分预留并返回具体缺口。
 
 Engine 按恢复优先、原票号优先取得 resident 单元许可，形成可运行子集；一行暂时不足不会阻止
@@ -139,8 +150,12 @@ Frontend 根据模板渲染和 next-user probe 选择 typed R，再独立决定�
 ### 4.2 完整性与身份
 
 检查点包含精确输入身份、Native frontier、不可变 StateImage 和所需的各 typed KV 覆盖。
-StateImage 包括 GDN/conv、continuation hidden，以及所选后端的必要 local state。Main、MTP、
-DFlash 的 frontier 分别解释，由模型代码保证相容。
+StateImage 由模型声明，包含 GDN/conv、continuation hidden，以及架构和所选后端的固定状态；
+Qwen4Exp 还包含 QSA raw tail/坐标、PLE conv history 和启用 MTP 时的 conditioning。
+PLE raw-ID tail 与 frontiers 一起保存在 continuation metadata。Main、MTP、
+DFlash 的 frontier 分别解释，由模型代码保证相容。image 身份与执行前沿、RoPE 偏移、各历史
+有效范围和 tail hidden 有效性共同保存在原生 Continuation 中。冻结与复制不改变内容版本；
+完成数学写入才推进版本，未完成的分支目的不能发布为 checkpoint。
 
 普通生成通常有：
 
@@ -181,9 +196,9 @@ Source provenance、tokenizer 的精确 frontier 和完整媒体范围共同决�
 保存来自实际输入恢复点、显式锚点、共享 marker、正常生成终点，以及实际抢占需要的执行快照。
 Prefill/Replay chunk 结束本身不产生保存机会。
 
-Engine 在跨过语义 frontier 前调用 Native 准备目的 state、检查点描述与必要尾页空间。私有输入
-点可先退休本记录已经过时的输入点，再尝试 Device 槽，容量不足时可使用 Host。私有输入点共用
-原 KV 历史，只增加恢复 state 与保护 frontier；公共条目需要独立视图时，另取得必要的尾页复制空间。
+Engine 在跨过语义 frontier 前调用 Native 准备目的 state 与检查点描述。私有输入点可先退休
+本记录已经过时的输入点，再尝试 Device 槽，容量不足时可使用 Host。私有和公共保存都持有
+`KVPrefixRef`，只读前缀不复制尾页；同一位置的不同用途记录可以共享同一 StateImage 和 KV 内容。
 
 同点兼有私有与共享用途时，共享部分不足仍可保留私有点。捕获属于可选缓存写入，回收须通过
 新增恢复收益与被替换内容的准入检查，不抢占 active 请求。没有合适空间就跳过保存，继续必要执行。
@@ -208,7 +223,9 @@ flowchart LR
 同一历史的 E、输入点和锚点引用一份 KV 目录及各自覆盖。保存内部输入点不复制整套 KV，也不因其位于
 部分页就额外复制尾页。从较早输入点重算时，绑定先检查退休后的实际可用资源，接纳后退休获准
 替代的更深私有点，再按剩余保护范围裁剪。
-独立分支或公共视图共享完整页，必要时复制未满尾页，保持一个可写历史与外部不可变内容隔离。
+保存的前缀不占 writer；没有其他写入者、且写入区间不覆盖保留内容时，可以接管原 history。
+存在写冲突时，绑定建立独立目录并复制未满尾页；活跃 history 回退到保留前沿之前时同样分支。
+报价显式考虑本次授权退休、消费的前缀引用，检查可行性不修改原来源。
 
 不可变 state 与 active writer 分开。可独占 E 直接 Move；需要保留来源时，Fork 可由下一次计算
 完成 state 转移，后端必要 local copy 仍执行。Device 槽紧张且有 Host 副本时，可以保留旧身份的

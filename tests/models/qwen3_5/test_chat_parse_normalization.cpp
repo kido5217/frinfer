@@ -4,8 +4,8 @@
 // parser test: declared primitive types, case-insensitive booleans with CRLF framing, exact
 // integer lexemes, composed anyOf/oneOf unions, legacy fallback for unsupported or ambiguous
 // schemas, and the function-name length bound.
-#include "models/qwen3_5/frontend/chat_parse_core.h"
-#include "models/qwen3_5/frontend/tool_contract.h"
+#include "models/common/qwen/frontend/chat_parse_core.h"
+#include "models/common/qwen/frontend/tool_contract.h"
 
 #include <nlohmann/json.hpp>
 
