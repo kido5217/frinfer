@@ -10,11 +10,9 @@
 #include "core/device.h"
 #include "core/tensor.h"
 #include "core/weight.h"
-#include "ninfer/ops/sparse_moe.h"
-
 #include "ninfer_bench_common.h"
-#include "ops/sparse_moe/nvfp4/sparse_moe_nvfp4_gate_up.h"
-#include "ops/sparse_moe/nvfp4/sparse_moe_nvfp4_down.h"
+#include "ops/moe/nvfp4/sparse_moe_nvfp4_gate_up.h"
+#include "ops/moe/nvfp4/sparse_moe_nvfp4_down.h"
 #include "quantized_weight.cuh"
 
 #include <cuda_runtime.h>
@@ -112,8 +110,8 @@ struct HostRoute {
 };
 
 DeviceBuffer to_device_i32(const std::vector<int>& host) {
-    DeviceBuffer buffer(host.size() * sizeof(int));
-    CUDA_CHECK(cudaMemcpy(buffer.p, host.data(), buffer.bytes, cudaMemcpyHostToDevice));
+    DeviceBuffer buffer(bench::device_context().device(), host.size() * sizeof(int));
+    buffer.copy_from_host(host.data(), host.size() * sizeof(int));
     return buffer;
 }
 
@@ -171,12 +169,20 @@ Point make_point(std::int32_t tokens) {
     point.job_experts    = to_device_i32(route.job_experts);
     point.job_columns    = to_device_i32(route.job_columns);
     point.job_count      = to_device_i32({route.jobs, 0});
-    point.plane_codes = DeviceBuffer(std::size_t(tokens) * (kHidden / 2));
-    point.plane_scales = DeviceBuffer(std::size_t(tokens) * (kHidden / 16));
-    point.output = DeviceBuffer(std::size_t(kIntermediate) * route.assignments * sizeof(std::uint16_t));
-    point.down_codes  = DeviceBuffer(std::size_t(route.assignments) * (512 / 2));
-    point.down_scales = DeviceBuffer(std::size_t(route.assignments) * (512 / 16));
-    point.down_output = DeviceBuffer(std::size_t(kHidden) * route.assignments * sizeof(std::uint16_t));
+    point.plane_codes = DeviceBuffer(bench::device_context().device(),
+                                     std::size_t(tokens) * (kHidden / 2));
+    point.plane_scales = DeviceBuffer(bench::device_context().device(),
+                                      std::size_t(tokens) * (kHidden / 16));
+    point.output = DeviceBuffer(bench::device_context().device(),
+                                std::size_t(kIntermediate) * route.assignments *
+                                    sizeof(std::uint16_t));
+    point.down_codes  = DeviceBuffer(bench::device_context().device(),
+                                     std::size_t(route.assignments) * (512 / 2));
+    point.down_scales = DeviceBuffer(bench::device_context().device(),
+                                     std::size_t(route.assignments) * (512 / 16));
+    point.down_output = DeviceBuffer(bench::device_context().device(),
+                                     std::size_t(kHidden) * route.assignments *
+                                         sizeof(std::uint16_t));
     return point;
 }
 
@@ -190,6 +196,7 @@ int main(int argc, char** argv) {
 
         cudaStream_t stream = nullptr;
         CUDA_CHECK(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
+        const auto cuda = ninfer::bench::device_context().execution_view(stream);
         int device = 0;
         CUDA_CHECK(cudaGetDevice(&device));
         int multiprocessor_count = 0;
@@ -210,17 +217,16 @@ int main(int argc, char** argv) {
         for (int expert = 0; expert < kExperts; ++expert) {
             down_parents.push_back(bench::make_nvfp4_weight(kHidden, kIntermediate, 0x213u + expert));
         }
-        ops::SparseMoeWeights weights{};
-        weights.routed_gate_up.qtype = QType::NVFP4;
-        weights.routed_down.qtype    = QType::NVFP4;
-        weights.routed_gate_up_experts.reserve(parents.size());
+        std::vector<Weight> gate_up_weights, down_weights;
+        gate_up_weights.reserve(parents.size());
         for (const bench::PackedQuantizedWeight& parent : parents) {
-            weights.routed_gate_up_experts.push_back(parent.weight);
+            gate_up_weights.push_back(parent.weight);
         }
-        weights.routed_down_experts.reserve(down_parents.size());
+        down_weights.reserve(down_parents.size());
         for (const bench::PackedQuantizedWeight& parent : down_parents) {
-            weights.routed_down_experts.push_back(parent.weight);
+            down_weights.push_back(parent.weight);
         }
+        const ops::detail::Nvfp4RoutedWeights weights{gate_up_weights, down_weights};
 
         const std::uint64_t gate_up_weight_bytes =
             2ull * kExperts * parents.front().model_weight_bytes();
@@ -246,21 +252,21 @@ int main(int argc, char** argv) {
         }
 
         for (Point& point : points) {
-            const auto launch = [&](cudaStream_t launch_stream) {
-                Tensor x(input.p, DType::BF16, {kHidden, point.tokens});
+            const auto launch = [&](CudaExecutionView launch_cuda) {
+                Tensor x(input.span(), DType::BF16, {kHidden, point.tokens});
                 ops::detail::sparse_moe_nvfp4_gate_up_launch(
-                    x, weights, static_cast<const int*>(point.packed_token.p),
-                    static_cast<const int*>(point.expert_offsets.p),
-                    static_cast<const int*>(point.job_experts.p),
-                    static_cast<const int*>(point.job_columns.p),
-                    static_cast<const int*>(point.job_count.p),
-                    static_cast<std::uint8_t*>(point.plane_codes.p),
-                    static_cast<std::uint8_t*>(point.plane_scales.p),
-                    static_cast<__nv_bfloat16*>(point.output.p), multiprocessor_count,
-                    launch_stream);
+                    x, weights, static_cast<const int*>(point.packed_token.data()),
+                    static_cast<const int*>(point.expert_offsets.data()),
+                    static_cast<const int*>(point.job_experts.data()),
+                    static_cast<const int*>(point.job_columns.data()),
+                    static_cast<const int*>(point.job_count.data()),
+                    static_cast<std::uint8_t*>(point.plane_codes.data()),
+                    static_cast<std::uint8_t*>(point.plane_scales.data()),
+                    static_cast<__nv_bfloat16*>(point.output.data()), multiprocessor_count,
+                    launch_cuda.stream());
             };
             const bench::ColdTiming timing = bench::measure_cold_launch(
-                launch, flush, stream, options.warmup, options.repeat);
+                launch, flush, cuda, options.warmup, options.repeat);
             const double seconds = timing.median_us * 1.0e-6;
             const double flops =
                 2.0 * static_cast<double>(point.assignments) * 2.0 * kGateRows * kHidden;
@@ -279,20 +285,21 @@ int main(int argc, char** argv) {
         }
 
         for (Point& point : points) {
-            const auto launch = [&](cudaStream_t launch_stream) {
-                Tensor activation(point.output.p, DType::BF16, {kIntermediate, point.assignments});
+            const auto launch = [&](CudaExecutionView launch_cuda) {
+                Tensor activation(point.output.span(), DType::BF16, {kIntermediate,
+                                                                    point.assignments});
                 ops::detail::sparse_moe_nvfp4_down_launch(
-                    activation, weights, static_cast<const int*>(point.expert_offsets.p),
-                    static_cast<const int*>(point.job_experts.p),
-                    static_cast<const int*>(point.job_columns.p),
-                    static_cast<const int*>(point.job_count.p),
-                    static_cast<std::uint8_t*>(point.down_codes.p),
-                    static_cast<std::uint8_t*>(point.down_scales.p),
-                    static_cast<__nv_bfloat16*>(point.down_output.p), multiprocessor_count,
-                    launch_stream);
+                    activation, weights, static_cast<const int*>(point.expert_offsets.data()),
+                    static_cast<const int*>(point.job_experts.data()),
+                    static_cast<const int*>(point.job_columns.data()),
+                    static_cast<const int*>(point.job_count.data()),
+                    static_cast<std::uint8_t*>(point.down_codes.data()),
+                    static_cast<std::uint8_t*>(point.down_scales.data()),
+                    static_cast<__nv_bfloat16*>(point.down_output.data()), multiprocessor_count,
+                    launch_cuda.stream());
             };
             const bench::ColdTiming timing = bench::measure_cold_launch(
-                launch, flush, stream, options.warmup, options.repeat);
+                launch, flush, cuda, options.warmup, options.repeat);
             const double seconds = timing.median_us * 1.0e-6;
             const double flops =
                 2.0 * static_cast<double>(point.assignments) * kHidden * kIntermediate;

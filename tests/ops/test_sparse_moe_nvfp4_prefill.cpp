@@ -1,7 +1,7 @@
-// Full fused nvfp4 routed prefill oracle (ticket #212, map #175). Drives the complete public
-// SparseMoe prefill route (router -> grouped top-k -> packed route -> nvfp4 routed gate/up ->
-// nvfp4 routed down -> top-k reduce -> shared expert -> final merge) and compares the result
-// against an independent FP64 oracle.
+// Full fused nvfp4 grouped-route oracle (ticket #212 lineage, map #175). Drives the fork route's
+// grouped W4A4 pass through the merged moe_cuda::fork_nvfp4 launch (packed-route grouping ->
+// nvfp4 routed gate/up -> nvfp4 routed down -> contribution reduce -> shared expert -> final
+// merge) and compares the result against an independent FP64 oracle.
 //
 // The oracle decodes the production quantised activation planes and the stored BF16 shared
 // activation, and decodes every weight from its packed representation with the fixture's
@@ -9,15 +9,15 @@
 // quantisation is a private execution choice, so it is read back rather than re-derived, per
 // op-development.md ("packed inputs are independently decoded with their stored scales"). The
 // routed gate/up GEMM itself is qualified by its own oracle in
-// ninfer_sparse_moe_nvfp4_gate_up_test (#211).
+// ninfer_sparse_moe_nvfp4_gate_up_test (#211), and the A16 route below the grouped boundary by
+// ninfer_sparse_moe_nvfp4_decode_test (#213).
 
-#include "core/weight.h"
-#include "ninfer/ops/sparse_moe.h"
+#include "ops/fork_nvfp4_bank.h"
 
-#include "ops/op_tester.h"
-#include "ops/quantized_weight.h"
-#include "ops/sparse_moe/nvfp4/sparse_moe_nvfp4_down.h"
-#include "ops/sparse_moe/prefill/sparse_moe_prefill.h"
+#include "ops/moe/kernels/cuda/groupwise_int/launch.h"
+#include "ops/moe/kernels/cuda/groupwise_int/workspace.h"
+#include "ops/moe/nvfp4/sparse_moe_nvfp4_down.h"
+#include "ops/moe/workspace.h"
 
 #include <cuda_runtime.h>
 
@@ -35,19 +35,21 @@
 
 using namespace ninfer;
 using namespace ninfer::test;
+namespace fn = ninfer::test::fork_nvfp4;
 namespace qw = ninfer::test::quantized_weight;
+namespace kn = ninfer::ops::detail::moe_cuda::fork_nvfp4;
+namespace gi = ninfer::ops::detail::moe_cuda::groupwise_int;
 
 namespace {
 
-constexpr std::int32_t kHidden       = 2048;
-constexpr std::int32_t kExperts      = 256;
-constexpr std::int32_t kTopK         = 8;
-constexpr std::int32_t kIntermediate = 512;
-constexpr std::int32_t kGateRows     = kIntermediate;
+constexpr std::int32_t kHidden       = fn::kHidden;
+constexpr std::int32_t kExperts      = fn::kExperts;
+constexpr std::int32_t kTopK         = fn::kTopK;
+constexpr std::int32_t kIntermediate = fn::kIntermediate;
 constexpr std::int32_t kRouterRows   = kExperts + 1;
 constexpr std::int32_t kSharedRows   = 2 * kIntermediate;
 
-// The complete fused chain mixes two FP4 quantisation steps plus the FP32/FP16 shared path, so the
+// The complete fused chain mixes two FP4 quantisation steps plus the Q8 shared path, so the
 // bound is looser than a single Op's. Verified cases land well inside it.
 constexpr ReductionCriterion kFusedTolerance{
     /*relative_l2*/ 2.0e-2,
@@ -85,23 +87,6 @@ std::vector<std::uint16_t> bf16_bits(const std::vector<float>& values) {
     return bits;
 }
 
-struct Parent {
-    qw::PackedWeight host;
-    DeviceBuffer storage;
-    Weight device{};
-};
-
-Parent make_parent(std::int32_t n, std::int32_t k, std::uint32_t seed, float divisor) {
-    Parent parent;
-    parent.host = qw::make_patterned_weight(
-        QType::NVFP4, n, k, seed,
-        qw::PatternedWeightOptions{qw::RowSplitScalePattern::Unit, qw::RowSplitCodePattern::Coordinate,
-                                   divisor, divisor});
-    parent.storage = to_device(parent.host.payload);
-    parent.device  = parent.host.device_weight(parent.storage.p);
-    return parent;
-}
-
 // Independent decode of a NVFP4 parent into its logical FP32 matrix (E2M1 code x E4M3 scale /
 // weight divisor), keyed only by the stored representation.
 std::vector<float> decode_nvfp4_matrix(const qw::PackedWeight& packed) {
@@ -125,16 +110,17 @@ std::vector<float> decode_nvfp4_matrix(const qw::PackedWeight& packed) {
                 static_cast<std::size_t>(row_tile * k_tiles + scale_tile) * 512U +
                 static_cast<std::size_t>(row_inner % 32) * 16U +
                 static_cast<std::size_t>(row_inner / 32) * 4U + scale_lane;
-            const double decoded =
-                static_cast<double>(qw::detail::decode_e2m1(code)) *
-                static_cast<double>(qw::detail::decode_e4m3fn(scales[scale_offset])) / divisor;
+            const double decoded = static_cast<double>(qw::detail::decode_e2m1(code)) *
+                                   static_cast<double>(qw::detail::decode_e4m3fn(
+                                       scales[scale_offset])) /
+                                   divisor;
             out[static_cast<std::size_t>(row) * k + column] = static_cast<float>(decoded);
         }
     }
     return out;
 }
 
-// Independent decode of a row-split Q8 parent (int8 code x FP16 group scale).
+// Independent decode of a row-split Q8 parent via the fixture's FP64 logical weight.
 std::vector<float> decode_q8_matrix(const qw::PackedWeight& packed) {
     const std::int32_t n = packed.weight.n;
     const std::int32_t k = packed.weight.k;
@@ -148,21 +134,18 @@ std::vector<float> decode_q8_matrix(const qw::PackedWeight& packed) {
     return out;
 }
 
-// Decodes the compact per-column down activation plane (row-major scales, 512/2 code bytes and
-// 512/16 scale bytes per packed column, private divisor 1.0).
+// Independent decode of the production down-stage FP4 plane: one compact row per assignment.
 std::vector<float> decode_down_plane(const std::vector<std::uint8_t>& codes,
-                                     const std::vector<std::uint8_t>& scales,
-                                     std::int32_t assignments) {
-    constexpr std::int32_t k       = 512;
-    constexpr std::int32_t kGroups = k / 16;
-    std::vector<float> out(static_cast<std::size_t>(assignments) * k);
-    for (std::int32_t row = 0; row < assignments; ++row) {
-        for (std::int32_t column = 0; column < k; ++column) {
-            const std::uint8_t byte = codes[static_cast<std::size_t>(row) * (k / 2) + column / 2];
-            const std::uint8_t code = (column & 1) == 0 ? (byte & 0x0fU) : (byte >> 4);
-            const std::uint8_t scale =
-                scales[static_cast<std::size_t>(row) * kGroups + column / 16];
-            out[static_cast<std::size_t>(row) * k + column] =
+                                     const std::vector<std::uint8_t>& scales, int assignments) {
+    std::vector<float> out(static_cast<std::size_t>(assignments) * kIntermediate);
+    for (int column = 0; column < assignments; ++column) {
+        for (std::int32_t k = 0; k < kIntermediate; ++k) {
+            const auto byte = codes[static_cast<std::size_t>(column) * (kIntermediate / 2) +
+                                    k / 2];
+            const auto code = static_cast<std::uint8_t>((k & 1) == 0 ? (byte & 0x0fU) : (byte >> 4));
+            const auto scale = scales[static_cast<std::size_t>(column) * (kIntermediate / 16) +
+                                      k / 16];
+            out[static_cast<std::size_t>(column) * kIntermediate + k] =
                 static_cast<float>(static_cast<double>(qw::detail::decode_e2m1(code)) *
                                    static_cast<double>(qw::detail::decode_e4m3fn(scale)));
         }
@@ -170,80 +153,33 @@ std::vector<float> decode_down_plane(const std::vector<std::uint8_t>& codes,
     return out;
 }
 
-struct Bank {
-    std::vector<std::unique_ptr<Parent>> gate_up; // 2 * kExperts
-    std::vector<std::unique_ptr<Parent>> down;    // kExperts
-    qw::PackedWeight shared_gate_up;
-    qw::PackedWeight shared_down;
-    DeviceBuffer shared_gate_up_storage;
-    DeviceBuffer shared_down_storage;
-    DeviceBuffer router_storage;
-    Weight router{};
-    ops::SparseMoeWeights weights{};
+struct SharedExpert {
+    qw::PackedWeight gate_up_packed, down_packed;
+    ops::SwiGLUWeights weights;
+    DeviceBuffer gate_up_storage, down_storage;
+    std::vector<float> coefficients; // [tokens], consumed as the term's shared_scale
 };
 
-Bank build_bank() {
-    Bank bank;
-    bank.gate_up.reserve(2 * kExperts);
-    bank.down.reserve(kExperts);
-    for (std::int32_t expert = 0; expert < kExperts; ++expert) {
-        // gate/up share one per-expert divisor (the source's rule); down carries its own.
-        const float gate_divisor = 2.0F + 0.25F * static_cast<float>(expert);
-        const float down_divisor = 3.0F + 0.5F * static_cast<float>(expert);
-        bank.gate_up.push_back(std::make_unique<Parent>(make_parent(
-            kGateRows, kHidden, 0x9e37u + static_cast<std::uint32_t>(expert) * 2u, gate_divisor)));
-        bank.gate_up.push_back(std::make_unique<Parent>(make_parent(
-            kGateRows, kHidden, 0x85ebu + static_cast<std::uint32_t>(expert) * 2u + 1u,
-            gate_divisor)));
-        bank.down.push_back(std::make_unique<Parent>(make_parent(
-            kHidden, kIntermediate, 0xc2b2u + static_cast<std::uint32_t>(expert) * 3u,
-            down_divisor)));
-    }
-
-    bank.shared_gate_up =
+SharedExpert make_shared(std::int32_t tokens) {
+    SharedExpert shared;
+    shared.gate_up_packed =
         qw::make_patterned_weight(QType::Q8_G32_FP16, kSharedRows, kHidden, 7u);
-    bank.shared_down = qw::make_patterned_weight(QType::Q8_G32_FP16, kHidden, kIntermediate, 11u);
-    // The shared expert is zeroed so the fused output isolates the routed path (the down kernel and
-    // the top-k reduce); the shared path's numerics are covered by the packed-profile suite.
-    std::fill(bank.shared_gate_up.payload.begin(),
-              bank.shared_gate_up.payload.begin() +
-                  static_cast<std::ptrdiff_t>(bank.shared_gate_up.code_plane_bytes),
+    shared.down_packed =
+        qw::make_patterned_weight(QType::Q8_G32_FP16, kHidden, kIntermediate, 11u);
+    // The shared gate/up codes are zeroed so the fused output isolates the routed path and the
+    // packed-column reduce; the shared path's numerics are covered by the merged suite.
+    std::fill(shared.gate_up_packed.payload.begin(),
+              shared.gate_up_packed.payload.begin() +
+                  static_cast<std::ptrdiff_t>(shared.gate_up_packed.code_plane_bytes),
               static_cast<std::uint8_t>(0));
-    bank.shared_gate_up_storage = to_device(bank.shared_gate_up.payload);
-    bank.shared_down_storage    = to_device(bank.shared_down.payload);
-
-    const std::vector<float> router_values =
-        random_values(static_cast<std::size_t>(kRouterRows) * kHidden, 0x1234u, -0.5F, 0.5F);
-    bank.router_storage = to_device_bf16(router_values);
-    bank.router                = Weight{};
-    bank.router.qtype          = QType::BF16;
-    bank.router.layout         = QuantLayout::Contiguous;
-    bank.router.ndim           = 2;
-    bank.router.shape[0]       = kRouterRows;
-    bank.router.shape[1]       = kHidden;
-    bank.router.padded_shape[0] = kRouterRows;
-    bank.router.padded_shape[1] = kHidden;
-    bank.router.n              = kRouterRows;
-    bank.router.k              = kHidden;
-    bank.router.payload        = bank.router_storage.p;
-    bank.router.payload_bytes  = bank.router_storage.bytes;
-    bank.router.qdata          = bank.router_storage.p;
-
-    bank.weights.router_shared_gate = bank.router;
-    bank.weights.routed_gate_up     = bank.gate_up.front()->device;
-    bank.weights.routed_down        = bank.down.front()->device;
-    bank.weights.shared_gate_up =
-        bank.shared_gate_up.device_weight(bank.shared_gate_up_storage.p);
-    bank.weights.shared_down = bank.shared_down.device_weight(bank.shared_down_storage.p);
-    bank.weights.routed_gate_up_experts.reserve(2 * kExperts);
-    for (const auto& parent : bank.gate_up) {
-        bank.weights.routed_gate_up_experts.push_back(parent->device);
-    }
-    bank.weights.routed_down_experts.reserve(kExperts);
-    for (const auto& parent : bank.down) {
-        bank.weights.routed_down_experts.push_back(parent->device);
-    }
-    return bank;
+    shared.gate_up_storage = to_device(shared.gate_up_packed.payload);
+    shared.down_storage    = to_device(shared.down_packed.payload);
+    shared.weights.gate_up.weight =
+        shared.gate_up_packed.device_weight(shared.gate_up_storage.span());
+    shared.weights.down.weight =
+        shared.down_packed.device_weight(shared.down_storage.span());
+    shared.coefficients = random_values(static_cast<std::size_t>(tokens), 0x77u, 0.25F, 1.0F);
+    return shared;
 }
 
 struct Run {
@@ -253,15 +189,16 @@ struct Run {
     std::vector<std::uint8_t> down_codes;
     std::vector<std::uint8_t> down_scales;
     std::vector<std::uint16_t> shared_activation;
-    std::vector<int> packed_index;
+    std::vector<int> packed_index; // inverse: assignment -> packed column
     std::vector<int> expert_offsets;
+    std::vector<int> ids;
     std::vector<float> alpha;
     std::vector<float> shared_scale;
     std::int32_t assignments = 0;
     std::int32_t tokens      = 0;
 };
 
-Run run_fused(Bank& bank, std::int32_t tokens) {
+Run run_fused(fn::Bank& bank, const SharedExpert& shared, std::int32_t tokens) {
     const std::int32_t assignments = tokens * kTopK;
     const std::vector<float> x_values =
         random_values(static_cast<std::size_t>(kHidden) * tokens, 0xabcdefu, -1.0F, 1.0F);
@@ -269,59 +206,79 @@ Run run_fused(Bank& bank, std::int32_t tokens) {
         random_values(static_cast<std::size_t>(kHidden) * tokens, 0x5555u, -0.5F, 0.5F);
     DeviceBuffer x_storage        = to_device_bf16(x_values);
     DeviceBuffer residual_storage = to_device_bf16(residual_values);
-    DeviceBuffer destination_storage(static_cast<std::size_t>(kHidden) * tokens *
-                                     sizeof(std::uint16_t));
-    cuda_check(cudaMemcpy(destination_storage.p, residual_storage.p, destination_storage.bytes,
-                          cudaMemcpyDeviceToDevice),
+    DeviceBuffer destination_storage(cuda_environment().context.device(),
+                                     static_cast<std::size_t>(kHidden) * tokens *
+                                         sizeof(std::uint16_t));
+    cuda_check(cudaMemcpy(destination_storage.data(), residual_storage.data(),
+                          destination_storage.size(), cudaMemcpyDeviceToDevice),
                "seed fused destination");
 
-    const std::size_t workspace_bytes =
-        ops::sparse_moe_workspace_capacity_bytes(QType::NVFP4, QType::NVFP4, tokens, tokens);
-    WorkspaceArena workspace(workspace_bytes);
+    Run run;
+    run.tokens      = tokens;
+    run.assignments = assignments;
+    run.residual    = bf16_bits(residual_values);
+    fn::fill_routes(run.ids, run.alpha, tokens, 3);
+    run.shared_scale = shared.coefficients;
 
-    Tensor x(x_storage.p, DType::BF16, {kHidden, tokens});
-    Tensor destination(destination_storage.p, DType::BF16, {kHidden, tokens});
-    DeviceContext device;
-    ops::sparse_moe(x, bank.weights, ops::SparseMoeEpilogue::AddResidual, destination, workspace,
-                    device.execution_view());
+    DeviceBuffer ids    = to_device<int>(run.ids);
+    DeviceBuffer coefs  = to_device<float>(run.alpha);
+    DeviceBuffer shared_coefs = to_device<float>(shared.coefficients);
+
+    const auto device = cuda_environment().context.device();
+    const Tensor x(x_storage.data(), device, DType::BF16, {kHidden, tokens});
+    Tensor destination(destination_storage.data(), device, DType::BF16, {kHidden, tokens});
+    const ops::ExpertRoutes routes{
+        Tensor(ids.data(), device, DType::I32, {kTopK, tokens}),
+        Tensor(coefs.data(), device, DType::FP32, {kTopK, tokens})};
+    const ops::ScaledSwiGLUTerm term{
+        shared.weights,
+        Tensor(shared_coefs.data(), device, DType::FP32, {tokens})};
+
+    const kn::Plan plan{
+        .grouped = true, .queued_ctas_per_sm = 32,
+        .shared  = {.token   = gi::TokenPlan{},
+                    .columns = 64}};
+    WorkspaceLayoutBuilder probe;
+    (void)kn::allocate(probe, plan, tokens, true, false);
+    (void)gi::allocate_shared(probe, tokens);
+    GuardedDeviceBuffer scratch(probe.peak_bytes(1));
+    MemoryArena arena(scratch.span());
+    const auto storage        = kn::allocate(arena, plan, tokens, true, false);
+    const auto shared_storage = gi::allocate_shared(arena, tokens);
+
+    const auto execution = cuda_environment().context.execution_view(nullptr);
+    kn::launch(x, bank.experts(), routes, ops::ExpertSubset{ops::ExpertSubsetKind::All, {}},
+               &term, ops::MoeEpilogue::AddResidual, destination, plan, storage, shared_storage,
+               execution);
     cuda_synchronize();
 
-    // The Op allocates its views from this same arena and rewinds on return, so re-allocating
-    // reproduces the identical layout and exposes what the run wrote.
-    const ops::detail::SparseMoePrefillWorkspace views =
-        ops::detail::allocate_sparse_moe_prefill_workspace(workspace, tokens, true);
-    if (workspace.used() == 0) { throw std::runtime_error("fused test: views were not allocated"); }
-
-    Run run;
-    run.tokens        = tokens;
-    run.assignments   = assignments;
-    run.destination   = from_device<std::uint16_t>(destination_storage,
-                                                  static_cast<std::size_t>(kHidden) * tokens);
-    run.residual      = bf16_bits(residual_values);
-    run.grouped_output = from_device<std::uint16_t>(views.grouped_io.data,
-                                                    static_cast<std::size_t>(kHidden) * assignments);
-    run.down_codes  = from_device<std::uint8_t>(views.nvfp4_down_codes.data,
-                                                static_cast<std::size_t>(assignments) * (512 / 2));
-    run.down_scales = from_device<std::uint8_t>(views.nvfp4_down_scales.data,
-                                                static_cast<std::size_t>(assignments) * (512 / 16));
-    run.shared_activation = from_device<std::uint16_t>(
-        views.shared_activation.data, static_cast<std::size_t>(kIntermediate) * tokens);
-    run.packed_index   = from_device<int>(views.packed_index.data, assignments);
-    run.expert_offsets = from_device<int>(views.expert_offsets.data, kExperts + 1);
-    run.alpha          = from_device<float>(views.token_alpha.data, assignments);
-    run.shared_scale   = from_device<float>(views.shared_scale.data, tokens);
+    run.destination = from_device<std::uint16_t>(destination_storage,
+                                                static_cast<std::size_t>(kHidden) * tokens);
+    run.grouped_output =
+        from_device<std::uint16_t>(storage.routed_io,
+                                   static_cast<std::size_t>(kHidden) * assignments);
+    run.down_codes  = from_device<std::uint8_t>(storage.product_codes,
+                                               static_cast<std::size_t>(assignments) * (512 / 2));
+    run.down_scales = from_device<std::uint8_t>(storage.product_scales,
+                                               static_cast<std::size_t>(assignments) * (512 / 16));
+    run.shared_activation =
+        from_device<std::uint16_t>(shared_storage.shared_activation,
+                                   static_cast<std::size_t>(kIntermediate) * tokens);
+    run.packed_index   = from_device<int>(storage.inverse, assignments);
+    run.expert_offsets = from_device<int>(storage.expert_offsets, kExperts + 1);
     return run;
 }
 
 // Shared oracle state: the column->expert map and a lazily decoded per-expert down matrix.
 struct Oracle {
-    const Bank& bank;
+    const fn::Bank& bank;
     const std::vector<int>& expert_offsets;
+    const qw::PackedWeight* shared_down = nullptr;
     std::vector<int> column_expert;
     std::vector<std::unique_ptr<std::vector<float>>> down_matrices;
     std::vector<float> down_activation;
 
-    Oracle(const Bank& bank_ref, const Run& run)
+    Oracle(const fn::Bank& bank_ref, const Run& run)
         : bank(bank_ref), expert_offsets(run.expert_offsets),
           down_matrices(static_cast<std::size_t>(kExperts)) {
         column_expert.assign(run.assignments, -1);
@@ -336,7 +293,8 @@ struct Oracle {
 
     const std::vector<float>& down_weights(int expert) {
         auto& slot = down_matrices[expert];
-        if (slot == nullptr) { slot = std::make_unique<std::vector<float>>(decode_nvfp4_matrix(bank.down[expert]->host)); }
+        if (slot == nullptr) { slot = std::make_unique<std::vector<float>>(
+                                   decode_nvfp4_matrix(bank.down_packed(expert))); }
         return *slot;
     }
 };
@@ -381,15 +339,15 @@ int check_fused(Oracle& oracle, const Run& run, const char* label) {
         }
     }
 
-    // The shared down path consumes the stored BF16 shared activation.
-    const std::vector<float> shared_down_weights = decode_q8_matrix(oracle.bank.shared_down);
+    // The shared down path consumes the stored BF16 shared activation, [T, I] row-major.
+    const std::vector<float> shared_down_weights = decode_q8_matrix(*oracle.shared_down);
     std::vector<double> shared_out(static_cast<std::size_t>(tokens) * kHidden);
     std::vector<float> shared_row(kIntermediate);
     for (std::int32_t token = 0; token < tokens; ++token) {
         for (std::int32_t k = 0; k < kIntermediate; ++k) {
             shared_row[k] =
-                bf16_to_f32(run.shared_activation[static_cast<std::size_t>(k) +
-                                                 static_cast<std::size_t>(kIntermediate) * token]);
+                bf16_to_f32(run.shared_activation[static_cast<std::size_t>(token) * kIntermediate +
+                                                 k]);
         }
         for (std::int32_t n = 0; n < kHidden; ++n) {
             const float* w = &shared_down_weights[static_cast<std::size_t>(n) * kIntermediate];
@@ -428,10 +386,9 @@ int check_fused(Oracle& oracle, const Run& run, const char* label) {
                             kFusedTolerance);
 }
 
-
 // Exercises an expert with more than one 64-column route job, covering the `column_base > 0`
-// route-job mapping directly (the routed test route never concentrates that hard).
-int check_down_multi_job(Bank& bank) {
+// route-job mapping directly (the fill_routes spread never concentrates that hard).
+int check_down_multi_job(fn::Bank& bank) {
     constexpr int M = 128;
     std::vector<int> offsets(kExperts + 1, M);
     offsets[0] = 0;
@@ -440,27 +397,30 @@ int check_down_multi_job(Bank& bank) {
     const std::vector<int> job_count{2, 0};
     const std::vector<float> act =
         random_values(static_cast<std::size_t>(M) * 512, 0x888u, -4.0F, 4.0F);
-    DeviceBuffer act_dev  = to_device_bf16(act);
-    DeviceBuffer codes(M * 256);
-    DeviceBuffer scales(M * 32);
-    DeviceBuffer out(static_cast<std::size_t>(M) * kHidden * 2);
+    DeviceBuffer act_dev = to_device_bf16(act);
+    const auto device    = cuda_environment().context.device();
+    DeviceBuffer codes(device, M * 256);
+    DeviceBuffer scales(device, M * 32);
+    DeviceBuffer out(device, static_cast<std::size_t>(M) * kHidden * 2);
     DeviceBuffer off_dev = to_device(offsets);
     DeviceBuffer je_dev  = to_device(job_experts);
     DeviceBuffer jc_dev  = to_device(job_columns);
     DeviceBuffer jn_dev  = to_device(job_count);
-    Tensor act_t(act_dev.p, DType::BF16, {512, M});
-    ops::detail::sparse_moe_nvfp4_down_launch(
-        act_t, bank.weights, static_cast<const int*>(off_dev.p),
-        static_cast<const int*>(je_dev.p), static_cast<const int*>(jc_dev.p),
-        static_cast<const int*>(jn_dev.p), static_cast<std::uint8_t*>(codes.p),
-        static_cast<std::uint8_t*>(scales.p), static_cast<__nv_bfloat16*>(out.p),
+    const Tensor act_t(act_dev.data(), device, DType::BF16, {512, M});
+    ninfer::ops::detail::sparse_moe_nvfp4_down_launch(
+        act_t, ninfer::ops::detail::make_nvfp4_down_bases(bank.view()),
+        static_cast<const int*>(off_dev.data()),
+        static_cast<const int*>(je_dev.data()), static_cast<const int*>(jc_dev.data()),
+        static_cast<const int*>(jn_dev.data()), static_cast<std::uint8_t*>(codes.data()),
+        static_cast<std::uint8_t*>(scales.data()), static_cast<__nv_bfloat16*>(out.data()),
         device_multiprocessor_count(), nullptr);
     cuda_synchronize();
 
-    const auto plane = decode_down_plane(from_device<std::uint8_t>(codes.p, M * 256),
-                                         from_device<std::uint8_t>(scales.p, M * 32), M);
-    const auto produced = from_device<std::uint16_t>(out.p, static_cast<std::size_t>(M) * kHidden);
-    const auto weights  = decode_nvfp4_matrix(bank.down[0]->host);
+    const auto plane = decode_down_plane(from_device<std::uint8_t>(codes.data(), M * 256),
+                                         from_device<std::uint8_t>(scales.data(), M * 32), M);
+    const auto produced = from_device<std::uint16_t>(out.data(),
+                                                    static_cast<std::size_t>(M) * kHidden);
+    const auto weights  = decode_nvfp4_matrix(bank.down_packed(0));
     std::vector<double> actual;
     std::vector<double> reference;
     actual.reserve(static_cast<std::size_t>(M) * kHidden);
@@ -481,10 +441,11 @@ int check_down_multi_job(Bank& bank) {
     return verify_reduction("nvfp4 down multi-job", actual, reference, kFusedTolerance);
 }
 
-int run_case(Bank& bank, std::int32_t tokens, int column_stride) {
+int run_case(fn::Bank& bank, const SharedExpert& shared, std::int32_t tokens, int column_stride) {
     const std::string label = "nvfp4 fused T=" + std::to_string(tokens);
-    const Run run           = run_fused(bank, tokens);
+    const Run run           = run_fused(bank, shared, tokens);
     Oracle oracle(bank, run);
+    oracle.shared_down = &shared.down_packed;
     int failures = 0;
     failures += check_down_stage(oracle, run, label.c_str(), column_stride);
     failures += check_fused(oracle, run, label.c_str());
@@ -504,17 +465,16 @@ int main() {
 
     int failures = 0;
     try {
-        Bank bank = build_bank();
-        // The gate/up host payloads are not part of the oracle; release them after upload.
-        for (auto& parent : bank.gate_up) {
-            parent->host.payload.clear();
-            parent->host.payload.shrink_to_fit();
-        }
+        fn::Bank bank;
+        SharedExpert shared = make_shared(256);
         // T=20 verifies the down stage on every packed column; the larger interior extent samples
         // columns (the fused output is still checked for every token).
         failures += check_down_multi_job(bank);
-        failures += run_case(bank, 20, 1);
-        failures += run_case(bank, 200, 8);
+        // The gate/up host payloads are not part of the oracle; release them after the runs that
+        // decode them.
+        bank.release_gate_up();
+        failures += run_case(bank, shared, 20, 1);
+        failures += run_case(bank, shared, 200, 8);
     } catch (const std::exception& error) {
         std::cerr << "nvfp4 fused prefill test: " << error.what() << '\n';
         return 1;

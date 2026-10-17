@@ -5,10 +5,9 @@
 // device kernel.
 
 #include "core/weight.h"
-#include "ninfer/ops/sparse_moe.h"
 
 #include "ops/op_tester.h"
-#include "ops/sparse_moe/nvfp4/sparse_moe_nvfp4_gate_up.h"
+#include "ops/moe/nvfp4/sparse_moe_nvfp4_gate_up.h"
 
 #include <cuda_runtime.h>
 
@@ -218,9 +217,9 @@ int run_case(const char* label, std::int32_t tokens, std::int32_t experts_used,
             weight.scale_dtype      = DType::FP8_E4M3FN;
             weight.weight_scale_divisor = parent.divisor;
             weight.input_scale_divisor  = 1.0f;
-            weight.payload          = device.p;
-            weight.qdata            = device.p;
-            weight.scales           = static_cast<const std::uint8_t*>(device.p) + kScaleOffset;
+            weight.payload          = device.data();
+            weight.qdata            = device.data();
+            weight.scales           = static_cast<const std::uint8_t*>(device.data()) + kScaleOffset;
             if (projection == 0) {
                 gate_weights[expert] = weight;
             } else {
@@ -235,10 +234,7 @@ int run_case(const char* label, std::int32_t tokens, std::int32_t experts_used,
         routed_gate_up[2 * expert]     = gate_weights[expert];
         routed_gate_up[2 * expert + 1] = up_weights[expert];
     }
-    ops::SparseMoeWeights weights{};
-    weights.routed_gate_up_experts = std::move(routed_gate_up);
-    weights.routed_gate_up.qtype   = QType::NVFP4;
-    weights.routed_down.qtype      = QType::NVFP4;
+    const ops::detail::Nvfp4RoutedWeights weights{routed_gate_up, {}};
 
     std::vector<float> input(static_cast<std::size_t>(tokens) * kHidden);
     for (std::size_t i = 0; i < input.size(); ++i) {
@@ -253,24 +249,24 @@ int run_case(const char* label, std::int32_t tokens, std::int32_t experts_used,
     DeviceBuffer device_jobs     = to_device<int>(route.job_experts);
     DeviceBuffer device_columns  = to_device<int>(route.job_columns);
     DeviceBuffer device_jobcount = to_device<int>(std::vector<int>{jobs, experts_used});
-    DeviceBuffer device_codes(std::size_t(tokens) * (kHidden / 2));
-    DeviceBuffer device_scales(std::size_t(tokens) * (kHidden / 16));
-    DeviceBuffer device_output(std::size_t(kIntermediate) * route.assignments * sizeof(std::uint16_t));
+    DeviceBuffer device_codes(cuda_environment().context.device(), std::size_t(tokens) * (kHidden / 2));
+    DeviceBuffer device_scales(cuda_environment().context.device(), std::size_t(tokens) * (kHidden / 16));
+    DeviceBuffer device_output(cuda_environment().context.device(), std::size_t(kIntermediate) * route.assignments * sizeof(std::uint16_t));
 
-    Tensor x(device_x.p, DType::BF16, {kHidden, tokens});
+    Tensor x(device_x.data(), cuda_environment().context.device(), DType::BF16, {kHidden, tokens});
     ops::detail::sparse_moe_nvfp4_gate_up_launch(
-        x, weights, static_cast<const int*>(device_token.p),
-        static_cast<const int*>(device_offsets.p), static_cast<const int*>(device_jobs.p),
-        static_cast<const int*>(device_columns.p), static_cast<const int*>(device_jobcount.p),
-        static_cast<std::uint8_t*>(device_codes.p),
-        static_cast<std::uint8_t*>(device_scales.p),
-        static_cast<__nv_bfloat16*>(device_output.p), device_multiprocessor_count(), nullptr);
+        x, weights, static_cast<const int*>(device_token.data()),
+        static_cast<const int*>(device_offsets.data()), static_cast<const int*>(device_jobs.data()),
+        static_cast<const int*>(device_columns.data()), static_cast<const int*>(device_jobcount.data()),
+        static_cast<std::uint8_t*>(device_codes.data()),
+        static_cast<std::uint8_t*>(device_scales.data()),
+        static_cast<__nv_bfloat16*>(device_output.data()), device_multiprocessor_count(), nullptr);
     cuda_synchronize();
 
     const std::vector<std::uint8_t> codes =
-        from_device<std::uint8_t>(device_codes, device_codes.bytes);
+        from_device<std::uint8_t>(device_codes, device_codes.size());
     const std::vector<std::uint8_t> scales =
-        from_device<std::uint8_t>(device_scales, device_scales.bytes);
+        from_device<std::uint8_t>(device_scales, device_scales.size());
     const std::vector<double> got =
         from_device_bf16(device_output, std::size_t(kIntermediate) * route.assignments);
 

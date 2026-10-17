@@ -1,23 +1,25 @@
-// Host-only coverage for the nvfp4 routed-bank binding and validation path in
-// prepare_sparse_moe_weights. No artifact and no CUDA device are required: the function only
-// interprets WeightView geometry, so this exercises the codec accept/reject logic that the
+// Host-only coverage for the nvfp4 routed-bank admission and route-plan path. The retired
+// prepare_sparse_moe_weights validator was replaced by the merged surface: routed_swiglu_profile
+// checks bank geometry, the workspace query applies the Op's codec admission, the shape policy
+// resolves the fork route per token count, and ExpertInputUsage enforces the source-divisor rule.
+// No artifact and no CUDA device are required: this exercises the accept/reject logic that the
 // real-artifact loading test cannot cover without --artifact.
 
 #include "core/weight.h"
 #include "core/weight_view.h"
-#include "ninfer/ops/sparse_moe.h"
+#include "ninfer/ops/moe.h"
 #include "ninfer/ops/weight_input.h"
-#include "ops/sparse_moe/prefill/sparse_moe_prefill.h"
+#include "ops/moe/routed_swiglu/cuda/dispatch.h"
 
-#include <array>
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <deque>
 #include <iostream>
 #include <optional>
+#include <span>
 #include <stdexcept>
 #include <string>
-#include <utility>
 #include <vector>
 
 namespace {
@@ -25,11 +27,12 @@ namespace {
 using namespace ninfer;
 using namespace ninfer::ops;
 
-// Exact SparseMoe geometry.
+// Exact fork 35B-A3B geometry.
 constexpr std::int32_t kHidden       = 2048;
 constexpr std::int32_t kExperts      = 256;
+constexpr std::int32_t kTopK         = 8;
 constexpr std::int32_t kIntermediate = 512;
-constexpr std::int32_t kGateRows     = 512;
+constexpr std::int32_t kGateRows     = kIntermediate;
 
 int g_failures = 0;
 
@@ -55,217 +58,182 @@ void expect_invalid(Fn&& fn, const char* message) {
     ++g_failures;
 }
 
+// Bank layout numbers only; the profile and workspace-query paths never dereference the parent,
+// so the regions describe the full 2I-row-per-expert and H-row-per-expert banks the loader binds.
+struct BankLayouts {
+    WeightBankLayout gate_up;
+    WeightBankLayout down;
+};
+
+BankLayouts layouts(QType down_format = QType::NVFP4,
+                    QuantLayout gate_layout = QuantLayout::BlockScaleK16M128x4) {
+    const std::uint64_t gu_code_bytes = std::uint64_t(2 * kIntermediate) * kHidden / 2;
+    const std::uint64_t gu_scale_bytes =
+        std::uint64_t(2 * kIntermediate) * (kHidden / 16);
+    const std::uint64_t dn_code_bytes = std::uint64_t(kHidden) * kIntermediate / 2;
+    const std::uint64_t dn_scale_bytes =
+        std::uint64_t(kHidden) * (kIntermediate / 16);
+    BankLayouts out;
+    out.gate_up = {.region =
+                       {0, std::uint32_t(kExperts), std::uint64_t(kExperts) * 2 * kIntermediate,
+                        std::uint64_t(2 * kIntermediate)},
+                   .format    = QType::NVFP4,
+                   .layout    = gate_layout,
+                   .columns   = kHidden,
+                   .codes     = {0, gu_code_bytes, gu_code_bytes + gu_scale_bytes},
+                   .scales    = {gu_code_bytes, gu_scale_bytes, gu_code_bytes + gu_scale_bytes},
+                   .divisor_begin  = 0,
+                   .divisor_stride = 1,
+                   .has_divisors   = true};
+    out.down = {.region =
+                    {0, std::uint32_t(kExperts), std::uint64_t(kExperts) * kHidden,
+                     std::uint64_t(kHidden)},
+                .format    = down_format,
+                .layout    = gate_layout,
+                .columns   = kIntermediate,
+                .codes     = {0, dn_code_bytes, dn_code_bytes + dn_scale_bytes},
+                .scales    = {dn_code_bytes, dn_scale_bytes, dn_code_bytes + dn_scale_bytes},
+                .divisor_begin  = 0,
+                .divisor_stride = 1,
+                .has_divisors   = true};
+    return out;
+}
+
+RoutedSwiGLUProfile profile(const BankLayouts& bank, LinearPolicy policy = LinearPolicy::AllowA4) {
+    return routed_swiglu_profile(bank.gate_up, bank.down, kTopK, policy, policy);
+}
+
+std::size_t capacity(const RoutedSwiGLUProfile& p, int first, int last) {
+    return routed_swiglu_workspace_capacity_bytes(p, ExpertSubsetKind::All, DType::FP32,
+                                                 MoeEpilogue::Write, first, last);
+}
+
+void accepts_nvfp4_route() {
+    const auto p = profile(layouts());
+    check(p.ffn.hidden == kHidden && p.ffn.intermediate == kIntermediate &&
+              p.ffn.gate_up_type == QType::NVFP4 && p.ffn.down_type == QType::NVFP4 &&
+              p.experts == kExperts && p.top_k == kTopK,
+          "nvfp4 route bank was not reported with the fork geometry");
+    check(capacity(p, 20, 200) > 0, "nvfp4 route workspace query returned no capacity");
+    // A16-only admission (the decode/small-T front) must be accepted as well.
+    check(capacity(profile(layouts(), LinearPolicy::A16Only), 1, 19) > 0,
+          "nvfp4 A16-only profile was rejected");
+}
+
+void rejects_incompatible_banks() {
+    {
+        auto bank = layouts();
+        bank.gate_up.format = QType::NVFP4;
+        bank.down.format    = QType::Q4_G64_FP16;
+        expect_invalid([&] { (void)capacity(profile(bank), 20, 200); },
+                       "an nvfp4 bank with q4 down was accepted");
+    }
+    {
+        auto bank = layouts(QType::NVFP4, QuantLayout::RowSplit);
+        expect_invalid([&] { (void)capacity(profile(bank), 20, 200); },
+                       "an nvfp4 bank with a row-split layout was accepted");
+    }
+    {
+        auto bank = layouts();
+        bank.gate_up.region.rows = kExperts * (2 * kIntermediate) + 1; // odd rows
+        expect_invalid([&] { (void)profile(bank); },
+                       "a routed gate/up bank with the wrong geometry was accepted");
+    }
+    {
+        auto bank = layouts();
+        bank.gate_up.region.count = 512;
+        expect_invalid([&] { (void)profile(bank); },
+                       "routed banks with different expert counts were accepted");
+    }
+}
+
 // Stable parent/view storage: deques keep element references valid as the bank is filled.
 struct Storage {
     std::deque<std::vector<std::byte>> buffers;
     std::deque<WeightParent> parents;
     std::deque<WeightView> views;
 
-    std::vector<std::byte>& buffer(std::size_t bytes) { return buffers.emplace_back(bytes); }
-
-    WeightParent& parent(const WeightGeometry& geometry, std::vector<std::byte>& bytes,
-                         float divisor) {
-        return parents.emplace_back(WeightParent{geometry, bytes.data(), divisor});
+    WeightParent& parent(QType format, QuantLayout layout, std::uint64_t rows, std::uint64_t cols) {
+        const std::array<std::uint64_t, 2> shape{rows, cols};
+        const auto geometry = weight_geometry(format, layout, shape);
+        auto& bytes         = buffers.emplace_back(std::max<std::size_t>(geometry.bytes, 16));
+        return parents.emplace_back(
+            WeightParent{geometry, Device::cpu(), bytes.data(), {}});
     }
 
-    WeightView& view(std::vector<std::uint64_t> shape, const WeightParent& parent,
-                     std::uint64_t begin, std::uint64_t end) {
-        return views.emplace_back(WeightView{std::move(shape), {{&parent, begin, end}}});
+    WeightView& view(const WeightParent& parent, std::uint64_t rows, std::uint64_t cols,
+                     std::uint64_t element_begin, std::uint64_t element_end) {
+        return views.emplace_back(
+            WeightView{{rows, cols}, {{&parent, element_begin, element_end}}});
     }
 };
 
 struct BankOptions {
-    bool first_gate_q8       = false; // gate/up parent format differs from the down nvfp4 bank
-    bool up_divisor_differs  = false; // A4 gate/up activation divisors disagree
-    bool short_gate_geometry = false; // routed gate/up logical shape is wrong
+    bool up_divisor_differs = false; // A4 gate/up activation divisors disagree
 };
 
-struct Nvfp4Bank {
+void checks_nvfp4_activation_divisors() {
     Storage storage;
-    WeightView* router_view       = nullptr;
-    WeightView* shared_score_view = nullptr;
-    WeightView* shared_gate_view  = nullptr;
-    WeightView* shared_up_view    = nullptr;
-    WeightView* shared_down_view  = nullptr;
-    std::vector<WeightInput> gate_up_inputs;
-    std::vector<WeightInput> down_inputs;
-    std::vector<float> gate_up_divisors;
-    std::vector<float> down_divisors;
+    auto& gu_parent = storage.parent(QType::NVFP4, QuantLayout::BlockScaleK16M128x4,
+                                     2 * kIntermediate, kHidden);
+    const auto elements = std::uint64_t(2 * kIntermediate) * kHidden;
+    const auto half     = elements / 2;
+    const auto& gate    = storage.view(gu_parent, kGateRows, kHidden, 0, half);
+    const auto& up      = storage.view(gu_parent, kGateRows, kHidden, half, elements);
 
-    // The single-projection inputs are constructed here so WeightInput's reference member is
-    // never default-constructed or assigned.
-    SparseMoeWeights bind() const {
-        const WeightInput router{*router_view, LinearPolicy::A16Only, std::nullopt};
-        const WeightInput score{*shared_score_view, LinearPolicy::A16Only, std::nullopt};
-        const WeightInput shared_gate{*shared_gate_view, LinearPolicy::A16Only, std::nullopt};
-        const WeightInput shared_up{*shared_up_view, LinearPolicy::A16Only, std::nullopt};
-        const WeightInput shared_down{*shared_down_view, LinearPolicy::A16Only, std::nullopt};
-        return prepare_sparse_moe_weights(router, score, gate_up_inputs, down_inputs, shared_gate,
-                                          shared_up, shared_down);
-    }
-};
-
-void fill_bank(Nvfp4Bank& bank, const BankOptions& options) {
-    const auto geometry2 = [](QType format, QuantLayout layout, std::uint64_t rows,
-                              std::uint64_t columns) {
-        const std::array<std::uint64_t, 2> shape{rows, columns};
-        return weight_geometry(format, layout, shape);
-    };
-    const auto nvfp4_gate =
-        geometry2(QType::NVFP4, QuantLayout::BlockScaleK16M128x4, kGateRows, kHidden);
-    const auto nvfp4_down =
-        geometry2(QType::NVFP4, QuantLayout::BlockScaleK16M128x4, kHidden, kIntermediate);
-    const auto q8_gate = geometry2(QType::Q8_G32_FP16, QuantLayout::RowSplit, kGateRows, kHidden);
-    const auto router  = geometry2(QType::BF16, QuantLayout::Contiguous, kExperts + 1, kHidden);
-    const auto shared_gate =
-        geometry2(QType::Q8_G32_FP16, QuantLayout::RowSplit, 2 * kIntermediate, kHidden);
-    const auto shared_down =
-        geometry2(QType::Q8_G32_FP16, QuantLayout::RowSplit, kHidden, kIntermediate);
-
-    auto& router_bytes      = bank.storage.buffer(router.bytes);
-    auto& shared_gate_bytes = bank.storage.buffer(shared_gate.bytes);
-    auto& shared_down_bytes = bank.storage.buffer(shared_down.bytes);
-    std::vector<std::vector<std::byte>*> gate_bytes;
-    std::vector<std::vector<std::byte>*> down_bytes;
-    for (int index = 0; index < 2 * kExperts; ++index) {
-        gate_bytes.push_back(&bank.storage.buffer(nvfp4_gate.bytes));
-    }
-    for (int expert = 0; expert < kExperts; ++expert) {
-        down_bytes.push_back(&bank.storage.buffer(nvfp4_down.bytes));
-    }
-
-    auto& router_parent      = bank.storage.parent(router, router_bytes, 0.0F);
-    auto& shared_gate_parent = bank.storage.parent(shared_gate, shared_gate_bytes, 0.0F);
-    auto& shared_down_parent = bank.storage.parent(shared_down, shared_down_bytes, 0.0F);
-
-    std::vector<const WeightParent*> gate_parents;
-    for (int index = 0; index < 2 * kExperts; ++index) {
-        const float divisor = 8.0F + static_cast<float>(index) * 0.25F;
-        bank.gate_up_divisors.push_back(divisor);
-        if (options.first_gate_q8 && index == 0) {
-            auto& q8_bytes = bank.storage.buffer(q8_gate.bytes);
-            gate_parents.push_back(&bank.storage.parent(q8_gate, q8_bytes, 0.0F));
-        } else {
-            gate_parents.push_back(&bank.storage.parent(nvfp4_gate, *gate_bytes[index], divisor));
-        }
-    }
-    std::vector<const WeightParent*> down_parents;
-    for (int expert = 0; expert < kExperts; ++expert) {
-        const float divisor = 4.0F + static_cast<float>(expert) * 0.5F;
-        bank.down_divisors.push_back(divisor);
-        down_parents.push_back(&bank.storage.parent(nvfp4_down, *down_bytes[expert], divisor));
-    }
-
-    const auto gate_elements = static_cast<std::uint64_t>(kGateRows) * kHidden;
-    const auto down_elements = static_cast<std::uint64_t>(kHidden) * kIntermediate;
-
-    bank.router_view = &bank.storage.view({kExperts, kHidden}, router_parent, 0,
-                                          static_cast<std::uint64_t>(kExperts) * kHidden);
-    bank.shared_score_view =
-        &bank.storage.view({1, kHidden}, router_parent,
-                           static_cast<std::uint64_t>(kExperts) * kHidden,
-                           static_cast<std::uint64_t>(kExperts + 1) * kHidden);
-    bank.shared_gate_view =
-        &bank.storage.view({kIntermediate, kHidden}, shared_gate_parent, 0,
-                           static_cast<std::uint64_t>(kIntermediate) * kHidden);
-    bank.shared_up_view =
-        &bank.storage.view({kIntermediate, kHidden}, shared_gate_parent,
-                           static_cast<std::uint64_t>(kIntermediate) * kHidden,
-                           static_cast<std::uint64_t>(2 * kIntermediate) * kHidden);
-    bank.shared_down_view =
-        &bank.storage.view({kHidden, kIntermediate}, shared_down_parent, 0, down_elements);
-
-    for (int index = 0; index < 2 * kExperts; ++index) {
-        const auto shape = options.short_gate_geometry && index == 0
-                               ? std::vector<std::uint64_t>{kGateRows - 1, kHidden}
-                               : std::vector<std::uint64_t>{kGateRows, kHidden};
-        const auto end = options.short_gate_geometry && index == 0 ? gate_elements - kHidden
-                                                                   : gate_elements;
-        float divisor = 1.5F;
-        if (options.up_divisor_differs && index == 1) { divisor = 1.75F; }
-        bank.gate_up_inputs.push_back(WeightInput{
-            bank.storage.view(shape, *gate_parents[index], 0, end), LinearPolicy::AllowA4,
-            divisor});
-    }
-    for (int expert = 0; expert < kExperts; ++expert) {
-        bank.down_inputs.push_back(WeightInput{
-            bank.storage.view({kHidden, kIntermediate}, *down_parents[expert], 0, down_elements),
-            LinearPolicy::AllowA4, 2.5F});
-    }
-}
-
-void accepts_nvfp4_bank() {
-    Nvfp4Bank bank;
-    fill_bank(bank, {});
-    const auto weights = bank.bind();
-    check(weights.routed_gate_up.qtype == QType::NVFP4 &&
-              weights.routed_down.qtype == QType::NVFP4,
-          "nvfp4 routed bank was not reported as nvfp4");
-    check(weights.routed_gate_up_experts.size() == 2 * kExperts &&
-              weights.routed_down_experts.size() == kExperts,
-          "nvfp4 routed bank lost expert projections");
-    for (std::size_t index = 0; index < weights.routed_gate_up_experts.size(); ++index) {
-        const auto& expert = weights.routed_gate_up_experts[index];
-        check(expert.qtype == QType::NVFP4 &&
-                  expert.weight_scale_divisor == bank.gate_up_divisors[index] &&
-                  expert.input_scale_divisor == 1.5F,
-              "nvfp4 gate/up projection was not bound with its own divisor");
-    }
-    for (std::size_t expert = 0; expert < weights.routed_down_experts.size(); ++expert) {
-        const auto& weight = weights.routed_down_experts[expert];
-        check(weight.qtype == QType::NVFP4 &&
-                  weight.weight_scale_divisor == bank.down_divisors[expert] &&
-                  weight.input_scale_divisor == 2.5F,
-              "nvfp4 down projection was not bound with its own divisor");
-    }
-}
-
-void rejects_non_nvfp4_and_bad_geometry() {
-    {
-        Nvfp4Bank bank;
-        fill_bank(bank, {.first_gate_q8 = true});
-        expect_invalid([&] { (void)bank.bind(); },
-                       "a routed bank mixing q8 gate/up with nvfp4 down was accepted");
-    }
-    {
-        Nvfp4Bank bank;
-        fill_bank(bank, {.short_gate_geometry = true});
-        expect_invalid([&] { (void)bank.bind(); },
-                       "a routed gate/up parent with the wrong geometry was accepted");
-    }
-}
-
-void rejects_mismatched_gate_up_divisor() {
-    Nvfp4Bank bank;
-    fill_bank(bank, {.up_divisor_differs = true});
-    expect_invalid([&] { (void)bank.bind(); },
+    ExpertInputUsage usage;
+    usage.include(WeightInput{gate, LinearPolicy::AllowA4, 1.5F});
+    usage.include(
+        WeightInput{up, LinearPolicy::AllowA4,
+                    static_cast<float>(1.75)}); // gate/up share one source divisor
+    expect_invalid([&] { (void)usage.activation_divisor(QType::NVFP4); },
                    "nvfp4 gate/up activation divisors disagreeing was accepted");
+
+    ExpertInputUsage common;
+    common.include(WeightInput{gate, LinearPolicy::AllowA4, 1.5F});
+    common.include(WeightInput{up, LinearPolicy::AllowA4, 1.5F});
+    check(common.activation_divisor(QType::NVFP4) == std::optional<float>(1.5F) &&
+              common.policy() == LinearPolicy::AllowA4,
+          "nvfp4 gate/up inputs lost their common activation divisor");
 }
 
-void checks_nvfp4_prefill_plan() {
-    // The public workspace query and the prefill route plan must agree: they share one allocation
-    // function, and the nvfp4 activation plane is part of that workspace.
-    const std::size_t capacity =
-        ops::sparse_moe_workspace_capacity_bytes(QType::NVFP4, QType::NVFP4, 20, 200);
-    const auto plan = ops::detail::resolve_sparse_moe_prefill_plan(200, QType::NVFP4, QType::NVFP4);
-    check(plan.workspace_bytes == capacity,
-          "nvfp4 prefill workspace query disagrees with the route plan");
-    check(ops::detail::sparse_moe_uses_prefill(20, QType::NVFP4, QType::NVFP4) &&
-              ops::detail::sparse_moe_uses_prefill(200, QType::NVFP4, QType::NVFP4),
-          "nvfp4 does not select the prefill route at T>=20");
-    // Workspace must cover the compact FP4 activation plane (2048/2 + 2048/16 bytes per token).
-    check(capacity >= static_cast<std::size_t>(200) * (kHidden / 2 + kHidden / 16),
-          "nvfp4 prefill workspace is smaller than the activation plane");
+void checks_nvfp4_route_plan() {
+    // The public workspace query and the shape policy must agree on the route boundary: they share
+    // one allocation function, and the nvfp4 activation planes are part of that workspace.
+    const auto p         = profile(layouts());
+    const auto& dispatch = detail::moe_routed::shape_dispatch(p);
+    check(std::find(dispatch.allocation_boundaries.begin(), dispatch.allocation_boundaries.end(),
+                    detail::moe_routed::kernel::fork_nvfp4::kGroupedFirstTokens) !=
+              dispatch.allocation_boundaries.end(),
+          "the nvfp4 route does not declare its grouped-boundary allocation point");
+    const auto wide = dispatch.select(200, false);
+    check(wide.implementation == detail::moe_cuda::ExpertImplementation::ForkNvfp4 &&
+              wide.fork.grouped,
+          "nvfp4 does not select the grouped route at T>=20");
+    const auto narrow = dispatch.select(19, false);
+    check(narrow.implementation == detail::moe_cuda::ExpertImplementation::ForkNvfp4 &&
+              !narrow.fork.grouped,
+          "nvfp4 does not select the A16 route below the grouped boundary");
+    // Workspace must cover both compact FP4 activation planes (input and product) plus the
+    // BF16 grouped contributions at the interval top.
+    const std::size_t cap          = capacity(p, 20, 200);
+    const std::size_t assignments  = std::size_t(200) * kTopK;
+    const std::size_t activation_plane = std::size_t(200) * (kHidden / 2 + kHidden / 16);
+    const std::size_t product_plane =
+        assignments * (std::size_t(kIntermediate) / 2 + kIntermediate / 16);
+    const std::size_t contributions = assignments * kHidden * sizeof(std::uint16_t);
+    check(cap >= activation_plane + product_plane + contributions,
+          "nvfp4 grouped workspace is smaller than its activation and contribution planes");
 }
 
 } // namespace
 
 int main() {
     try {
-        accepts_nvfp4_bank();
-        rejects_non_nvfp4_and_bad_geometry();
-        rejects_mismatched_gate_up_divisor();
-        checks_nvfp4_prefill_plan();
+        accepts_nvfp4_route();
+        rejects_incompatible_banks();
+        checks_nvfp4_activation_divisors();
+        checks_nvfp4_route_plan();
     } catch (const std::exception& error) {
         std::cerr << "FAIL: unexpected exception: " << error.what() << '\n';
         return 1;
