@@ -682,8 +682,7 @@ void parse_tools(const Json& body, GenerationRequest& output) {
         }
         const Json& function = item.at("function");
         ToolDefinition tool;
-        tool.schema_param = "tools/" + std::to_string(output.tools.size()) + "/function/parameters";
-        tool.name         = require_function_name(function, "tools");
+        tool.name = require_function_name(function, "tools");
         if (function.contains("description") && !function.at("description").is_null()) {
             if (!function.at("description").is_string()) {
                 bad_request("function description must be a string", "tools");
