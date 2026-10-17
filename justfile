@@ -41,6 +41,6 @@ verify:
       echo '== configure =='; cmake --preset dev || fail=configure; \
       if [ -z "$fail" ]; then echo '== build =='; cmake --build build -j || fail=build; fi; \
       if [ -z "$fail" ]; then echo '== ctest =='; ctest --preset dev --output-on-failure || fail=ctest; fi; \
-      if [ -z "$fail" ]; then echo '== pytest =='; python3.13 -m pytest tests/artifact tests/convert tests/bench/ttft tests/text tests/models/qwen3_5/test_tool_schema.py tests/test_serve_corpus.py -q || fail=pytest; fi; \
+      if [ -z "$fail" ]; then echo '== pytest =='; python3.13 -m pytest tests/artifact tests/convert tests/bench/ttft tests/text tests/models/common/qwen/test_tool_schema.py tests/test_serve_corpus.py -q || fail=pytest; fi; \
       if [ -z "$fail" ]; then echo 'VERIFY OK'; else echo "VERIFY FAIL (step: $fail)"; exit 1; fi; \
     } 2>&1 | tee build/verify.log

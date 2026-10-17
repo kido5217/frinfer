@@ -188,13 +188,13 @@ Run the native Python suites with the project Python environment:
 ```bash
 python3 -m pytest \
   tests/artifact tests/convert tests/bench/ttft \
-  tests/text tests/models/qwen3_5/test_tool_schema.py \
+  tests/text tests/models/common/qwen/test_tool_schema.py \
   tests/test_serve_corpus.py
 ```
 
 The Python suites exercise conversion, encoded output and measurement tools without model
 inference. `tests/text/test_json_schema.py`, `tests/text/test_regex_choice.py` and
-`tests/models/qwen3_5/test_tool_schema.py` are the independent oracles for the native constraint
+`tests/models/common/qwen/test_tool_schema.py` are the independent oracles for the native constraint
 compiler: they drive the built CPU test binaries (`build/tests/ninfer_json_schema_test`,
 `ninfer_regex_choice_test`, `ninfer_qwen3_5_tool_constraints_test`) through their `--probe`
 interface and compare against the third-party `jsonschema` validator and Python `re.fullmatch`

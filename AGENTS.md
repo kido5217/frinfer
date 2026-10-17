@@ -203,7 +203,7 @@ forward to ctest), `just test-one <target>` builds and re-runs a single test, an
 `just bench <target> [args]` builds and runs one benchmark executable. `just verify` runs the whole
 verification (configure + build, the CTest suite, then the hermetic Python suites — `pytest
 tests/artifact tests/convert tests/bench/ttft tests/text
-tests/models/qwen3_5/test_tool_schema.py tests/test_serve_corpus.py` — including the independent
+tests/models/common/qwen/test_tool_schema.py tests/test_serve_corpus.py` — including the independent
 `jsonschema`, Python `re.fullmatch` grammar and Qwen tool-schema constraint oracles) as one bounded
 command. These are conveniences; the underlying commands documented in `tests/README.md` and
 `bench/README.md` remain authoritative.
