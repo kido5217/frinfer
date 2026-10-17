@@ -372,7 +372,7 @@ int test_report_contract() {
         return fail(std::string("invalid benchmark JSON: ") + error.what());
     }
 
-    failures += expect(report.at("schema_version") == 16, "report schema v24");
+    failures += expect(report.at("schema_version") == 24, "report schema v24");
     const auto& moe = report.at("memory").at("moe");
     failures += expect(moe.at("used_bytes") == 4096 && moe.at("target_bytes") == 4096 &&
                            moe.at("ready_bytes") == 3072 && moe.at("prefetched_bytes") == 1024 &&

@@ -15,7 +15,7 @@
 
 namespace ninfer::bench {
 
-inline constexpr int kSchemaVersion                   = 16;
+inline constexpr int kSchemaVersion                   = 24;
 inline constexpr std::string_view kArtifactType       = "ninfer_bench_report";
 inline constexpr std::string_view kDefaultCorpusPath  = "bench/fixtures/bench_corpus.ids";
 inline constexpr int kDecodeSeedTokens                = 1;
@@ -81,6 +81,8 @@ struct RepTiming {
 
 struct TestResult {
     BenchTest test;
+    // One sample per concurrent request; wall times cover the whole repetition set.
+    std::uint32_t concurrency = 1;
     std::vector<RepTiming> reps;
     std::size_t workspace_peak_bytes           = 0;
     std::size_t workspace_allocator_peak_bytes = 0;
@@ -113,6 +115,7 @@ struct BenchEnvironment {
     std::uint32_t decode_graph_prime_output_tokens = 0;
     int repetitions                                = 0;
     int warmup                                     = 0;
+    std::uint32_t concurrency                      = 1;
     std::string corpus_path;
     std::size_t corpus_tokens = 0;
     std::string grammar_path;   // empty = unconstrained; else every request carries the GBNF
