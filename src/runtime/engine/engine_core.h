@@ -1083,9 +1083,13 @@ private:
                     continue;
                 }
                 std::span<const runtime::RawTokenLogprob> row_logprobs{};
-                if (!pending.logprobs().empty()) {
-                    row_logprobs = pending.logprobs().subspan(
-                        static_cast<std::size_t>(row) * pending.row_stride(), count);
+                // The logprob gather is a qwen3_5 capability; the experimental qwen4_exp
+                // PendingBatch carries none, so the row stays empty there.
+                if constexpr (requires { pending.logprobs(); }) {
+                    if (!pending.logprobs().empty()) {
+                        row_logprobs = pending.logprobs().subspan(
+                            static_cast<std::size_t>(row) * pending.row_stride(), count);
+                    }
                 }
                 // Real-time reasoning control: a close requested while the request was generating is
                 // consumed at this boundary, so the round that admits it publishes the canonical

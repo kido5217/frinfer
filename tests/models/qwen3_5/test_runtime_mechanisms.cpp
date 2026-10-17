@@ -6,6 +6,7 @@
 #include "models/common/qwen/vision/control.h"
 
 #include "models/qwen3_5/program/planning/yarn_policy.h"
+#include "models/qwen3_5/config.h"
 #include "models/common/qwen/prefix_identity.h"
 #include "ninfer/ops/rope.h"
 #include "runtime/contract/timing.h"

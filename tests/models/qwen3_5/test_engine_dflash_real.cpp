@@ -372,37 +372,10 @@ int exercise_vision_dflash(const char* artifact, const std::vector<ninfer::Token
 
 int main() {
     try {
-    const char* artifact = std::getenv("NINFER_TEST_ARTIFACT");
-    if (artifact == nullptr || *artifact == '\0') {
-        std::cout << "skip: NINFER_TEST_ARTIFACT is not set\n";
-        return 77;
-    }
-
-    const std::vector<ninfer::TokenId> prompt{
-        248045, 846,    198, 109266, 3709,  96220, 117443, 97913,
-        1710,   248046, 198, 248045, 74455, 198,   248068, 198,
-    };
-    if (const int result = exercise_vision_dflash(artifact, prompt); result != 0) { return result; }
-
-    {
-        ninfer::EngineOptions options =
-            dflash_engine_options(artifact, ninfer::ProposalHead::Full, 128);
-        options.max_concurrency = 2;
-        options.kv_capacity     = ninfer::KvCapacityPolicy::explicit_capacity(2 * 128);
-        ninfer::Engine full(std::move(options));
-        auto first  = full.submit(full.prepare_tokens(prompt), greedy_options(17, false));
-        auto second = full.submit(full.prepare_tokens(prompt), greedy_options(9, false));
-        const ninfer::GenerationResult first_result  = first.wait();
-        const ninfer::GenerationResult second_result = second.wait();
-        const auto valid = [&](const ninfer::GenerationResult& result, std::size_t count) {
-            return result.generated_token_ids.size() == count &&
-                   result.finish_reason == ninfer::FinishReason::OutputLimit &&
-                   result.speculative.backend == ninfer::SpeculativeBackend::DFlash &&
-                   result.speculative.rounds != 0;
-        };
-        if (!valid(first_result, 17) || !valid(second_result, 9)) {
-            std::cerr << "concurrent full-head DFlash Graph requests did not complete\n";
-            return 1;
+        const char* artifact = std::getenv("NINFER_TEST_ARTIFACT");
+        if (artifact == nullptr || *artifact == '\0') {
+            std::cout << "skip: NINFER_TEST_ARTIFACT is not set\n";
+            return 77;
         }
 
         const std::vector<ninfer::TokenId> prompt{
@@ -417,6 +390,7 @@ int main() {
             ninfer::EngineOptions options =
                 dflash_engine_options(artifact, ninfer::ProposalHead::Full, 128);
             options.max_concurrency = 2;
+            options.kv_capacity     = ninfer::KvCapacityPolicy::explicit_capacity(2 * 128);
             ninfer::Engine full(std::move(options));
             auto first  = full.submit(full.prepare_tokens(prompt), greedy_options(17, false));
             auto second = full.submit(full.prepare_tokens(prompt), greedy_options(9, false));

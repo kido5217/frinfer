@@ -246,7 +246,7 @@ ProgramImpl::ProgramImpl(const execution::Parameters& parameters_in, const Seque
         CUDA_CHECK(cudaMemcpyAsync(io.yarn_inv_freq.data,
                                    plan.persistent.round.yarn_inv_freq_values.data(),
                                    io.yarn_inv_freq.bytes(), cudaMemcpyHostToDevice,
-                                   device.stream));
+                                   device.stream()));
     }
     device.synchronize();
 

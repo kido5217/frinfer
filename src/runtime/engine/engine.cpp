@@ -280,12 +280,12 @@ std::vector<TokenId> Engine::tokenize_text(std::string_view text) const {
 
 std::string Engine::detokenize(std::span<const TokenId> ids, bool skip_special_tokens) const {
     if (impl_ == nullptr) { throw std::logic_error("Engine is moved from"); }
-    return impl_->active->frontend.detokenize(ids, skip_special_tokens);
+    return impl_->frontend().detokenize(ids, skip_special_tokens);
 }
 
 TokenPiece Engine::token_piece(TokenId id) const {
     if (impl_ == nullptr) { throw std::logic_error("Engine is moved from"); }
-    return impl_->active->frontend.token_piece(id);
+    return impl_->frontend().token_piece(id);
 }
 
 std::vector<float> Engine::score_tokens(std::vector<TokenId> tokens, std::uint32_t first_target) {
