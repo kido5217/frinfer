@@ -10,7 +10,7 @@
 #include <string_view>
 #include <utility>
 
-namespace ninfer::models::qwen3_5::frontend {
+namespace ninfer::models::qwen::frontend {
 namespace {
 
 using Json                = nlohmann::json;
@@ -1274,4 +1274,4 @@ void check_tool_continuation(const ToolCallOutputContract& contract, std::string
                            "tool continuation must contain no completed calls");
 }
 
-} // namespace ninfer::models::qwen3_5::frontend
+} // namespace ninfer::models::qwen::frontend

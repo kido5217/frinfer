@@ -10,7 +10,7 @@
 #include <string_view>
 #include <vector>
 
-namespace ninfer::models::qwen3_5::frontend {
+namespace ninfer::models::qwen::frontend {
 
 // Static per-family wire configuration. The parsing core never analyzes a chat template and never
 // probes template capabilities: a family is supported by this explicit configuration, and a wire
@@ -138,4 +138,4 @@ private:
 void check_tool_continuation(const ToolCallOutputContract& contract, std::string_view region,
                              std::size_t max_name_length);
 
-} // namespace ninfer::models::qwen3_5::frontend
+} // namespace ninfer::models::qwen::frontend

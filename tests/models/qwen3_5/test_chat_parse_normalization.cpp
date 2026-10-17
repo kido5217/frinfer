@@ -20,7 +20,7 @@
 namespace {
 
 using Json = nlohmann::json;
-using namespace ninfer::models::qwen3_5::frontend;
+using namespace ninfer::models::qwen::frontend;
 using ninfer::GeneratedToolCall;
 using ninfer::ToolCallParseDiagnostics;
 using ninfer::ToolCallParseFallbackReason;

@@ -2958,7 +2958,7 @@ int test_rendered_text_exposure() {
         ninfer::MessagePart{.kind = ninfer::MessagePartKind::Text, .text = "hello", .media = {}});
     input.messages.push_back(std::move(message));
 
-    const ninfer::models::qwen3_5::PreparedPrompt prepared =
+    const ninfer::models::qwen::PreparedPrompt prepared =
         text_frontend.prepare(std::move(input));
     const std::string_view rendered = prepared.rendered_text();
     const std::string& retained     = FrontendFactory::inspect(prepared).rendered_text;
@@ -2968,13 +2968,13 @@ int test_rendered_text_exposure() {
     failures += check(rendered == expected,
                       "rendered prompt disagrees with an independent render of the same messages");
 
-    const ninfer::models::qwen3_5::PreparedPrompt tokens =
+    const ninfer::models::qwen::PreparedPrompt tokens =
         text_frontend.prepare_tokens(std::vector<ninfer::TokenId>(3, 0));
     failures +=
         check(tokens.rendered_text().empty(), "token-id-only prompt reported a rendered text");
 
     const Frontend media_frontend = make_frontend(resources(), true);
-    const ninfer::models::qwen3_5::PreparedPrompt media =
+    const ninfer::models::qwen::PreparedPrompt media =
         media_frontend.prepare(image_text_input(gradient_ppm(), "look", "rendered-text.ppm"));
     const std::string_view media_text = media.rendered_text();
     // The fixture tokenizes <|image_pad|> as id 248056. An un-expanded render carries a single
