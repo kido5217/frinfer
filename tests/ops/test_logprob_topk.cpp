@@ -17,6 +17,17 @@
 using namespace ninfer;
 using namespace ninfer::test;
 
+// Caller-owned device scratch for the Op's workspace argument, in the merged arena idiom: a
+// guarded payload buffer plus a bump arena over its span. The arena refers into the buffer, so
+// the member order keeps it alive for the arena's lifetime.
+struct ScratchArena {
+    explicit ScratchArena(std::size_t bytes)
+        : buffer(bytes), arena(buffer.span()) {}
+
+    GuardedDeviceBuffer buffer;
+    MemoryArena arena;
+};
+
 namespace {
 
 constexpr int K = ops::kLogprobTopK;
@@ -144,7 +155,8 @@ int run_case(const std::string& label, std::int32_t physical_rows, std::int32_t 
     const auto oracle = logprob_oracle(logits, counts_host, physical_rows, rows, token_domain, spec,
                                        counts_present);
 
-    DeviceBuffer count_buffer(counts_present ? counts_host.size() * sizeof(std::int32_t) : 0);
+    DeviceBuffer count_buffer(cuda_environment().context.device(),
+                               counts_present ? counts_host.size() * sizeof(std::int32_t) : 0);
     std::vector<ops::SamplingConfig> configs(static_cast<std::size_t>(rows));
     for (std::int32_t r = 0; r < rows; ++r) {
         configs[static_cast<std::size_t>(r)].temperature        = spec.temperature;
@@ -152,13 +164,14 @@ int run_case(const std::string& label, std::int32_t physical_rows, std::int32_t 
         configs[static_cast<std::size_t>(r)].presence_penalty   = spec.presence;
         configs[static_cast<std::size_t>(r)].frequency_penalty  = spec.frequency;
         configs[static_cast<std::size_t>(r)].token_counts =
-            counts_present ? static_cast<std::int32_t*>(count_buffer.p) +
+            counts_present ? static_cast<std::int32_t*>(count_buffer.data()) +
                                  static_cast<std::ptrdiff_t>(r) * physical_rows
                            : nullptr;
     }
-    if (counts_present) { count_buffer.copy_from_host(counts_host.data(), count_buffer.bytes); }
-    DeviceBuffer config_buffer(configs.size() * sizeof(ops::SamplingConfig));
-    config_buffer.copy_from_host(configs.data(), config_buffer.bytes);
+    if (counts_present) { count_buffer.copy_from_host(counts_host.data(), count_buffer.size()); }
+    DeviceBuffer config_buffer(cuda_environment().context.device(),
+                               configs.size() * sizeof(ops::SamplingConfig));
+    config_buffer.copy_from_host(configs.data(), config_buffer.size());
 
     GuardedDeviceBuffer device_logits(logits.size() * sizeof(std::uint16_t));
     {
@@ -180,18 +193,18 @@ int run_case(const std::string& label, std::int32_t physical_rows, std::int32_t 
         device_active.copy_from_host(&active, sizeof(active));
     }
 
-    Tensor logits_tensor(device_logits.data(), DType::BF16, {physical_rows, rows});
-    Tensor ids_tensor(device_ids.data(), DType::I32, {K, rows});
-    Tensor values_tensor(device_values.data(), DType::FP32, {K, rows});
-    Tensor lse_tensor(device_lse.data(), DType::FP32, {rows});
-    Tensor active_tensor(device_active.data(), DType::I32, {1});
+    Tensor logits_tensor(device_logits.data(), ninfer::test::cuda_environment().context.device(), DType::BF16, {physical_rows, rows});
+    Tensor ids_tensor(device_ids.data(), ninfer::test::cuda_environment().context.device(), DType::I32, {K, rows});
+    Tensor values_tensor(device_values.data(), ninfer::test::cuda_environment().context.device(), DType::FP32, {K, rows});
+    Tensor lse_tensor(device_lse.data(), ninfer::test::cuda_environment().context.device(), DType::FP32, {rows});
+    Tensor active_tensor(device_active.data(), ninfer::test::cuda_environment().context.device(), DType::I32, {1});
     auto* config_pointer =
-        reinterpret_cast<const ops::SamplingConfig*>(config_buffer.p);
+        reinterpret_cast<const ops::SamplingConfig*>(config_buffer.data());
 
     const std::size_t capacity = ops::logprob_topk_workspace_capacity_bytes(token_domain, rows);
-    WorkspaceArena workspace(capacity);
+    ScratchArena workspace(capacity);
     ops::logprob_topk(logits_tensor, config_pointer, token_domain, ids_tensor, values_tensor,
-                      lse_tensor, active_tensor, workspace, nullptr);
+                      lse_tensor, active_tensor, workspace.arena, nullptr);
     cuda_synchronize();
 
     int failures = 0;
@@ -219,8 +232,9 @@ int run_inactive_case() {
     const CaseSpec spec{};
     const auto logits = make_logits(physical_rows, rows, spec, 0x51EEDu);
     std::vector<ops::SamplingConfig> configs(rows);
-    DeviceBuffer config_buffer(configs.size() * sizeof(ops::SamplingConfig));
-    config_buffer.copy_from_host(configs.data(), config_buffer.bytes);
+    DeviceBuffer config_buffer(cuda_environment().context.device(),
+                               configs.size() * sizeof(ops::SamplingConfig));
+    config_buffer.copy_from_host(configs.data(), config_buffer.size());
     GuardedDeviceBuffer device_logits(logits.size() * sizeof(std::uint16_t));
     {
         std::vector<std::uint16_t> packed(logits.size());
@@ -237,16 +251,16 @@ int run_inactive_case() {
     std::int32_t active = 0;
     device_active.copy_from_host(&active, sizeof(active));
 
-    Tensor logits_tensor(device_logits.data(), DType::BF16, {physical_rows, rows});
-    Tensor ids_tensor(device_ids.data(), DType::I32, {K, rows});
-    Tensor values_tensor(device_values.data(), DType::FP32, {K, rows});
-    Tensor lse_tensor(device_lse.data(), DType::FP32, {rows});
-    Tensor active_tensor(device_active.data(), DType::I32, {1});
-    auto* config_pointer = reinterpret_cast<const ops::SamplingConfig*>(config_buffer.p);
+    Tensor logits_tensor(device_logits.data(), ninfer::test::cuda_environment().context.device(), DType::BF16, {physical_rows, rows});
+    Tensor ids_tensor(device_ids.data(), ninfer::test::cuda_environment().context.device(), DType::I32, {K, rows});
+    Tensor values_tensor(device_values.data(), ninfer::test::cuda_environment().context.device(), DType::FP32, {K, rows});
+    Tensor lse_tensor(device_lse.data(), ninfer::test::cuda_environment().context.device(), DType::FP32, {rows});
+    Tensor active_tensor(device_active.data(), ninfer::test::cuda_environment().context.device(), DType::I32, {1});
+    auto* config_pointer = reinterpret_cast<const ops::SamplingConfig*>(config_buffer.data());
 
-    WorkspaceArena workspace(ops::logprob_topk_workspace_capacity_bytes(physical_rows, rows));
+    ScratchArena workspace(ops::logprob_topk_workspace_capacity_bytes(physical_rows, rows));
     ops::logprob_topk(logits_tensor, config_pointer, physical_rows, ids_tensor, values_tensor,
-                      lse_tensor, active_tensor, workspace, nullptr);
+                      lse_tensor, active_tensor, workspace.arena, nullptr);
     cuda_synchronize();
 
     int failures = 0;
@@ -287,8 +301,9 @@ int run_speculation_multilane_case() {
     device_logits.copy_from_host(packed.data(), device_logits.bytes());
 
     std::vector<ops::SamplingConfig> configs(static_cast<std::size_t>(rows));
-    DeviceBuffer config_buffer(configs.size() * sizeof(ops::SamplingConfig));
-    config_buffer.copy_from_host(configs.data(), config_buffer.bytes);
+    DeviceBuffer config_buffer(cuda_environment().context.device(),
+                               configs.size() * sizeof(ops::SamplingConfig));
+    config_buffer.copy_from_host(configs.data(), config_buffer.size());
 
     GuardedDeviceBuffer device_ids(static_cast<std::size_t>(K) * rows * sizeof(std::int32_t));
     GuardedDeviceBuffer device_values(static_cast<std::size_t>(K) * rows * sizeof(float));
@@ -297,16 +312,16 @@ int run_speculation_multilane_case() {
     std::int32_t active = 1;
     device_active.copy_from_host(&active, sizeof(active));
 
-    Tensor logits_tensor(device_logits.data(), DType::BF16, {vocab, rows});
-    Tensor ids_tensor(device_ids.data(), DType::I32, {K, rows});
-    Tensor values_tensor(device_values.data(), DType::FP32, {K, rows});
-    Tensor lse_tensor(device_lse.data(), DType::FP32, {rows});
-    Tensor active_tensor(device_active.data(), DType::I32, {1});
-    auto* config_pointer = reinterpret_cast<const ops::SamplingConfig*>(config_buffer.p);
+    Tensor logits_tensor(device_logits.data(), ninfer::test::cuda_environment().context.device(), DType::BF16, {vocab, rows});
+    Tensor ids_tensor(device_ids.data(), ninfer::test::cuda_environment().context.device(), DType::I32, {K, rows});
+    Tensor values_tensor(device_values.data(), ninfer::test::cuda_environment().context.device(), DType::FP32, {K, rows});
+    Tensor lse_tensor(device_lse.data(), ninfer::test::cuda_environment().context.device(), DType::FP32, {rows});
+    Tensor active_tensor(device_active.data(), ninfer::test::cuda_environment().context.device(), DType::I32, {1});
+    auto* config_pointer = reinterpret_cast<const ops::SamplingConfig*>(config_buffer.data());
 
-    WorkspaceArena workspace(ops::logprob_topk_workspace_capacity_bytes(vocab, rows));
+    ScratchArena workspace(ops::logprob_topk_workspace_capacity_bytes(vocab, rows));
     ops::logprob_topk(logits_tensor, config_pointer, vocab, ids_tensor, values_tensor, lse_tensor,
-                      active_tensor, workspace, nullptr);
+                      active_tensor, workspace.arena, nullptr);
     cuda_synchronize();
 
     const auto ids =
@@ -368,61 +383,62 @@ int expect_invalid(const char* label, Function&& function) {
 }
 
 int run_validation_cases() {
-    DeviceBuffer logits_data(64 * 2 * sizeof(std::uint16_t));
-    DeviceBuffer config_data(2 * sizeof(ops::SamplingConfig));
-    DeviceBuffer ids_data(K * 2 * sizeof(std::int32_t));
-    DeviceBuffer values_data(K * 2 * sizeof(float));
-    DeviceBuffer lse_data(2 * sizeof(float));
-    DeviceBuffer active_data(sizeof(std::int32_t));
-    Tensor logits(logits_data.p, DType::BF16, {64, 2});
-    Tensor ids(ids_data.p, DType::I32, {K, 2});
-    Tensor values(values_data.p, DType::FP32, {K, 2});
-    Tensor lse(lse_data.p, DType::FP32, {2});
-    Tensor active(active_data.p, DType::I32, {1});
-    auto* configs = reinterpret_cast<const ops::SamplingConfig*>(config_data.p);
+    const auto device = cuda_environment().context.device();
+    DeviceBuffer logits_data(device, 64 * 2 * sizeof(std::uint16_t));
+    DeviceBuffer config_data(device, 2 * sizeof(ops::SamplingConfig));
+    DeviceBuffer ids_data(device, K * 2 * sizeof(std::int32_t));
+    DeviceBuffer values_data(device, K * 2 * sizeof(float));
+    DeviceBuffer lse_data(device, 2 * sizeof(float));
+    DeviceBuffer active_data(device, sizeof(std::int32_t));
+    Tensor logits(logits_data.data(), ninfer::test::cuda_environment().context.device(), DType::BF16, {64, 2});
+    Tensor ids(ids_data.data(), ninfer::test::cuda_environment().context.device(), DType::I32, {K, 2});
+    Tensor values(values_data.data(), ninfer::test::cuda_environment().context.device(), DType::FP32, {K, 2});
+    Tensor lse(lse_data.data(), ninfer::test::cuda_environment().context.device(), DType::FP32, {2});
+    Tensor active(active_data.data(), ninfer::test::cuda_environment().context.device(), DType::I32, {1});
+    auto* configs = reinterpret_cast<const ops::SamplingConfig*>(config_data.data());
 
     int failures = 0;
     failures += expect_invalid("logprob_topk rejects null configs", [&] {
-        WorkspaceArena workspace(1024);
-        ops::logprob_topk(logits, nullptr, 64, ids, values, lse, active, workspace, nullptr);
+        ScratchArena workspace(1024);
+        ops::logprob_topk(logits, nullptr, 64, ids, values, lse, active, workspace.arena, nullptr);
     });
     failures += expect_invalid("logprob_topk rejects token_domain=0", [&] {
-        WorkspaceArena workspace(1024);
-        ops::logprob_topk(logits, configs, 0, ids, values, lse, active, workspace, nullptr);
+        ScratchArena workspace(1024);
+        ops::logprob_topk(logits, configs, 0, ids, values, lse, active, workspace.arena, nullptr);
     });
     failures += expect_invalid("logprob_topk rejects token_domain<kLogprobTopK", [&] {
-        WorkspaceArena workspace(1024);
-        ops::logprob_topk(logits, configs, K - 1, ids, values, lse, active, workspace, nullptr);
+        ScratchArena workspace(1024);
+        ops::logprob_topk(logits, configs, K - 1, ids, values, lse, active, workspace.arena, nullptr);
     });
     failures += expect_invalid("logprob_topk rejects token_domain>physical_rows", [&] {
-        WorkspaceArena workspace(1024);
-        ops::logprob_topk(logits, configs, 65, ids, values, lse, active, workspace, nullptr);
+        ScratchArena workspace(1024);
+        ops::logprob_topk(logits, configs, 65, ids, values, lse, active, workspace.arena, nullptr);
     });
     failures += expect_invalid("logprob_topk rejects top_ids shape mismatch", [&] {
-        Tensor wrong_ids(ids_data.p, DType::I32, {K, 1});
-        WorkspaceArena workspace(1024);
-        ops::logprob_topk(logits, configs, 64, wrong_ids, values, lse, active, workspace, nullptr);
+        Tensor wrong_ids(ids_data.data(), ninfer::test::cuda_environment().context.device(), DType::I32, {K, 1});
+        ScratchArena workspace(1024);
+        ops::logprob_topk(logits, configs, 64, wrong_ids, values, lse, active, workspace.arena, nullptr);
     });
     failures += expect_invalid("logprob_topk rejects lse dtype", [&] {
-        Tensor wrong_lse(lse_data.p, DType::BF16, {2});
-        WorkspaceArena workspace(1024);
-        ops::logprob_topk(logits, configs, 64, ids, values, wrong_lse, active, workspace, nullptr);
+        Tensor wrong_lse(lse_data.data(), ninfer::test::cuda_environment().context.device(), DType::BF16, {2});
+        ScratchArena workspace(1024);
+        ops::logprob_topk(logits, configs, 64, ids, values, wrong_lse, active, workspace.arena, nullptr);
     });
     failures += expect_invalid("logprob_topk rejects non-contiguous logits", [&] {
         Tensor strided = logits;
         strided.nb[1] += 2;
-        WorkspaceArena workspace(1024);
-        ops::logprob_topk(strided, configs, 64, ids, values, lse, active, workspace, nullptr);
+        ScratchArena workspace(1024);
+        ops::logprob_topk(strided, configs, 64, ids, values, lse, active, workspace.arena, nullptr);
     });
     failures += expect_invalid("logprob_topk rejects active dtype", [&] {
-        Tensor wrong_active(active_data.p, DType::FP32, {1});
-        WorkspaceArena workspace(1024);
-        ops::logprob_topk(logits, configs, 64, ids, values, lse, wrong_active, workspace, nullptr);
+        Tensor wrong_active(active_data.data(), ninfer::test::cuda_environment().context.device(), DType::FP32, {1});
+        ScratchArena workspace(1024);
+        ops::logprob_topk(logits, configs, 64, ids, values, lse, wrong_active, workspace.arena, nullptr);
     });
     failures += expect_invalid("logprob_topk rejects output/input overlap", [&] {
-        Tensor alias_ids(logits_data.p, DType::I32, {K, 2});
-        WorkspaceArena workspace(1024);
-        ops::logprob_topk(logits, configs, 64, alias_ids, values, lse, active, workspace, nullptr);
+        Tensor alias_ids(logits_data.data(), ninfer::test::cuda_environment().context.device(), DType::I32, {K, 2});
+        ScratchArena workspace(1024);
+        ops::logprob_topk(logits, configs, 64, alias_ids, values, lse, active, workspace.arena, nullptr);
     });
     failures += expect_invalid("logprob_topk rejects zero-row profile", [&] {
         (void)ops::logprob_topk_workspace_capacity_bytes(64, 0);

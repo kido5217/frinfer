@@ -17,7 +17,7 @@ std::size_t logprob_topk_workspace_exact_bytes(std::int32_t rows) {
 
 void logprob_topk_launch(const Tensor& logits, const SamplingConfig* sampling,
                          std::int32_t token_domain, Tensor& top_ids, Tensor& top_values,
-                         Tensor& lse, const Tensor& active, DeviceSpan workspace,
+                         Tensor& lse, const Tensor& active, MemorySpan workspace,
                          cudaStream_t stream) {
     const std::int32_t rows       = logits.ne[1];
     const std::int32_t row_stride = logits.ne[0];

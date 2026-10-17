@@ -69,8 +69,8 @@ inline constexpr std::int32_t kLogprobTopK = 20;
  *   unconditionally.
  */
 void logprob_topk(const Tensor& logits, const SamplingConfig* sampling,
-                  std::int32_t token_domain, Tensor& top_ids, Tensor& top_values, Tensor& lse,
-                  const Tensor& active, WorkspaceArena& workspace, cudaStream_t stream);
+                   std::int32_t token_domain, Tensor& top_ids, Tensor& top_values, Tensor& lse,
+                   const Tensor& active, MemoryArena& workspace, cudaStream_t stream);
 
 // Transient device bytes logprob_topk() needs for the given profile. Zero when the Op needs no
 // scratch (it always needs scratch for rows>=1, so this is always positive for a valid profile).

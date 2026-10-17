@@ -125,7 +125,7 @@ __global__ void logprob_topk_partials_kernel(
     float local_max             = -CUDART_INF_F;
     for (int v = begin + tid; v < end; v += kLogprobTopkBlock) {
         const float raw = __bfloat162float(logits[row_base + v]);
-        local_max       = fmaxf(local_max, sampling_adjusted_logit(raw, v, cfg) * inv_temp);
+        local_max       = fmaxf(local_max, sampling_detail::sampling_adjusted_logit(raw, v, cfg) * inv_temp);
     }
     const float chunk_max = logprob_block_max(local_max, sRed, tid);
 
@@ -139,7 +139,7 @@ __global__ void logprob_topk_partials_kernel(
     if (chunk_max > -CUDART_INF_F) {
         for (int v = begin + tid; v < end; v += kLogprobTopkBlock) {
             const float raw    = __bfloat162float(logits[row_base + v]);
-            const float scaled = sampling_adjusted_logit(raw, v, cfg) * inv_temp;
+            const float scaled = sampling_detail::sampling_adjusted_logit(raw, v, cfg) * inv_temp;
             // A masked (-inf) or otherwise non-finite logit is not a candidate; skipping it keeps
             // impossible tokens out of the reported top-K and out of the logsumexp.
             if (!isfinite(scaled)) { continue; }

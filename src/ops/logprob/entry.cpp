@@ -57,7 +57,7 @@ std::size_t logprob_topk_workspace_capacity_bytes(std::int32_t token_domain, std
 
 void logprob_topk(const Tensor& logits, const SamplingConfig* sampling,
                   std::int32_t token_domain, Tensor& top_ids, Tensor& top_values, Tensor& lse,
-                  const Tensor& active, WorkspaceArena& workspace, cudaStream_t stream) {
+                  const Tensor& active, MemoryArena& workspace, cudaStream_t stream) {
     if (logits.dtype != DType::BF16) {
         throw std::invalid_argument("logprob_topk: logits must be BF16");
     }
@@ -108,7 +108,7 @@ void logprob_topk(const Tensor& logits, const SamplingConfig* sampling,
 
     auto scratch_scope = workspace.scope();
     const std::size_t bytes = detail::logprob_topk_workspace_exact_bytes(rows);
-    const DeviceSpan scratch = workspace.alloc_bytes(bytes);
+    const MemorySpan scratch = workspace.alloc_bytes(bytes);
     detail::logprob_topk_launch(logits, sampling, token_domain, top_ids, top_values, lse, active,
                                 scratch, stream);
 }

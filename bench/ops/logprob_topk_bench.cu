@@ -42,37 +42,42 @@ int parse_int(std::string_view value, const char* name) {
 void run_rows(std::int32_t rows) {
     DeviceBuffer logits = make_bf16(static_cast<std::size_t>(kVocab) * rows, 101U, -6.0F, 6.0F);
     DeviceBuffer configs = make_zeros(static_cast<std::size_t>(rows) * sizeof(ops::SamplingConfig));
-    DeviceBuffer top_ids(static_cast<std::size_t>(ops::kLogprobTopK) * rows * sizeof(std::int32_t));
-    DeviceBuffer top_values(static_cast<std::size_t>(ops::kLogprobTopK) * rows * sizeof(float));
-    DeviceBuffer lse(static_cast<std::size_t>(rows) * sizeof(float));
-    DeviceBuffer active(sizeof(std::int32_t));
+    DeviceBuffer top_ids =
+        make_buffer(static_cast<std::size_t>(ops::kLogprobTopK) * rows * sizeof(std::int32_t));
+    DeviceBuffer top_values =
+        make_buffer(static_cast<std::size_t>(ops::kLogprobTopK) * rows * sizeof(float));
+    DeviceBuffer lse  = make_buffer(static_cast<std::size_t>(rows) * sizeof(float));
+    DeviceBuffer active(device_context().device(), sizeof(std::int32_t));
     const std::int32_t one = 1;
     active.copy_from_host(&one, sizeof(one));
 
-    Tensor logits_tensor(logits.p, DType::BF16, {kVocab, rows});
-    Tensor ids_tensor(top_ids.p, DType::I32, {ops::kLogprobTopK, rows});
-    Tensor values_tensor(top_values.p, DType::FP32, {ops::kLogprobTopK, rows});
-    Tensor lse_tensor(lse.p, DType::FP32, {rows});
-    Tensor active_tensor(active.p, DType::I32, {1});
-    auto* config_pointer = reinterpret_cast<const ops::SamplingConfig*>(configs.p);
+    const auto device = active.device();
+    Tensor logits_tensor(logits.data(), device, DType::BF16, {kVocab, rows});
+    Tensor ids_tensor(top_ids.data(), device, DType::I32, {ops::kLogprobTopK, rows});
+    Tensor values_tensor(top_values.data(), device, DType::FP32, {ops::kLogprobTopK, rows});
+    Tensor lse_tensor(lse.data(), device, DType::FP32, {rows});
+    Tensor active_tensor(active.data(), device, DType::I32, {1});
+    auto* config_pointer = reinterpret_cast<const ops::SamplingConfig*>(configs.data());
 
-    WorkspaceArena workspace(ops::logprob_topk_workspace_capacity_bytes(kVocab, rows));
+    DeviceBuffer workspace_storage =
+        make_buffer(ops::logprob_topk_workspace_capacity_bytes(kVocab, rows));
+    MemoryArena workspace(workspace_storage.span());
     const double bytes =
         static_cast<double>(kVocab) * rows * 2.0 * 2.0; // two BF16 vocabulary passes per row
     const Result result = bench_loop(
-        [&](cudaStream_t stream) {
+        [&](CudaExecutionView cuda) {
             ops::logprob_topk(logits_tensor, config_pointer, kVocab, ids_tensor, values_tensor,
-                              lse_tensor, active_tensor, workspace, stream);
+                              lse_tensor, active_tensor, workspace, cuda.stream());
         },
         bytes);
 
     // The production Op runs inside the captured decode graph, where launch overhead is removed.
     // Time the same call replayed from a captured graph to bound the in-graph cost.
     const Result captured = bench_loop_prepared(
-        [](cudaStream_t) {},
-        [&](cudaStream_t stream) {
+        [](CudaExecutionView) {},
+        [&](CudaExecutionView cuda) {
             ops::logprob_topk(logits_tensor, config_pointer, kVocab, ids_tensor, values_tensor,
-                              lse_tensor, active_tensor, workspace, stream);
+                              lse_tensor, active_tensor, workspace, cuda.stream());
         },
         bytes, 20, 100);
 

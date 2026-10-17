@@ -17,7 +17,7 @@ namespace ninfer::ops::detail {
 
 void logprob_topk_launch(const Tensor& logits, const SamplingConfig* sampling,
                          std::int32_t token_domain, Tensor& top_ids, Tensor& top_values,
-                         Tensor& lse, const Tensor& active, DeviceSpan workspace,
+                         Tensor& lse, const Tensor& active, MemorySpan workspace,
                          cudaStream_t stream);
 
 } // namespace ninfer::ops::detail
