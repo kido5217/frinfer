@@ -14,6 +14,21 @@ namespace {
 constexpr std::int32_t kTextHeadDim = 256;
 constexpr std::int32_t kVisionDim   = 72;
 
+// Dimension-product guard for the shape validations below: a zero extent is legal (empty batch)
+// and yields a zero numel; negatives are rejected. Successor of the retired wrapper-local helper.
+std::int64_t numel_allow_zero(const Tensor& t, const char* label) {
+    bool has_zero = false;
+    for (int d = 0; d < 4; ++d) {
+        if (t.ne[d] < 0) {
+            throw std::invalid_argument(std::string("rope: ") + label +
+                                        " dimensions must be nonnegative");
+        }
+        if (t.ne[d] == 0) { has_zero = true; }
+    }
+    if (has_zero) { return 0; }
+    return static_cast<std::int64_t>(t.ne[0]) * t.ne[1] * t.ne[2] * t.ne[3];
+}
+
 int position_axes(const Tensor& positions, std::int32_t tokens) {
     if (positions.ne[0] != tokens || positions.ne[2] != 1 || positions.ne[3] != 1 ||
         (positions.ne[1] != 1 && positions.ne[1] != 2 && positions.ne[1] != 3)) {
