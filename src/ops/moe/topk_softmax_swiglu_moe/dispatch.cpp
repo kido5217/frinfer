@@ -9,7 +9,9 @@ const ShapePolicy& shape_dispatch(const MoeProfile& profile) {
     case QType::FP8_E4M3FN_BLOCK128X128_BF16:
         return fp8_h2560_i640_e512_k10();
     case QType::NVFP4:
-        return nvfp4_h2560_i640_e512_k10();
+        // The fork 35B-A3B geometry shares the NVFP4 codec with the q4q6 line; select by hidden.
+        return profile.routed.ffn.hidden == 2048 ? nvfp4_h2048_i512_e256_k8()
+                                                 : nvfp4_h2560_i640_e512_k10();
     case QType::Q5_G64_FP16:
         return q4_q5_h2048_i512_e256_k8();
     case QType::Q6_G64_FP16:

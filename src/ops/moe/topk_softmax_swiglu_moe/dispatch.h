@@ -3,6 +3,7 @@
 #include "ops/moe/kernels/cuda/groupwise_int/launch.h"
 #include "ops/moe/kernels/cuda/routing/launch.h"
 #include "ops/moe/kernels/cuda/block_scaled/launch.h"
+#include "ops/moe/kernels/cuda/fork_nvfp4/launch.h"
 
 #include <span>
 
@@ -18,6 +19,7 @@ struct Plan {
     kernel::routing::RouterPlan router;
     kernel::groupwise_int::Plan integer;
     kernel::block_scaled::Plan block_scaled;
+    kernel::fork_nvfp4::Plan fork;
 };
 
 struct ShapePolicy {
@@ -30,6 +32,7 @@ const ShapePolicy& q4_q5_h2048_i512_e256_k8();
 const ShapePolicy& q4_q6_h2048_i512_e256_k8();
 const ShapePolicy& q8_q8_h2048_i512_e256_k8();
 const ShapePolicy& nvfp4_h2560_i640_e512_k10();
+const ShapePolicy& nvfp4_h2048_i512_e256_k8();
 const ShapePolicy& fp8_h2560_i640_e512_k10();
 
 } // namespace ninfer::ops::detail::moe_complete

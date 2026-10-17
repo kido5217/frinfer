@@ -41,6 +41,10 @@ struct Nvfp4GateUpBases {
 // T>=20 prefill route and the T<20 SIMT route; the table is passed to the kernel by value.
 [[nodiscard]] Nvfp4GateUpBases make_nvfp4_gate_up_bases(const Nvfp4RoutedWeights& weights);
 
+// Same table read from an affine resident expert bank: one 2I-row parent per expert with the gate
+// rows first. The fork route requires affine addressing; an indexed bank is rejected.
+[[nodiscard]] Nvfp4GateUpBases make_nvfp4_gate_up_bases(const ExpertBankDeviceView& bank);
+
 // Runs the nvfp4 routed gate/up prefill stage: quantises the routed activation x into a compact
 // FP4 plane shared by every expert a token routes to, then executes the grouped W4A4 gate/up GEMM
 // over the packed route, writing the BF16 SwiGLU activation [512, assignments].
@@ -50,6 +54,16 @@ struct Nvfp4GateUpBases {
 // compact FP4 plane scratch (tokens * 2048/2 and tokens * 2048/16 bytes). multiprocessor_count
 // sizes the persistent grid cap (32 queued CTAs per SM), mirroring the packed prefill seam.
 void sparse_moe_nvfp4_gate_up_launch(const Tensor& x, const Nvfp4RoutedWeights& weights,
+                                     const int* packed_token, const int* expert_offsets,
+                                     const int* route_job_experts,
+                                     const int* route_job_columns, const int* route_job_count,
+                                     std::uint8_t* activation_codes, std::uint8_t* activation_scales,
+                                     __nv_bfloat16* routed_activation,
+                                     std::int32_t multiprocessor_count, cudaStream_t stream);
+
+// Bases-table form used by the production route, where the operands arrive as a resident
+// ExpertBankDeviceView and Nvfp4RoutedWeights parents are not materialised.
+void sparse_moe_nvfp4_gate_up_launch(const Tensor& x, const Nvfp4GateUpBases& bases,
                                      const int* packed_token, const int* expert_offsets,
                                      const int* route_job_experts,
                                      const int* route_job_columns, const int* route_job_count,

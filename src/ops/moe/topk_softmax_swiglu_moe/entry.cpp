@@ -11,6 +11,7 @@ namespace {
 namespace kernel       = detail::moe_cuda;
 namespace integer      = kernel::groupwise_int;
 namespace block_scaled = kernel::block_scaled;
+namespace fork         = kernel::fork_nvfp4;
 namespace routing      = kernel::routing;
 namespace impl         = detail::moe_complete;
 
@@ -20,6 +21,7 @@ struct CallStorage {
     routing::RouteStorage route;
     integer::ExpertStorage experts;
     block_scaled::Storage block_scaled;
+    fork::Storage fork;
 };
 
 template <class Arena>
@@ -30,6 +32,13 @@ CallStorage allocate(Arena& arena, const impl::Plan& plan, int tokens, int exper
     out.shared = arena.alloc(DType::FP32, {tokens});
     // Router scratch is independent of expert activations, including during PDL overlap.
     out.route = routing::allocate_route(arena, plan.router, tokens, experts);
+    if (plan.implementation == kernel::ExpertImplementation::ForkNvfp4) {
+        // The fork route computes its own packed-route grouping, so the shared expert keeps
+        // only the groupwise shared-expert storage; the fork allocation hands it routed_sum.
+        out.experts = integer::allocate_shared(arena, tokens);
+        out.fork    = fork::allocate(arena, plan.fork, tokens, true, true);
+        return out;
+    }
     if (plan.implementation == kernel::ExpertImplementation::BlockScaled) {
         out.block_scaled = block_scaled::allocate(arena, plan.block_scaled, tokens, true, true);
         return out;
@@ -90,6 +99,16 @@ void topk_softmax_swiglu_moe(const Tensor& x, const MoeProfile& profile, const M
         const auto storage = allocate(workspace, plan, count, p.experts, p.top_k,
                                       p.ffn.gate_up_type == QType::Q8_G32_FP16);
         const ScaledSwiGLUTerm shared{weights.shared, storage.shared};
+        if (plan.implementation == kernel::ExpertImplementation::ForkNvfp4) {
+            routing::launch_route(input, weights.control, storage.routes, storage.shared,
+                                  plan.router, storage.route, MoeExecutionHints{}, execution);
+            auto shared_experts = storage.experts;
+            shared_experts.routed_sum = storage.fork.routed_sum;
+            fork::launch(input, weights.routed, storage.routes, {ExpertSubsetKind::All, {}},
+                         &shared, mode, output, plan.fork, storage.fork, shared_experts,
+                         execution);
+            continue;
+        }
         if (plan.implementation == kernel::ExpertImplementation::BlockScaled) {
             block_scaled::launch_control_shared(input, weights, storage.routes, storage.shared,
                                                 storage.route.scores, storage.block_scaled,

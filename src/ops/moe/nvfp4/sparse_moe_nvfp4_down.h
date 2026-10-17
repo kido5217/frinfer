@@ -28,6 +28,9 @@ struct Nvfp4DownBases {
 // T>=20 prefill route and the T<20 SIMT route; the table is passed to the kernel by value.
 [[nodiscard]] Nvfp4DownBases make_nvfp4_down_bases(const Nvfp4RoutedWeights& weights);
 
+// Same table read from an affine resident expert bank (one [H, I] parent per expert).
+[[nodiscard]] Nvfp4DownBases make_nvfp4_down_bases(const ExpertBankDeviceView& bank);
+
 // Runs the nvfp4 routed down prefill stage: quantises the BF16 routed activation
 // [assignments, 512] into a compact FP4 plane (one private activation divisor, as in the gate/up
 // stage), then executes the grouped W4A4 down GEMM over the packed route, writing the BF16 grouped
@@ -41,6 +44,14 @@ void sparse_moe_nvfp4_down_launch(const Tensor& routed_activation,
                                   const int* route_job_experts, const int* route_job_columns,
                                   const int* route_job_count, std::uint8_t* activation_codes,
                                   std::uint8_t* activation_scales,
+                                  __nv_bfloat16* grouped_output,
+                                  std::int32_t multiprocessor_count, cudaStream_t stream);
+
+// Bases-table form used by the production route (see the gate/up header).
+void sparse_moe_nvfp4_down_launch(const Tensor& routed_activation, const Nvfp4DownBases& bases,
+                                  const int* expert_offsets, const int* route_job_experts,
+                                  const int* route_job_columns, const int* route_job_count,
+                                  std::uint8_t* activation_codes, std::uint8_t* activation_scales,
                                   __nv_bfloat16* grouped_output,
                                   std::int32_t multiprocessor_count, cudaStream_t stream);
 

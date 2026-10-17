@@ -250,8 +250,24 @@ Nvfp4DownBases make_nvfp4_down_bases(const Nvfp4RoutedWeights& weights) {
     return bases;
 }
 
+Nvfp4DownBases make_nvfp4_down_bases(const ExpertBankDeviceView& bank) {
+    if (bank.down.offsets != nullptr || bank.count != kNvfp4RoutedExperts) {
+        throw std::invalid_argument(
+            "sparse_moe nvfp4 down: the fork route requires an affine expert bank");
+    }
+    const auto* codes  = reinterpret_cast<const std::uint8_t*>(bank.down.codes);
+    const auto* scales = reinterpret_cast<const std::uint8_t*>(bank.down.scales);
+    Nvfp4DownBases bases{};
+    for (int expert = 0; expert < kNvfp4RoutedExperts; ++expert) {
+        bases.codes[expert]   = codes + std::int64_t(expert) * bank.down.code_stride;
+        bases.scales[expert]  = scales + std::int64_t(expert) * bank.down.scale_stride;
+        bases.divisor[expert] = bank.down.divisors[expert * bank.down.divisor_stride];
+    }
+    return bases;
+}
+
 void sparse_moe_nvfp4_down_launch(const Tensor& routed_activation,
-                                  const Nvfp4RoutedWeights& weights, const int* expert_offsets,
+                                  const Nvfp4DownBases& bases, const int* expert_offsets,
                                   const int* route_job_experts, const int* route_job_columns,
                                   const int* route_job_count, std::uint8_t* activation_codes,
                                   std::uint8_t* activation_scales,
@@ -274,8 +290,6 @@ void sparse_moe_nvfp4_down_launch(const Tensor& routed_activation,
                                                            assignments, kNvfp4DownActivationDivisor);
     CUDA_CHECK(cudaGetLastError());
 
-    const Nvfp4DownBases bases = make_nvfp4_down_bases(weights);
-
     const int blocks = multiprocessor_count * kNvfp4DownMaxBlocksPerSm;
     sparse_moe_nvfp4_down_kernel<Nvfp4DownSchedule>
         <<<blocks, Nvfp4DownSchedule::kThreads, 0, stream>>>(
@@ -283,6 +297,19 @@ void sparse_moe_nvfp4_down_launch(const Tensor& routed_activation,
             const_cast<int*>(route_job_experts), const_cast<int*>(route_job_columns),
             const_cast<int*>(route_job_count), grouped_output, bases, kNvfp4DownActivationDivisor);
     CUDA_CHECK(cudaGetLastError());
+}
+
+void sparse_moe_nvfp4_down_launch(const Tensor& routed_activation,
+                                  const Nvfp4RoutedWeights& weights, const int* expert_offsets,
+                                  const int* route_job_experts, const int* route_job_columns,
+                                  const int* route_job_count, std::uint8_t* activation_codes,
+                                  std::uint8_t* activation_scales,
+                                  __nv_bfloat16* grouped_output,
+                                  std::int32_t multiprocessor_count, cudaStream_t stream) {
+    sparse_moe_nvfp4_down_launch(routed_activation, make_nvfp4_down_bases(weights), expert_offsets,
+                                 route_job_experts, route_job_columns, route_job_count,
+                                 activation_codes, activation_scales, grouped_output,
+                                 multiprocessor_count, stream);
 }
 
 } // namespace ninfer::ops::detail

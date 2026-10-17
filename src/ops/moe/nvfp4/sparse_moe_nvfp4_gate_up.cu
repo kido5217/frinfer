@@ -298,7 +298,33 @@ Nvfp4GateUpBases make_nvfp4_gate_up_bases(const Nvfp4RoutedWeights& weights) {
     return bases;
 }
 
-void sparse_moe_nvfp4_gate_up_launch(const Tensor& x, const Nvfp4RoutedWeights& weights,
+Nvfp4GateUpBases make_nvfp4_gate_up_bases(const ExpertBankDeviceView& bank) {
+    if (bank.gate_up.offsets != nullptr || bank.count != kNvfp4RoutedExperts) {
+        throw std::invalid_argument(
+            "sparse_moe nvfp4 gate_up: the fork route requires an affine expert bank");
+    }
+    // One 2I-row parent per expert: gate rows first, then up rows. The split addresses come from
+    // the same geometry the grouped kernel tiles, so the table is CUDA-graph safe by value.
+    const auto* codes  = reinterpret_cast<const std::uint8_t*>(bank.gate_up.codes);
+    const auto* scales = reinterpret_cast<const std::uint8_t*>(bank.gate_up.scales);
+    Nvfp4GateUpBases bases{};
+    for (int expert = 0; expert < kNvfp4RoutedExperts; ++expert) {
+        const auto divisor = bank.gate_up.divisors[expert * bank.gate_up.divisor_stride];
+        const auto* gate_codes  = codes + std::int64_t(expert) * bank.gate_up.code_stride;
+        const auto* gate_scales = scales + std::int64_t(expert) * bank.gate_up.scale_stride;
+        bases.gate_codes[expert]  = gate_codes;
+        bases.gate_scales[expert] = gate_scales;
+        bases.up_codes[expert] =
+            gate_codes + std::int64_t(kNvfp4Intermediate) * (kNvfp4Hidden / 2);
+        bases.up_scales[expert] =
+            gate_scales + common::nvfp4_scale_byte_offset(kNvfp4Intermediate, 0, kNvfp4Hidden);
+        bases.gate_divisor[expert] = divisor;
+        bases.up_divisor[expert]   = divisor;
+    }
+    return bases;
+}
+
+void sparse_moe_nvfp4_gate_up_launch(const Tensor& x, const Nvfp4GateUpBases& bases,
                                      const int* packed_token, const int* expert_offsets,
                                      const int* route_job_experts,
                                      const int* route_job_columns, const int* route_job_count,
@@ -323,8 +349,6 @@ void sparse_moe_nvfp4_gate_up_launch(const Tensor& x, const Nvfp4RoutedWeights& 
                                                            kNvfp4ActivationDivisor);
     CUDA_CHECK(cudaGetLastError());
 
-    const Nvfp4GateUpBases bases = make_nvfp4_gate_up_bases(weights);
-
     // The persistent kernel strides its work list by gridDim.x, so a device-derived cap is correct
     // for any job count and the job count is only ever read on the device; never dereference the
     // device route map on the host.
@@ -336,6 +360,20 @@ void sparse_moe_nvfp4_gate_up_launch(const Tensor& x, const Nvfp4RoutedWeights& 
             const_cast<int*>(route_job_columns), const_cast<int*>(route_job_count),
             routed_activation, bases, kNvfp4ActivationDivisor);
     CUDA_CHECK(cudaGetLastError());
+}
+
+void sparse_moe_nvfp4_gate_up_launch(const Tensor& x, const Nvfp4RoutedWeights& weights,
+                                     const int* packed_token, const int* expert_offsets,
+                                     const int* route_job_experts,
+                                     const int* route_job_columns, const int* route_job_count,
+                                     std::uint8_t* activation_codes,
+                                     std::uint8_t* activation_scales,
+                                     __nv_bfloat16* routed_activation,
+                                     std::int32_t multiprocessor_count, cudaStream_t stream) {
+    sparse_moe_nvfp4_gate_up_launch(x, make_nvfp4_gate_up_bases(weights), packed_token,
+                                    expert_offsets, route_job_experts, route_job_columns,
+                                    route_job_count, activation_codes, activation_scales,
+                                    routed_activation, multiprocessor_count, stream);
 }
 
 } // namespace ninfer::ops::detail

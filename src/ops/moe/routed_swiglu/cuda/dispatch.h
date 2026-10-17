@@ -2,6 +2,7 @@
 
 #include "ops/moe/kernels/cuda/groupwise_int/launch.h"
 #include "ops/moe/kernels/cuda/block_scaled/launch.h"
+#include "ops/moe/kernels/cuda/fork_nvfp4/launch.h"
 
 #include <span>
 
@@ -15,6 +16,7 @@ struct Plan {
     kernel::ExpertImplementation implementation = kernel::ExpertImplementation::GroupwiseInt;
     kernel::groupwise_int::Plan integer;
     kernel::block_scaled::Plan block_scaled;
+    kernel::fork_nvfp4::Plan fork;
 };
 
 struct ShapePolicy {

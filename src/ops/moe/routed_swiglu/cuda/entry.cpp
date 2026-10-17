@@ -11,16 +11,25 @@ namespace {
 namespace kernel       = detail::moe_cuda;
 namespace integer      = kernel::groupwise_int;
 namespace block_scaled = kernel::block_scaled;
+namespace fork         = kernel::fork_nvfp4;
 namespace impl         = detail::moe_routed;
 
 struct CallStorage {
     integer::ExpertStorage integer;
     block_scaled::Storage block_scaled;
+    fork::Storage fork;
 };
 
 template <class Arena>
 CallStorage allocate(Arena& arena, const impl::Plan& plan, int tokens, ExpertSubsetKind subset,
                      bool shared, bool split_activation) {
+    if (plan.implementation == kernel::ExpertImplementation::ForkNvfp4) {
+        CallStorage out;
+        const bool routed = subset != ExpertSubsetKind::None;
+        out.fork          = fork::allocate(arena, plan.fork, tokens, routed, shared);
+        if (shared) { out.integer = integer::allocate_shared(arena, tokens); }
+        return out;
+    }
     if (plan.implementation == kernel::ExpertImplementation::BlockScaled) {
         CallStorage out;
         out.block_scaled = block_scaled::allocate(arena, plan.block_scaled, tokens,
@@ -99,6 +108,17 @@ void execute(const Tensor& x, const RoutedSwiGLUProfile& profile, const CudaSwiG
         const auto plan    = shape.select(count, shared != nullptr);
         const auto buffers = allocate(workspace, plan, count, subset.kind, shared != nullptr,
                                       profile.ffn.gate_up_type == QType::Q8_G32_FP16);
+        if (plan.implementation == kernel::ExpertImplementation::ForkNvfp4) {
+            auto shared_experts = buffers.integer;
+            // Fork composition: the routed pass finishes into routed_sum and the groupwise
+            // shared-down pass publishes the destination once. Without a routed part
+            // (subset None) the fork allocation leaves routed_sum null, so the shared
+            // contribution alone is published with the requested mode.
+            shared_experts.routed_sum = buffers.fork.routed_sum;
+            fork::launch(input, experts, selection, subset, term ? &*term : nullptr, mode, output,
+                         plan.fork, buffers.fork, shared_experts, execution);
+            continue;
+        }
         if (plan.implementation == kernel::ExpertImplementation::BlockScaled) {
             block_scaled::launch(input, experts, selection, subset, term ? &*term : nullptr, mode,
                                  output, plan.block_scaled, buffers.block_scaled, execution);
