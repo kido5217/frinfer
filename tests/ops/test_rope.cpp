@@ -523,9 +523,9 @@ int run_yarn_pair_case(CudaExecutionView execution, const Geometry& geometry, in
     position_device.copy_from_host(positions.data(), position_device.bytes());
     table_device.copy_from_host(table.inv_freq.data(), table_device.bytes());
 
-    Tensor position_tensor(position_device.data(), DType::I32, {geometry.tokens, geometry.axes});
-    Tensor q_tensor(q_device.data(), DType::BF16, {geometry.head_dim, q_heads, geometry.tokens});
-    Tensor k_tensor(k_device.data(), DType::BF16, {geometry.head_dim, k_heads, geometry.tokens});
+    Tensor position_tensor(position_device.data(), ninfer::test::cuda_environment().context.device(), DType::I32, {geometry.tokens, geometry.axes});
+    Tensor q_tensor(q_device.data(), ninfer::test::cuda_environment().context.device(), DType::BF16, {geometry.head_dim, q_heads, geometry.tokens});
+    Tensor k_tensor(k_device.data(), ninfer::test::cuda_environment().context.device(), DType::BF16, {geometry.head_dim, k_heads, geometry.tokens});
     q_tensor.nb[2] = static_cast<std::int64_t>(q_stride) * sizeof(std::uint16_t);
     k_tensor.nb[2] = static_cast<std::int64_t>(k_stride) * sizeof(std::uint16_t);
 
@@ -613,9 +613,9 @@ int run_yarn_structural_inert(CudaExecutionView execution, const Geometry& geome
     q_ny.copy_from_host(q_storage.data(), q_ny.bytes());
     k_ny.copy_from_host(k_storage.data(), k_ny.bytes());
     pos_ny.copy_from_host(positions.data(), pos_ny.bytes());
-    Tensor pos_tensor_ny(pos_ny.data(), DType::I32, {geometry.tokens, geometry.axes});
-    Tensor q_tensor_ny(q_ny.data(), DType::BF16, {geometry.head_dim, q_heads, geometry.tokens});
-    Tensor k_tensor_ny(k_ny.data(), DType::BF16, {geometry.head_dim, k_heads, geometry.tokens});
+    Tensor pos_tensor_ny(pos_ny.data(), ninfer::test::cuda_environment().context.device(), DType::I32, {geometry.tokens, geometry.axes});
+    Tensor q_tensor_ny(q_ny.data(), ninfer::test::cuda_environment().context.device(), DType::BF16, {geometry.head_dim, q_heads, geometry.tokens});
+    Tensor k_tensor_ny(k_ny.data(), ninfer::test::cuda_environment().context.device(), DType::BF16, {geometry.head_dim, k_heads, geometry.tokens});
     ops::rope(pos_tensor_ny, geometry.rotary_dim, geometry.theta, q_tensor_ny, k_tensor_ny,
               execution);
     cuda_synchronize();
@@ -629,9 +629,9 @@ int run_yarn_structural_inert(CudaExecutionView execution, const Geometry& geome
     k_y.copy_from_host(k_storage.data(), k_y.bytes());
     pos_y.copy_from_host(positions.data(), pos_y.bytes());
     table_device.copy_from_host(table.inv_freq.data(), table_device.bytes());
-    Tensor pos_tensor_y(pos_y.data(), DType::I32, {geometry.tokens, geometry.axes});
-    Tensor q_tensor_y(q_y.data(), DType::BF16, {geometry.head_dim, q_heads, geometry.tokens});
-    Tensor k_tensor_y(k_y.data(), DType::BF16, {geometry.head_dim, k_heads, geometry.tokens});
+    Tensor pos_tensor_y(pos_y.data(), ninfer::test::cuda_environment().context.device(), DType::I32, {geometry.tokens, geometry.axes});
+    Tensor q_tensor_y(q_y.data(), ninfer::test::cuda_environment().context.device(), DType::BF16, {geometry.head_dim, q_heads, geometry.tokens});
+    Tensor k_tensor_y(k_y.data(), ninfer::test::cuda_environment().context.device(), DType::BF16, {geometry.head_dim, k_heads, geometry.tokens});
     ops::YarnScale yarn{static_cast<const float*>(table_device.data()), table.mscale};
     ops::rope(pos_tensor_y, geometry.rotary_dim, geometry.theta, yarn, q_tensor_y, k_tensor_y,
               execution);

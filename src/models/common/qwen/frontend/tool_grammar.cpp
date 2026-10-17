@@ -10,6 +10,9 @@
 #include <vector>
 
 namespace ninfer::models::qwen::frontend {
+
+using Contract = ToolCallOutputContract;
+
 namespace {
 using Json     = nlohmann::ordered_json;
 using Contract = ToolCallOutputContract;

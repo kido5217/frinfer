@@ -224,10 +224,15 @@ public:
             // reasoning (ADR-0001 amendment). An unsupported speculative backend keeps the
             // fork's fail-closed rejection.
             if (options.constraint) {
-                const SpeculativeBackend backend = instance_.program->speculative_backend();
-                if (!runtime::constraint_backend_supported(backend)) {
-                    throw RequestError(RequestErrorKind::InvalidConstraint,
-                                       "grammar constraints need the ordinary or MTP backend");
+                // The backend gate is a qwen3_5 capability; the experimental qwen4_exp
+                // Program exposes no speculative-backend accessor, so it keeps its own
+                // schedule contract and the gate does not apply.
+                if constexpr (requires { instance_.program->speculative_backend(); }) {
+                    const SpeculativeBackend backend = instance_.program->speculative_backend();
+                    if (!runtime::constraint_backend_supported(backend)) {
+                        throw RequestError(RequestErrorKind::InvalidConstraint,
+                                           "grammar constraints need the ordinary or MTP backend");
+                    }
                 }
             }
             const auto constraint_started = observation.phase_timings ? Clock::now() : submitted;

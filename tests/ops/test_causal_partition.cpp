@@ -46,6 +46,15 @@ CausalAttentionExecutionEnvelope envelop(std::uint32_t min, std::uint32_t max) {
 
 // --- pure helpers over synthetic SM counts ----------------------------------
 
+// The underfill policy lives as a file-local constant in each dtype plan unit; the test
+// re-derives it independently so a policy change has to land in both places.
+constexpr bool causal_query_tiles_underfill_sms(int independent_tiles,
+                                                int multiprocessor_count) {
+    const std::int64_t filled =
+        (multiprocessor_count / independent_tiles) * static_cast<std::int64_t>(independent_tiles);
+    return filled < static_cast<std::int64_t>(multiprocessor_count) * 9 / 10;
+}
+
 void check_underfill_helper() {
     struct Case {
         int sms;

@@ -2990,6 +2990,8 @@ int test_rendered_text_exposure() {
     failures += check(pad_tokens > 1 && pad_text == pad_tokens,
                       "media prompt did not expose its expanded vision placeholder");
     return failures;
+}
+
 int test_media_auto_threads_respect_affinity() {
     ninfer::CpuTopology topology;
     std::exception_ptr error;
