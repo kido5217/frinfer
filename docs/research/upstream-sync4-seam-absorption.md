@@ -121,7 +121,7 @@ fork's exact lines.
   lines under rename pairing. Expect delete/modify conflicts on every fork `sparse_moe` file.
 - Fork-only file families with **zero** upstream contact in range (no conflicts, re-apply-fork
   trivially): `third_party/llama-chat/**`, `src/serve/{reasoning_control,tool_call_signal,request_observation}.{cpp,h}`,
-  `src/models/qwen3_5/program/logprob_*.h`, `src/text/{model_grammar,model_grammar_internal}.cpp`,
+  `src/models/qwen3_5/program/logprob_*.h`, `src/text/model_grammar.cpp + model_grammar_internal.h`,
   `src/models/qwen3_5/program/planning/yarn_policy.*`, `docs/research/**`.
 
 ## Where the fork can RETIRE code
