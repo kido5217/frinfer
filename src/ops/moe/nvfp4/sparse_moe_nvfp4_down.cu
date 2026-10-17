@@ -90,7 +90,7 @@ void sparse_moe_nvfp4_down_kernel(const std::uint8_t* __restrict__ x_codes,
                                   __nv_bfloat16* __restrict__ grouped_output, Nvfp4DownBases bases,
                                   float activation_divisor) {
     constexpr int kWaitGroups = Schedule::kStages - 1;
-    auto* storage             = nvfp4_shared_storage<Schedule::kSharedBytes>();
+    auto* storage             = common::shared_storage<Schedule::kSharedBytes>();
     auto& shared              = *reinterpret_cast<Nvfp4A4SharedStorage<Schedule>*>(storage);
 
     const int jobs  = route_job_count[0];
