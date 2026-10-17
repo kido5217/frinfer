@@ -219,8 +219,8 @@ int main() {
         ++failures;
     }
 
-    check(live.find("ninfer_device_kv_used_page_groups{pool_id=\"2\"} 3\n") != std::string::npos &&
-              live.find("ninfer_context_transfer_bytes_total{resource=\"kv\",pool_id=\"2\","
+    check(live.find("frinfer_device_kv_used_page_groups{pool_id=\"2\"} 3\n") != std::string::npos &&
+              live.find("frinfer_context_transfer_bytes_total{resource=\"kv\",pool_id=\"2\","
                         "direction=\"h2d\"} 8192\n") != std::string::npos,
           "pool metrics dropped the third pool or used a model role as its identity");
 

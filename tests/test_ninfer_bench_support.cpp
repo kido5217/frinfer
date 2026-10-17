@@ -357,6 +357,7 @@ qb::BenchEnvironment sample_environment() {
     env.warmup                           = 1;
     env.corpus_path                      = "bench/fixtures/bench_corpus.ids";
     env.corpus_tokens                    = 65536;
+    env.grammar_path                     = "bench/fixtures/grammar/forced_line_2048.gbnf";
     return env;
 }
 

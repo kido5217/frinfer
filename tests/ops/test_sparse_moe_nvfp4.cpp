@@ -75,7 +75,7 @@ BankLayouts layouts(QType down_format = QType::NVFP4,
         std::uint64_t(kHidden) * (kIntermediate / 16);
     BankLayouts out;
     out.gate_up = {.region =
-                       {0, std::uint32_t(kExperts), std::uint64_t(kExperts) * 2 * kIntermediate,
+                       {0, std::uint32_t(kExperts), std::uint64_t(2 * kIntermediate),
                         std::uint64_t(2 * kIntermediate)},
                    .format    = QType::NVFP4,
                    .layout    = gate_layout,
@@ -86,7 +86,7 @@ BankLayouts layouts(QType down_format = QType::NVFP4,
                    .divisor_stride = 1,
                    .has_divisors   = true};
     out.down = {.region =
-                    {0, std::uint32_t(kExperts), std::uint64_t(kExperts) * kHidden,
+                    {0, std::uint32_t(kExperts), std::uint64_t(kHidden),
                      std::uint64_t(kHidden)},
                 .format    = down_format,
                 .layout    = gate_layout,
@@ -135,13 +135,14 @@ void rejects_incompatible_banks() {
     }
     {
         auto bank = layouts();
-        bank.gate_up.region.rows = kExperts * (2 * kIntermediate) + 1; // odd rows
+        bank.gate_up.region.rows = 2 * kIntermediate + 1; // odd rows
         expect_invalid([&] { (void)profile(bank); },
                        "a routed gate/up bank with the wrong geometry was accepted");
     }
     {
         auto bank = layouts();
         bank.gate_up.region.count = 512;
+        bank.gate_up.region.rows  = 2 * kIntermediate;
         expect_invalid([&] { (void)profile(bank); },
                        "routed banks with different expert counts were accepted");
     }

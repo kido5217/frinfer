@@ -937,13 +937,13 @@ curl http://127.0.0.1:8080/metrics
 | `frinfer_model_info`, `frinfer_max_concurrency`, `frinfer_max_context_tokens` | Model/backend identity and startup limits |
 | `frinfer_requests_running`, `waiting`, `paused`, `prefilling`, `decode_ready`, `replaying`, `materializing` | Current Engine gauges; prefill/decode/replay are subsets of resident requests |
 | `frinfer_prompt_tokens_total`, `frinfer_prompt_tokens_cached_total` | Full input and reused tokens counted once on initial binding |
-| `frinfer_prefill_tokens_total`, `frinfer_replayed_tokens_total` | Actual initial prefill and separate recovery recomputation |
+| `frinfer_prefill_tokens_total`, `frinfer_replayed_tokens_total`, `frinfer_decode_rounds_total`, `frinfer_decode_row_rounds_total` | Actual initial prefill, separate recovery recomputation, executed decode batches, and their summed batch sizes |
 | `frinfer_generation_tokens_total`, `frinfer_decode_tokens_total` | All committed outputs, or decode/control outputs excluding the first token; include thinking and injected control tokens |
 | `frinfer_spec_decode_{rounds,draft_tokens,accepted_tokens,fallback_steps}_total` | Live native speculative work, including MTP and DFlash/DFlash2 |
 | `frinfer_{preemptions,snapshot_restores,replay_restores}_total` | Pressure pauses and recovery routes |
-| `frinfer_device_kv_{used,capacity}_page_groups{pool_id}`, `frinfer_device_state_{used,capacity}_slots`, `frinfer_device_backend_kv_used_pages` | Physical per-pool KV, StateImage and speculative backend KV occupancy; retained history also occupies these pools |
+| `frinfer_device_kv_{used,capacity}_page_groups`, `frinfer_device_state_{used,capacity}_slots` | Physical per-pool KV page groups (every series carries its `pool_id`) and StateImage occupancy; retained history also occupies these pools |
 | `frinfer_host_context_{used,reserved,capacity,peak}_bytes` | Unified Host backing; reserved bytes are already included in used bytes |
-| `frinfer_context_transfer_bytes_total{resource,pool_id,direction}` | Completed State or KV payload transfers; `pool_id` is present for KV |
+| `frinfer_context_transfer_bytes_total{resource,pool_id,direction}`, `frinfer_context_transfer_seconds_total` | Completed State or KV payload transfers (`pool_id` is present for KV) and accumulated transfer operation time |
 | `frinfer_host_work_seconds_total{phase}`, `frinfer_device_wait_seconds_total` | Instrumented worker wall time; device wait is not CUDA kernel time |
 | `frinfer_constraint_requests_total{outcome}`, `frinfer_constraint_cache_total{result}` | Settled constrained requests by completion state and compilation-cache access |
 | `frinfer_constraint_{prepare,mask,matcher}_seconds_total`, `frinfer_constraint_mask_{positions,upload_bytes}_total` | Constraint work aggregated at request settlement, including truncated/cancelled results |
