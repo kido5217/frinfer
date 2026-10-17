@@ -4,6 +4,12 @@ Research ticket: kido5217/frinfer#307. Upstream range: `81c8ce09..64d10fbf` (77 
 merge-base `81c8ce09`, verified with `git merge-base master upstream/master`). Fork baseline:
 `baab27b6`. All claims below are from `git diff`/`git show` on local refs of this repository.
 
+> Review gate (#307): verdict unchanged; this revision fixes reviewer findings — commit
+> attribution of the QType 9 / QuantLayout 4 appends (`d8c0fa6f`, not `7c4c5e3e`), the
+> rank-3-rejection test citation (`test_reader.cpp`, not `test_materialization.cpp`), artifact
+> paths (`models/`, not `out/`, for the 27B pair) and the 27B stored-identity enumeration (now
+> byte-verified), and the new-format count in the seam list (two, not one).
+
 ## Verdict
 
 **Keep both artifacts. No re-conversion required.** Every change in the range to the artifact
@@ -14,10 +20,13 @@ the map — additive → keep, tightened validation or changed packing/semantics
 on "keep". The merged-tree load smoke (sync procedure step 5) remains the final gate; this report
 explains why it is expected to pass.
 
+Stored identities below were confirmed by direct inspection of each file's v3 directory (review
+correction pass), not only by recipe inference.
+
 | Artifact | Route | Stored identities | Verdict |
 |---|---|---|---|
-| `out/qwen3_6_27b.ninfer` (deployed) | `qwen3_6_27b` / `qwen3_6_27b_nvfp4` recipe | pre-existing identities only (`q6_g64_fp16`/`q5`/`q8` + `row_split_k128_v1`, `bf16`/`fp32` + `contiguous_le_v1`; nvfp4 variant: rank-2 `nvfp4` + `block_scale_k16_m128x4_v1`, `fp8_e4m3fn_row_bf16` + `row_scale_v1`) | keep |
-| `qwen3_8_27b_nvfp4.ninfer` (smoke, named in `docs/maintainer/upstream-sync.md:61`) | `qwen3_8_27b_nvfp4` recipe (`tools/convert/official_recipes.py:151`) | rank-2 `nvfp4` per projection (`/mlp/` layers < 56), `fp8_e4m3fn_row_bf16` + `row_scale_v1`, `contiguous_le_v1` | keep |
+| `models/qwen3_6_27b.ninfer` (deployed) | `qwen3_6_27b` / `qwen3_6_27b_nvfp4` recipe | pre-existing identities only — `q4_g64_fp16` (183), `q5` (246), `q6` (3), `q8` (7), `bf16` (582), `fp32` (96), `int32` (1), with `row_split_k128_v1` / `contiguous_le_v1` layouts | keep |
+| `models/qwen3_8_27b_nvfp4.ninfer` (smoke; named pathless in `docs/maintainer/upstream-sync.md:61`) | `qwen3_8_27b_nvfp4` recipe (`tools/convert/official_recipes.py:151`) | 112 rank-2 `nvfp4` + `block_scale_k16_m128x4_v1`, 146 `fp8_e4m3fn_row_bf16` + `row_scale_v1`, remainder pre-existing (`contiguous_le_v1` etc.) | keep |
 | `out/qwen3_6_35b_a3b_nvfp4.ninfer` (on-disk sibling) | `qwen3_6_35b_a3b_nvfp4` | same class: 30,720 rank-2 `nvfp4` expert parents, `q8_g32_fp16`/`q6_g64_fp16` (`row_split_k128_v1`), `bf16`, `fp32` (conversion report `/formats`) | keep |
 
 ## Evidence
@@ -36,9 +45,9 @@ producer-side recipe plumbing for future conversions, not loader requirements.
 
 ### 2. New format/layout identities are pure appends
 
-`7c4c5e3e` adds `QType::NF4_G16_E4M3FN = 9` and `QType::FP8_E4M3FN_BLOCK128X128_BF16 = 10`, and
-`QuantLayout::RowPagedG16_4K = 4`, `BatchedBlockScaleK16M128x4 = 5`, `BlockScaleM128K128 = 6`
-(`src/core/weight.h`). The pre-existing numeric values 0–8 / 0–3 are unchanged, so old record
+`d8c0fa6f` adds `QType::NF4_G16_E4M3FN = 9` and `QuantLayout::RowPagedG16_4K = 4`; `7c4c5e3e` adds
+`QType::FP8_E4M3FN_BLOCK128X128_BF16 = 10` and `QuantLayout::BatchedBlockScaleK16M128x4 = 5`,
+`BlockScaleM128K128 = 6` (`src/core/weight.h`). The pre-existing numeric values 0–8 / 0–3 are unchanged, so old record
 fields decode identically. The same additive pattern is on the Python side
 (`tools/artifact/formats.py`, `tools/artifact/layouts.py`): new dataclasses and registry entries;
 the nvfp4 / row-scale / row-split / contiguous entries keep their old definitions. The rewritten
@@ -47,8 +56,8 @@ stores rank-3 `[E,N,K]` "with the same inner-matrix code packing and scale swizz
 Section 4 (`block_scale_k16_m128x4_v1`) itself has no diff hunks. The registry line for the old
 layout is unchanged, including its rank-2-only constraint; upstream's new test even asserts
 `weight_geometry(QType::NVFP4, BlockScaleK16M128x4, [E,N,K])` **rejects** a bank
-(`tests/artifact/test_materialization.cpp` in `7c4c5e3e`: "single-matrix NVFP4 layout accepted a
-bank"). So the old identity's domain did not move.
+(`tests/artifact/test_reader.cpp:166` at tip, added in `7c4c5e3e`: "single-matrix NVFP4 layout
+accepted a bank"). So the old identity's domain did not move.
 
 ### 3. Rank-2 NVFP4 bytes and divisor semantics are bit-identical
 
@@ -120,7 +129,8 @@ Overlap set for this area (both sides changed; recompute at merge time):
   imports and the recipe registry; keep both sides' functions.
 - `docs/maintainer/artifact-container.md`, `storage-layouts.md`, `tensor-formats.md`,
   `docs/weight-conversion.md` — upstream rewrote these; the fork renamed branding, adjusted the
-  format count ("nine" — now stale, upstream registers a tenth numeric format), added the
+  format count ("nine" — now stale; the range registers two new numeric formats, so adopt upstream's
+  rewritten count verbatim rather than computing nine+N), added the
   per-expert-parent paragraph (tensor-formats §near row_scale) and the GGUF/35b conversion
   sections (weight-conversion.md). Adopt upstream's text, then re-apply: branding, the 35b
   per-expert-parent note (still accurate: banks are optional), and the fork's GGUF route docs.
